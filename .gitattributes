@@ -1,0 +1,14 @@
+# Fim de linha, versionado.
+#
+# `*.sql text eol=lf` existe por um motivo concreto, nao por estilo: o checksum
+# de cada migration e calculado sobre o conteudo do arquivo. Deixar o Git
+# materializar CRLF no Windows fazia o migrador recusar rodar, dizendo que uma
+# migration "mudou depois de aplicada" — sobre um arquivo que ninguem tocou.
+#
+# O migrador tambem normaliza antes de hashear (packages/db/src/migrator.ts):
+# as duas defesas se somam. Esta mantem o arquivo estavel no disco; aquela
+# protege quem clonar com outra configuracao de Git.
+*.sql text eol=lf
+
+# O restante segue a deteccao automatica, preservando binarios.
+* text=auto

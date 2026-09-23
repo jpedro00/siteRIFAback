@@ -1,0 +1,19 @@
+{
+  "name": "@campaigns/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/worker.ts",
+    "start": "node dist/worker.js",
+    "queue:install": "tsx src/cli/installQueue.ts"
+  },
+  "dependencies": {
+    "@campaigns/db": "*",
+    "@campaigns/shared": "*",
+    "pg": "^8.13.1",
+    "pg-boss": "^10.3.2"
+  }
+}

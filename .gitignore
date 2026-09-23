@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+coverage/
+.env
+.env.*
+# Modelos SEM valor. A regra acima e deliberadamente ampla — qualquer `.env.algo`
+# fica de fora por padrao —, e cada excecao e aberta uma a uma, nunca por curinga.
+!.env.example
+!.env.staging.example
+*.log
+.DS_Store
+.vite/
+*.tsbuildinfo
+.local/
+.npm-cache/
+.vitest-report.json

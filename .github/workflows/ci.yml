@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Um PostgreSQL REAL. A suíte de isolamento precisa de RLS de verdade: com
+# mock, o teste provaria apenas que o mock funciona.
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Bootstrap: cria o banco de teste e os dois papéis restritos.
+      # Este banco é DESCARTÁVEL e vive só dentro do job; nada aqui toca o
+      # banco real, que a separação de repositórios não muda.
+      ADMIN_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      DATABASE_NAME: campaigns_test
+      APP_DB_PASSWORD: app_ci_password
+      WORKER_DB_PASSWORD: worker_ci_password
+
+      MIGRATION_DATABASE_URL: postgres://postgres:postgres@localhost:5432/campaigns_test
+
+      # As três conexões usadas pelos testes. A de aplicação é o papel
+      # restrito: é isso que faz a verificação de RLS valer.
+      TEST_MIGRATION_DATABASE_URL: postgres://postgres:postgres@localhost:5432/campaigns_test
+      TEST_APP_DATABASE_URL: postgres://app_user:app_ci_password@localhost:5432/campaigns_test
+      TEST_WORKER_DATABASE_URL: postgres://app_worker:worker_ci_password@localhost:5432/campaigns_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      # O manifesto é gerado aqui, e é ele que o frontend confere. Se alguém
+      # mexeu num contrato sem regenerá-lo, o snapshot que o outro repositório
+      # carrega já nasceria obsoleto — e a divergência só apareceria lá, longe
+      # de quem a causou.
+      - name: Conferir o manifesto dos contratos
+        run: npm run contracts:verify
+
+      - name: Compilar pacotes compartilhados
+        # api e worker importam os tipos de @campaigns/shared e @campaigns/db;
+        # sem build, o typecheck não encontra as declarações.
+        run: |
+          npm run build -w @campaigns/shared
+          npm run build -w @campaigns/db
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Bootstrap do banco (papéis restritos)
+        run: npm run db:bootstrap
+
+      - name: Migrations em banco vazio
+        run: npm run db:migrate
+
+      # Etapa administrativa da fila, separada do runtime do worker de
+      # propósito: o pg-boss precisa de privilégio de criação no banco para se
+      # instalar, e o worker — que roda continuamente — não deve tê-lo.
+      # Ver apps/worker/src/queue.ts.
+      - name: Instalar o schema da fila
+        run: npm run queue:install -w @campaigns/worker
+
+      # UMA execução da suíte, com dois repórteres: o legível, para quem lê o
+      # log, e o JSON, para a verificação de teste pulado logo abaixo.
+      - name: Testes
+        run: npx vitest run --reporter=default --reporter=json --outputFile=.vitest-report.json
+
+      # Rede de segurança: sem banco configurado, a suíte PULA os testes de RLS
+      # em vez de falhar — e um CI verde sem eles seria uma falsa aprovação.
+      - name: Garantir que nenhum teste foi pulado
+        run: node scripts/assert-no-skipped-tests.mjs
+
+      - name: Build
+        run: npm run build

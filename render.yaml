@@ -1,0 +1,248 @@
+# =============================================================================
+# Render — infraestrutura de STAGING
+#
+# Blueprint versionado: a infraestrutura nasce do repositorio, nao de cliques
+# num painel. Duas consequencias praticas — a configuracao passa por revisao
+# como qualquer codigo, e recriar o ambiente do zero nao depende de ninguem
+# lembrar o que foi clicado.
+#
+# NAO HA PRODUCAO AQUI. Este arquivo descreve apenas staging.
+#
+# -----------------------------------------------------------------------------
+# PRE-REQUISITO: o Render constroi a partir do REPOSITORIO REMOTO. A branch
+# referenciada abaixo precisa existir no GitHub — um commit apenas local nao e
+# visivel para o provedor, e o servico falha no clone.
+#
+# -----------------------------------------------------------------------------
+# TRES PAPEIS DE BANCO, TRES USOS DISTINTOS
+#
+#   DATABASE_ADMIN_URL   dono do schema. Roda bootstrap, migrations e
+#                        `queue:install`. NAO e usado por nenhum processo em
+#                        execucao continua.
+#   DATABASE_URL         `app_user`. A API, e so ela.
+#   WORKER_DATABASE_URL  `app_worker`. O worker, e so ele.
+#
+# Todas as tres sao marcadas `sync: false`: o Render pede o valor na criacao e
+# o guarda cifrado. Credencial NAO entra em arquivo versionado — e por isso que
+# este arquivo pode existir no repositorio.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # API HTTP
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: campaigns-api-staging
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: main
+
+    # O build acontece na raiz do monorepo: a API importa @campaigns/shared e
+    # @campaigns/db, que precisam estar compilados antes do typecheck dela.
+    buildCommand: >-
+      npm ci &&
+      npm run build -w @campaigns/shared &&
+      npm run build -w @campaigns/db &&
+      npm run build -w @campaigns/api
+    startCommand: npm start -w @campaigns/api
+
+    # Healthcheck REAL: a rota consulta o banco e informa `database: up|down`.
+    # Ela responde 200 mesmo com o banco fora, de proposito — quem observa
+    # precisa distinguir "API fora" de "API no ar, banco fora".
+    healthCheckPath: /api/health
+
+    envVars:
+      # Versao do Node fixada. Sem isto o Render escolhe o padrao dele, que
+      # muda com o tempo — e um ambiente que troca de runtime sozinho entre
+      # dois deploys iguais e a origem classica do "funcionava ontem". E a
+      # mesma versao usada pelo CI.
+      - key: NODE_VERSION
+        value: '22'
+
+      - key: NODE_ENV
+        value: staging
+      - key: PORT
+        value: '10000'
+
+      # Papel RESTRITO da aplicacao. Nunca o dono do schema.
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL
+        value: 'true'
+
+      # CA raiz do provedor, em PEM. NAO E SEGREDO — e um certificado publico.
+      #
+      # Provedores gerenciados assinam o certificado do banco com uma raiz
+      # propria, que nao vem na lista de CAs publicas do Node (o Supabase usa a
+      # "Supabase Root 2021 CA"). Sem informa-la, a conexao falha com
+      # `SELF_SIGNED_CERT_IN_CHAIN` — e a saida tentadora seria desligar
+      # `rejectUnauthorized`, o que manteria a conexao cifrada e jogaria fora a
+      # unica coisa que prova COM QUEM se esta falando.
+      #
+      # `sync: false` nao e por sigilo: o PEM tem multiplas linhas e precisa ser
+      # colado no painel. O helper aceita `\n` escapado, para paineis que
+      # achatam o valor numa linha so.
+      - key: DATABASE_CA_CERT
+        sync: false
+
+      # 32 bytes em base64. Perder esta chave invalida todos os segundos
+      # fatores ja cadastrados.
+      - key: MFA_ENCRYPTION_KEY
+        sync: false
+
+      # Os hosts dos frontends de staging, separados por virgula, SEM curinga.
+      # Hoje sao os tres projetos na Vercel (`https://<projeto>.vercel.app`);
+      # com dominio proprio passam a ser os hosts desse dominio. O valor vive
+      # no painel porque muda de ambiente para ambiente.
+      #
+      # `*` e incompativel com `credentials: include` — o navegador recusa — e
+      # esta API autentica por cookie. Allowlist vazia DERRUBA a API em staging,
+      # de proposito: falhar na subida e melhor do que descobrir pelo navegador.
+      #
+      # Esta allowlist e o que sustenta a seguranca do `SameSite=None` adotado
+      # abaixo: cada origem permitida e declarada uma a uma, nunca por curinga.
+      - key: CORS_ORIGINS
+        sync: false
+
+      # Sufixo dos subdominios de comunidade. Com um dominio proprio aqui, o
+      # `originGuard` aceita automaticamente a origem de qualquer comunidade
+      # EXISTENTE em `{slug}.<BASE_DOMAIN>` — o mesmo criterio white-label de
+      # producao, sem precisar listar cada tenant no CORS.
+      #
+      # Enquanto o staging vive em `*.vercel.app` esse caminho nao se aplica:
+      # `vercel.app` esta na Public Suffix List e nao pode servir de sufixo de
+      # comunidade. Quem responde pelas origens hoje e a allowlist acima.
+      - key: APP_BASE_DOMAIN
+        sync: false
+
+      # TOPOLOGIA CROSS-SITE — o que o staging de fato usa hoje.
+      #
+      # Os frontends estao em `*.vercel.app` e a API em `*.onrender.com`. Sao
+      # dominios registraveis DIFERENTES: tanto `vercel.app` quanto
+      # `onrender.com` estao na Public Suffix List, entao o navegador trata
+      # cada um como um site distinto. Um cookie `SameSite=Lax` simplesmente
+      # NAO seria enviado no `fetch` do painel para a API, e o login nunca
+      # chegaria a funcionar.
+      #
+      # Por isso `None` — e `None` EXIGE `Secure`: sem ele o navegador descarta
+      # o cookie em silencio. A configuracao recusa a combinacao invalida na
+      # subida, em vez de deixar descobrir pelo navegador.
+      #
+      # O preco e real: `SameSite=None` abre mao da protecao contra requisicao
+      # disparada por um site externo. O que sustenta a seguranca aqui e o
+      # `originGuard` com allowlist explicita — `CORS_ORIGINS` nunca aceita
+      # curinga — mais o cookie httpOnly, que o JavaScript da pagina nao le.
+      #
+      # QUANDO O DOMINIO PROPRIO ENTRAR, isto volta para `lax`: com
+      # `api.<dominio>` e `painel.<dominio>` sob o mesmo dominio registravel a
+      # requisicao passa a ser same-site, e `Lax` recupera a protecao sem
+      # custo nenhum.
+      #
+      # O cookie e HOST-ONLY: nenhum atributo `Domain` e definido, entao ele
+      # pertence exclusivamente ao host da API. Um `Domain=` amplo o entregaria
+      # a todo subdominio, inclusive a um que venha a ser comprometido —
+      # alcance maior sem nenhuma necessidade.
+      - key: SESSION_COOKIE_SECURE
+        value: 'true'
+      - key: SESSION_COOKIE_SAMESITE
+        value: none
+
+      # RESOLUCAO DE COMUNIDADE EM STAGING — limitacao conhecida, nao resolvida.
+      #
+      # A API recebe toda requisicao no PROPRIO hostname — hoje um host fixo em
+      # `*.onrender.com`, compartilhado por todas as comunidades. O `Host` nao
+      # carrega a comunidade, entao a resolucao por dominio nao tem o que ler.
+      # Isso vale igualmente para um futuro `api.<dominio>`: o subdominio e da
+      # API, nao do participante.
+      #
+      # Em staging o cabecalho `x-tenant-slug` supre isso, para comunidades
+      # descartaveis. Ele escolhe QUAL comunidade, nunca concede privilegio:
+      # toda rota autenticada continua conferindo o vinculo no PostgreSQL.
+      #
+      # A configuracao RECUSA este valor em producao. A arquitetura white-label
+      # de producao precisa ser fechada antes do lancamento.
+      - key: TENANT_HEADER_ENABLED
+        value: 'true'
+
+      - key: LOGIN_MAX_ATTEMPTS
+        value: '5'
+      - key: LOGIN_LOCK_MINUTES
+        value: '15'
+      # Limite por origem, anterior a autenticacao. Ver lib/loginThrottle.ts.
+      - key: LOGIN_ORIGIN_WINDOW_MINUTES
+        value: '15'
+      - key: LOGIN_ORIGIN_MAX_FAILURES
+        value: '20'
+      - key: LOGIN_ORIGIN_MAX_ACCOUNTS
+        value: '5'
+
+  # ---------------------------------------------------------------------------
+  # Worker — relay da outbox e consumidores
+  #
+  # Processo SEPARADO da API, e nao uma thread dentro dela: as duas escalam por
+  # motivos diferentes e falham por motivos diferentes. Um relay travado nao
+  # pode derrubar o atendimento HTTP.
+  # ---------------------------------------------------------------------------
+  - type: worker
+    name: campaigns-worker-staging
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: main
+
+    buildCommand: >-
+      npm ci &&
+      npm run build -w @campaigns/shared &&
+      npm run build -w @campaigns/db &&
+      npm run build -w @campaigns/worker
+    startCommand: npm start -w @campaigns/worker
+
+    envVars:
+      # Mesma versao da API e do CI. Ver o comentario no servico web acima.
+      - key: NODE_VERSION
+        value: '22'
+
+      - key: NODE_ENV
+        value: staging
+
+      # `app_worker`, nunca a conexao da API. O nome e proprio justamente para
+      # tornar impossivel a troca silenciosa.
+      - key: WORKER_DATABASE_URL
+        sync: false
+      # A fila usa o MESMO papel restrito: o schema `pgboss` ja pertence a ele
+      # (migration 0008), entao criar as tabelas da fila ali e exercicio de
+      # posse, nao privilegio administrativo.
+      - key: QUEUE_DATABASE_URL
+        sync: false
+      - key: QUEUE_SCHEMA
+        value: pgboss
+      - key: DATABASE_SSL
+        value: 'true'
+      # Mesma CA publica da API. Ver o comentario no servico web acima.
+      - key: DATABASE_CA_CERT
+        sync: false
+
+      - key: OUTBOX_POLL_INTERVAL_MS
+        value: '2000'
+      - key: OUTBOX_BATCH_SIZE
+        value: '50'
+      - key: OUTBOX_MAX_ATTEMPTS
+        value: '10'
+      - key: OUTBOX_RETRY_BASE_SECONDS
+        value: '5'
+
+# =============================================================================
+# O QUE ESTE ARQUIVO NAO FAZ, E POR QUE
+#
+# Nao roda migrations no deploy. Migration e DDL, exige o papel DONO do schema,
+# e um processo de execucao continua nao deve carregar essa credencial. O mesmo
+# vale para `queue:install`. As duas coisas sao etapas ADMINISTRATIVAS,
+# executadas deliberadamente antes do deploy:
+#
+#   DATABASE_ADMIN_URL=... npm run db:migrate
+#   QUEUE_ADMIN_DATABASE_URL=... npm run queue:install -w @campaigns/worker
+#
+# Amarrar isso ao `buildCommand` faria cada deploy — inclusive um rollback —
+# tentar aplicar DDL, com a credencial errada e no momento errado.
+# =============================================================================

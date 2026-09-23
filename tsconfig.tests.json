@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "types": ["node"],
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "packages/shared/tests/**/*.ts",
+    "packages/db/tests/**/*.ts",
+    "apps/api/tests/**/*.ts",
+    "apps/worker/tests/**/*.ts"
+  ]
+}

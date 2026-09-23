@@ -1,0 +1,26 @@
+{
+  "name": "@campaigns/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@campaigns/db": "*",
+    "@campaigns/shared": "*",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2",
+    "otplib": "^13.5.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.8",
+    "@types/express": "^4.17.21",
+    "@types/supertest": "^6.0.2",
+    "supertest": "^7.0.0"
+  }
+}

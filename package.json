@@ -1,0 +1,44 @@
+{
+  "name": "tironirifa-backend",
+  "private": true,
+  "version": "0.1.0",
+  "description": "TironiRifa - backend: API HTTP, worker e banco. Fonte versionada dos contratos.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "workspaces": [
+    "packages/shared",
+    "packages/db",
+    "apps/api",
+    "apps/worker"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "prepare:internal": "npm run build -w @campaigns/shared && npm run build -w @campaigns/db",
+    "typecheck": "npm run prepare:internal && npm run typecheck --workspaces --if-present && npm run typecheck:tests",
+    "typecheck:tests": "tsc -p tsconfig.tests.json",
+    "lint": "eslint .",
+    "test": "npm run prepare:internal && vitest run",
+    "test:watch": "npm run prepare:internal && vitest",
+    "contracts:snapshot": "node scripts/contracts-snapshot.mjs --write",
+    "contracts:verify": "node scripts/contracts-snapshot.mjs",
+    "db:migrate": "npm run migrate -w @campaigns/db",
+    "db:bootstrap": "npm run bootstrap -w @campaigns/db",
+    "db:reset-test": "npm run reset-test -w @campaigns/db",
+    "queue:install": "npm run queue:install -w @campaigns/worker",
+    "dev:api": "npm run prepare:internal && npm run dev -w @campaigns/api",
+    "dev:worker": "npm run prepare:internal && npm run dev -w @campaigns/worker"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.2",
+    "dotenv": "^16.4.7",
+    "eslint": "^9.17.0",
+    "globals": "^15.15.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1",
+    "vitest": "^2.1.8"
+  }
+}
