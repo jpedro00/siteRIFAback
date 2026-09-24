@@ -33,13 +33,32 @@ function databaseTarget(value: string | undefined): string | null {
   }
 }
 
+/**
+ * Conexoes de RUNTIME: as que um processo em execucao continua usa para
+ * servir. Sao elas que dizem "este banco tem dados de verdade".
+ *
+ * As administrativas — ADMIN_DATABASE_URL, MIGRATION_DATABASE_URL e
+ * QUEUE_ADMIN_DATABASE_URL — ficam DE FORA, e isto nao e descuido.
+ *
+ * Elas apontam, por definicao, para o banco que esta sendo administrado no
+ * momento. Num ambiente descartavel esse banco E o de teste: o CI cria
+ * `campaigns_test` num contêiner, aplica as migrations nele com
+ * MIGRATION_DATABASE_URL e roda a suite contra o mesmo banco com
+ * TEST_MIGRATION_DATABASE_URL. Os dois valores sao identicos de proposito.
+ *
+ * Com as administrativas na lista, essa configuracao CORRETA era recusada:
+ * a guarda estourava antes de o vitest carregar, o passo "Testes" falhava e
+ * os passos seguintes eram pulados — um CI vermelho por uma protecao que
+ * deveria proteger, nao atrapalhar.
+ *
+ * A protecao continua inteira onde importa. Quem apontar TEST_* para o banco
+ * de desenvolvimento ainda e barrado, porque DATABASE_URL aponta para esse
+ * mesmo banco — e ela esta aqui.
+ */
 const runtimeDatabaseKeys = [
   'DATABASE_URL',
   'WORKER_DATABASE_URL',
   'QUEUE_DATABASE_URL',
-  'ADMIN_DATABASE_URL',
-  'MIGRATION_DATABASE_URL',
-  'QUEUE_ADMIN_DATABASE_URL',
 ] as const;
 const testDatabaseKeys = [
   'TEST_MIGRATION_DATABASE_URL',
