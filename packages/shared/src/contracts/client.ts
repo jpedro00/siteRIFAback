@@ -1,8 +1,10 @@
 import {
   ROUTE_CONTRACTS,
   type RouteName,
+  type AccountOrdersResponse,
   type AuditListResponse,
   type CreateTenantRequest,
+  type CreateTenantResponse,
   type HealthResponse,
   type LoginRequest,
   type LoginResponse,
@@ -10,6 +12,8 @@ import {
   type MfaEnrollStartResponse,
   type MfaVerifyResponse,
   type PublicTenantBranding,
+  type RegisterRequest,
+  type RegisterResponse,
   type SessionResponse,
   type TenantContextResponse,
   type TenantListResponse,
@@ -41,6 +45,7 @@ import { API_ERROR_MESSAGES, type ApiErrorBody, type ApiErrorCode } from './erro
 export interface RouteResponses {
   health: HealthResponse;
   publicTenantBranding: PublicTenantBranding;
+  register: RegisterResponse;
   login: LoginResponse;
   logout: void;
   logoutAll: { revoked: number };
@@ -51,13 +56,8 @@ export interface RouteResponses {
   tenantContext: TenantContextResponse;
   tenantAudit: AuditListResponse;
   platformTenants: TenantListResponse;
-  platformCreateTenant: {
-    id: string;
-    slug: string;
-    name: string;
-    status: string;
-    createdAt: string;
-  };
+  platformCreateTenant: CreateTenantResponse;
+  accountOrders: AccountOrdersResponse;
   publicDraws: PublicDrawListResponse;
   publicDraw: PublicDrawDetail;
   publicDrawNumbers: DrawNumbersResponse;
@@ -77,6 +77,7 @@ export interface RouteBodies {
   mfaEnrollConfirm: MfaCodeRequest;
   mfaVerify: MfaCodeRequest;
   platformCreateTenant: CreateTenantRequest;
+  register: RegisterRequest;
   createReservation: CreateReservationRequest;
   createOrder: CreateOrderRequest;
   createDraw: CreateDrawRequest;

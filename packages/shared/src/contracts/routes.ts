@@ -179,8 +179,107 @@ export const createTenantRequestSchema = z.object({
     .max(63)
     .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, 'Use letras minúsculas, números e hífen.'),
   name: z.string().min(2).max(160),
+  /**
+   * Dono da comunidade, por e-mail de uma conta JA EXISTENTE.
+   *
+   * Uma comunidade sem dono e uma comunidade que ninguem consegue operar: o
+   * Super Admin cria e nao administra, e nao ha a quem pedir. Por isso o dono
+   * entra na mesma transacao da criacao — ou nascem os dois, ou nao nasce
+   * nenhum.
+   *
+   * E-mail de conta existente, e nao convite: convidar exige envio, token,
+   * expiracao e uma tela de aceite — fase propria. Exigir que a pessoa ja
+   * tenha cadastro resolve o dono real agora, com o cadastro que acabou de
+   * existir, sem senha provisoria inventada.
+   */
+  ownerEmail: z.string().trim().toLowerCase().email().max(320),
 });
 export type CreateTenantRequest = z.infer<typeof createTenantRequestSchema>;
+
+export const createTenantResponseSchema = z.object({
+  id: z.string().uuid(),
+  slug: z.string(),
+  name: z.string(),
+  status: z.string(),
+  createdAt: z.string(),
+  owner: z.object({
+    userId: z.string().uuid(),
+    email: z.string(),
+    displayName: z.string(),
+  }),
+});
+export type CreateTenantResponse = z.infer<typeof createTenantResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Cadastro do participante
+// ---------------------------------------------------------------------------
+
+/**
+ * A senha e conferida no SERVIDOR, sempre. A confirmacao viaja junto porque
+ * ela pertence ao formulario e o servidor e a autoridade sobre o formulario
+ * inteiro — validar so no navegador deixaria a regra a um `fetch` de
+ * distancia.
+ */
+export const registerRequestSchema = z
+  .object({
+    // `trim()` ANTES de `email()`: quem digita no celular herda um espaco do
+    // teclado com frequencia, e recusar por isso e recusar sem motivo.
+    displayName: z.string().trim().min(2).max(160),
+    email: z.string().trim().toLowerCase().email().max(320),
+    password: z.string().min(10).max(200),
+    passwordConfirmation: z.string().min(10).max(200),
+  })
+  .refine((v) => v.password === v.passwordConfirmation, {
+    message: 'As senhas não coincidem.',
+    path: ['passwordConfirmation'],
+  });
+export type RegisterRequest = z.infer<typeof registerRequestSchema>;
+
+export const registerResponseSchema = z.object({
+  user: z.object({
+    id: z.string().uuid(),
+    email: z.string(),
+    displayName: z.string(),
+  }),
+});
+export type RegisterResponse = z.infer<typeof registerResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Conta do participante
+// ---------------------------------------------------------------------------
+
+export const accountOrderSchema = z.object({
+  orderId: z.string().uuid(),
+  status: z.enum(['PENDENTE', 'PAGO', 'CANCELADO']),
+  quantity: z.number().int().positive(),
+  unitPriceCents: z.number().int().positive(),
+  totalCents: z.number().int().positive(),
+  createdAt: z.string(),
+  paidAt: z.string().nullable(),
+  numbers: z.array(z.number().int().nonnegative()),
+  labelDigits: z.union([z.literal(2), z.literal(3)]),
+  drawSlug: z.string(),
+  drawTitle: z.string(),
+  tenantSlug: z.string(),
+  tenantName: z.string(),
+});
+export type AccountOrder = z.infer<typeof accountOrderSchema>;
+
+/**
+ * Paginacao por keyset desde o inicio.
+ *
+ * A conta e uma lista que cresce pela frente. Com OFFSET, um pedido novo entre
+ * a primeira e a segunda pagina empurra tudo e faz a pagina 2 repetir o que a
+ * pagina 1 ja mostrou. O cursor aponta para uma posicao estavel.
+ *
+ * `nextCursor` nulo significa fim da lista — e o unico jeito honesto de a tela
+ * saber que mostrou tudo, em vez de supor pelo tamanho da pagina.
+ */
+export const accountOrdersResponseSchema = z.object({
+  orders: z.array(accountOrderSchema),
+  nextCursor: z.string().nullable(),
+});
+export type AccountOrdersResponse = z.infer<typeof accountOrdersResponseSchema>;
 
 export const healthResponseSchema = z.object({
   status: z.literal('ok'),
@@ -209,11 +308,30 @@ export const ROUTE_CONTRACTS = {
     mfa: false,
     tenantScope: 'resolved',
   },
+  register: {
+    method: 'POST',
+    path: '/api/auth/register',
+    summary: 'Cria a conta global do participante.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'none',
+  },
   login: {
     method: 'POST',
     path: '/api/auth/login',
     summary: 'Autentica por e-mail e senha e abre sessao.',
     auth: false,
+    mfa: false,
+    tenantScope: 'none',
+  },
+  accountOrders: {
+    method: 'GET',
+    path: '/api/account/orders',
+    summary: 'Pedidos da conta autenticada, em todas as comunidades.',
+    auth: true,
+    // Participante nao tem segundo fator obrigatorio: RN12 vale para quem
+    // administra. Exigir TOTP para ver o proprio comprovante fecharia a conta
+    // para quem ela foi feita.
     mfa: false,
     tenantScope: 'none',
   },

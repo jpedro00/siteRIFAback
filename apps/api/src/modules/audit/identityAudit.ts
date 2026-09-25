@@ -35,6 +35,7 @@ import { recordAuditEvent } from './auditService.js';
  * padrao `dominio.acao` ja usado por `tenant.created`.
  */
 export const AUTH_AUDIT_ACTIONS = {
+  REGISTERED: 'auth.registered',
   LOGIN_SUCCEEDED: 'auth.login.succeeded',
   LOGIN_FAILED: 'auth.login.failed',
   LOGOUT: 'auth.logout',

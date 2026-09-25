@@ -374,9 +374,14 @@ export async function createOrder(
     tenantId: string;
     reservationId: string;
     buyer: { name: string; phone: string; email?: string | undefined };
+    /** Conta autenticada, quando houver. Nulo = compra sem conta. */
+    userId?: string | null;
   },
 ): Promise<OrderResponse> {
-  return withTenant(deps.pool, { tenantId: input.tenantId }, async (client) => {
+  return withTenant(
+    deps.pool,
+    { tenantId: input.tenantId, userId: input.userId ?? null },
+    async (client) => {
     const { rows: reservaRows } = await client.query<{
       id: string;
       draw_id: string;
@@ -422,11 +427,23 @@ export async function createOrder(
     );
     const buyerId = buyerRows[0]!.id;
 
+    /**
+     * `user_id` vem da SESSAO, nunca do corpo da requisicao.
+     *
+     * O comprador continua mandando nome, telefone e e-mail — e eles viram o
+     * retrato em `buyers`, que e o historico do pedido e nao muda quando o
+     * perfil mudar. Mas nada disso decide DE QUEM e o pedido: se decidisse,
+     * bastaria digitar o e-mail de outra pessoa no checkout para o pedido
+     * aparecer na conta dela.
+     *
+     * Sem sessao, fica nulo, e a compra segue sendo guest — um caminho de
+     * primeira classe, nao um degrau para o cadastro.
+     */
     const { rows: orderRows } = await client.query<{ id: string }>(
       `INSERT INTO orders
          (tenant_id, draw_id, buyer_id, reservation_id, unit_price_cents,
-          quantity, total_cents, accepted_terms_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+          quantity, total_cents, accepted_terms_at, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8)
        RETURNING id`,
       [
         input.tenantId,
@@ -436,6 +453,7 @@ export async function createOrder(
         unitPriceCents,
         numeros.length,
         unitPriceCents * numeros.length,
+        input.userId ?? null,
       ],
     );
     const orderId = orderRows[0]!.id;

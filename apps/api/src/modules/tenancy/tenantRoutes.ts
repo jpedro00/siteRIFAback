@@ -195,6 +195,48 @@ export function buildTenantHandlers(deps: AppDeps): Record<string, RequestHandle
           throw error;
         }
 
+        /**
+         * DONO, NA MESMA TRANSACAO.
+         *
+         * Uma comunidade sem dono e uma comunidade que ninguem opera: o Super
+         * Admin cria e nao administra, e nao ha a quem entregar. Antes desta
+         * fase ela nascia assim, e o vinculo era um passo manual que alguem
+         * precisava lembrar de dar.
+         *
+         * O `withPlatform` ja abriu UMA transacao — os dois INSERTs e a
+         * auditoria vivem dentro dela. Se o e-mail nao corresponder a conta
+         * nenhuma, o `throw` abaixo derruba tudo: nao sobra comunidade orfa
+         * esperando dono.
+         *
+         * A busca passa por `app.find_user_by_email` porque `users_select` so
+         * mostra ao Super Admin quem ele ja administra — e este, por
+         * definicao, ainda nao administra ninguem nesta comunidade.
+         */
+        const { rows: donos } = await client.query<{
+          user_id: string;
+          email: string;
+          display_name: string;
+          status: string;
+        }>(
+          'SELECT user_id, email, display_name, status::text AS status FROM app.find_user_by_email($1)',
+          [body.ownerEmail],
+        );
+        const dono = donos[0];
+        if (!dono) {
+          throw ApiError.badRequest(
+            'Não existe conta com esse e-mail. O dono precisa ter cadastro antes de a comunidade ser criada.',
+          );
+        }
+        if (dono.status !== 'ACTIVE') {
+          throw ApiError.badRequest('A conta indicada como dona não está ativa.');
+        }
+
+        await client.query(
+          `INSERT INTO memberships (tenant_id, user_id, role, accepted_at, created_by)
+           VALUES ($1, $2, 'OWNER', now(), $3)`,
+          [tenant.id, dono.user_id, session.userId],
+        );
+
         await recordAuditEvent(client, {
           tenantId: null,
           actorUserId: session.userId,
@@ -203,6 +245,27 @@ export function buildTenantHandlers(deps: AppDeps): Record<string, RequestHandle
           targetType: 'tenant',
           targetId: tenant.id,
           after: { slug: tenant.slug, name: tenant.name },
+          ip: req.context?.ip ?? null,
+          userAgent: req.context?.userAgent ?? null,
+        });
+
+        // Evento proprio: "comunidade criada" e "fulano virou dono" respondem
+        // perguntas diferentes na trilha, e quem audita concessao de poder nao
+        // deveria ter de inferi-la de um evento de criacao.
+        //
+        // `tenantId: null` — escopo de PLATAFORMA, e nao da comunidade nova.
+        // `audit_events_insert` exige exatamente isso de um ator de
+        // plataforma, porque nesse contexto `app.current_tenant_id()` e nulo:
+        // o Super Admin nao "esta dentro" da comunidade que acabou de criar.
+        // A comunidade nao se perde — vai em `after`, junto do papel concedido.
+        await recordAuditEvent(client, {
+          tenantId: null,
+          actorUserId: session.userId,
+          actorType: 'PLATFORM',
+          action: 'membership.owner_provisioned',
+          targetType: 'user',
+          targetId: dono.user_id,
+          after: { role: 'OWNER', email: dono.email, tenantId: tenant.id, tenantSlug: tenant.slug },
           ip: req.context?.ip ?? null,
           userAgent: req.context?.userAgent ?? null,
         });
@@ -218,15 +281,20 @@ export function buildTenantHandlers(deps: AppDeps): Record<string, RequestHandle
           },
         });
 
-        return tenant;
+        return { tenant, dono };
       });
 
       res.status(201).json({
-        id: created.id,
-        slug: created.slug,
-        name: created.name,
-        status: created.status,
-        createdAt: created.created_at,
+        id: created.tenant.id,
+        slug: created.tenant.slug,
+        name: created.tenant.name,
+        status: created.tenant.status,
+        createdAt: created.tenant.created_at,
+        owner: {
+          userId: created.dono.user_id,
+          email: created.dono.email,
+          displayName: created.dono.display_name,
+        },
       });
     }),
   };

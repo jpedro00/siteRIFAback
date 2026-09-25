@@ -7,7 +7,8 @@ import {
 } from '@campaigns/shared';
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
-import { verifyPassword } from '../../lib/password.js';
+import { isUniqueViolation } from '../../lib/pgError.js';
+import { hashPassword, verifyPassword } from '../../lib/password.js';
 import { generateSessionToken, hashSessionToken } from '../../lib/sessionToken.js';
 import { buildOtpauthUri, generateTotpSecret, verifyTotp } from '../../lib/totp.js';
 import {
@@ -700,4 +701,90 @@ export async function verifyMfaForSession(
 
   await recordMfaFailure(deps, input.userId);
   throw ApiError.unauthenticated('Código inválido ou já utilizado.');
+}
+
+// ---------------------------------------------------------------------------
+// Cadastro do participante
+// ---------------------------------------------------------------------------
+
+export interface RegisterInput {
+  readonly email: string;
+  readonly displayName: string;
+  readonly password: string;
+  readonly ip: string | null;
+  readonly userAgent: string | null;
+}
+
+export interface RegisteredUser {
+  readonly id: string;
+  readonly email: string;
+  readonly displayName: string;
+}
+
+/**
+ * Cria a conta GLOBAL do participante.
+ *
+ * O que esta funcao deliberadamente NAO faz:
+ *
+ *   - nao abre sessao. Quem abre sessao e `login`, com o limitador por origem,
+ *     o registro de tentativa e a decisao de RN12 num lugar so. Duplicar isso
+ *     aqui criaria um segundo caminho de autenticacao para manter em dia — e o
+ *     segundo caminho e sempre o que fica para tras.
+ *   - nao concede vinculo de comunidade nem papel de plataforma. Participar nao
+ *     e administrar: a conta nasce sem poder nenhum sobre comunidade alguma.
+ *
+ * MENSAGEM DE E-MAIL JA EM USO. Aqui ela e explicita, e isso e uma decisao,
+ * nao um descuido. O login e uniforme porque um atacante que descobre quais
+ * e-mails existem ganha alvos; no cadastro, a informacao ja e publica por
+ * construcao — qualquer formulario de cadastro do mundo responde "este e-mail
+ * ja esta em uso" ou deixa a pessoa presa sem saber por que. Esconder aqui nao
+ * protegeria a conta e custaria a quem esta tentando entrar.
+ */
+export async function registerParticipant(
+  deps: AppDeps,
+  input: RegisterInput,
+): Promise<RegisteredUser> {
+  const email = input.email.trim().toLowerCase();
+  const displayName = input.displayName.trim();
+
+  // O hash nasce aqui, com os parametros de custo de `lib/password.ts`. O
+  // banco recebe pronto e nunca ve o texto claro.
+  const passwordHash = await hashPassword(input.password);
+
+  const created = await withoutContext(deps.pool, async (client) => {
+    try {
+      const { rows } = await client.query<{
+        user_id: string;
+        email: string;
+        display_name: string;
+      }>('SELECT user_id, email, display_name FROM app.register_participant($1, $2, $3)', [
+        email,
+        displayName,
+        passwordHash,
+      ]);
+      return rows[0] ?? null;
+    } catch (error) {
+      if (isUniqueViolation(error, 'users_email_key')) return null;
+      throw error;
+    }
+  });
+
+  if (created === null) {
+    throw ApiError.conflict('Este e-mail já está em uso.');
+  }
+
+  await recordIdentityAudit(deps, {
+    userId: created.user_id,
+    action: AUTH_AUDIT_ACTIONS.REGISTERED,
+    origin: { ip: input.ip, userAgent: input.userAgent },
+    // Sem senha, sem hash, sem token. `app.assert_no_secrets` recusaria, e a
+    // trilha nao precisa de nada disso para responder quem se cadastrou e quando.
+    metadata: { email: created.email },
+  });
+
+  return {
+    id: created.user_id,
+    email: created.email,
+    displayName: created.display_name,
+  };
 }

@@ -91,6 +91,9 @@ export function buildDrawHandlers(deps: AppDeps): Record<string, RequestHandler>
         tenantId: tenant.tenantId,
         reservationId: body.reservationId,
         buyer: body.buyer,
+        // Rota publica: a sessao e OPCIONAL. Quem esta logado leva o pedido
+        // para a conta; quem nao esta compra do mesmo jeito.
+        userId: req.session?.userId ?? null,
       });
       res.status(201).json(order);
     }),

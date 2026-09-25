@@ -1,21 +1,21 @@
 {
   "_comment": "Gerado por scripts/contracts-snapshot.mjs no repositorio BACKEND, a fonte dos contratos. Nao editar a mao. O frontend carrega uma copia deste arquivo e apenas confere.",
   "package": "@campaigns/shared",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "tracked": [
     "src/contracts",
     "src/states",
     "src/permissions",
     "src/constants"
   ],
-  "digest": "d9b4eed9cc7239114a716accc1bff9cd23673f76966cc766e7d4d96f7beb0957",
+  "digest": "90d9f2eda01d6815bab2837d4b1ccbc4736c1f898d7d126d9b62fdee5f37aeaf",
   "files": {
-    "src/contracts/client.ts": "fbb2b461b68af1bd0661f1a58f63b2f9a2d6ed9e01181c9858ce9f4ddd600828",
+    "src/contracts/client.ts": "c589f850fedd87e10e94e3e9b15592e2bbc15727150ee60e8bf44a030607d5c6",
     "src/contracts/draws.ts": "285e99a2c70eef2be2bf4f7954a299cea03c60a469b8c1d733933744434a79f0",
     "src/contracts/errors.ts": "29759c05b6d25c1fdf0a6dfd830da36a0ece40d3dea93cf94d5dab6a38bb2ad3",
     "src/contracts/events.ts": "7bdf39a726d10900dd73143802d94f2fe79d853d13576829eb193fa85f08411b",
     "src/contracts/index.ts": "2d601c84061af02e3cb6c5a6e2bdd2ac882ec53bfc97b63b13bd53c08781c2ad",
-    "src/contracts/routes.ts": "53b7cfa78d9959b68208b2f9430efb56ff4499767e26c64b416db43ad29abb5a",
+    "src/contracts/routes.ts": "424afa87803ce002ac4d8e02ad6fbc4362e921a6e0628fd7404de2cb5d80d5af",
     "src/states/drawStatus.ts": "6c5ae07265d992475a2fc1b8dd93e79772ed0cf937073ecb9fca512124b4030e",
     "src/states/index.ts": "0437d833638d4c95e57ac7a4572caa76285a13981bd679fe6bf94c2673622f3d",
     "src/states/numberStatus.ts": "2e89a8913afa1effa718b9b82dd3d6af219de09eea06a0587e8f3ba23449987c",

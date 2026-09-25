@@ -3,6 +3,9 @@ import { withUser } from '@campaigns/db';
 import {
   loginRequestSchema,
   mfaCodeRequestSchema,
+  registerRequestSchema,
+  type AccountOrder,
+  type AccountOrdersResponse,
   type LoginResponse,
   type MembershipRole,
   type MembershipSummary,
@@ -13,6 +16,7 @@ import { ApiError } from '../../lib/apiError.js';
 import {
   confirmMfaEnrollment,
   login,
+  registerParticipant,
   revokeAllSessions,
   revokeSession,
   startMfaEnrollment,
@@ -75,6 +79,87 @@ function originOf(req: Request): { ip: string | null; userAgent: string | null }
 
 export function buildAuthHandlers(deps: AppDeps): Record<string, RequestHandler> {
   return {
+    /**
+     * Cadastro. Cria a conta e para por ai — a sessao e assunto do `login`,
+     * que ja tem limitador, trilha e a decisao de RN12. A vitrine chama os
+     * dois em sequencia; o servidor nao ganha um segundo caminho de
+     * autenticacao para manter em dia.
+     */
+    register: asyncHandler(async (req, res) => {
+      const body = registerRequestSchema.parse(req.body);
+      const user = await registerParticipant(deps, {
+        email: body.email,
+        displayName: body.displayName,
+        password: body.password,
+        ip: req.context?.ip ?? null,
+        userAgent: req.context?.userAgent ?? null,
+      });
+      res.status(201).json({ user });
+    }),
+
+    /**
+     * Pedidos da conta, em todas as comunidades.
+     *
+     * A autoridade e `session.userId` — nunca um e-mail, telefone ou id vindo
+     * da consulta. Nao ha parametro de identidade a falsificar porque nao ha
+     * parametro de identidade: `app.account_orders` le o usuario do contexto
+     * da transacao, que foi gravado a partir do token validado.
+     */
+    accountOrders: asyncHandler(async (req, res) => {
+      const session = requireSession(req);
+
+      const limite = Math.min(Math.max(Number(req.query['limit'] ?? 20) || 20, 1), 100);
+      // Cursor opaco: "<iso>|<uuid>". Opaco porque a tela nao tem o que
+      // decidir com ele — so devolver na proxima pagina.
+      const cursor = typeof req.query['cursor'] === 'string' ? req.query['cursor'] : null;
+      let antesDe: string | null = null;
+      let antesId: string | null = null;
+      if (cursor) {
+        const [iso, id] = cursor.split('|');
+        if (!iso || !id || Number.isNaN(Date.parse(iso))) {
+          throw ApiError.badRequest('Cursor inválido.');
+        }
+        antesDe = iso;
+        antesId = id;
+      }
+
+      const linhas = await withUser(deps.pool, { userId: session.userId }, async (client) => {
+        const { rows } = await client.query(
+          'SELECT * FROM app.account_orders($1, $2::timestamptz, $3::uuid)',
+          [limite + 1, antesDe, antesId],
+        );
+        return rows as Array<Record<string, unknown>>;
+      });
+
+      // Pedimos um a mais do que cabe: se ele veio, ha proxima pagina. Evita
+      // uma segunda consulta so para responder "acabou?".
+      const temMais = linhas.length > limite;
+      const pagina = temMais ? linhas.slice(0, limite) : linhas;
+
+      const orders: AccountOrder[] = pagina.map((r) => ({
+        orderId: r['order_id'] as string,
+        status: r['status'] as AccountOrder['status'],
+        quantity: r['quantity'] as number,
+        unitPriceCents: r['unit_price_cents'] as number,
+        totalCents: r['total_cents'] as number,
+        createdAt: new Date(r['created_at'] as string).toISOString(),
+        paidAt: r['paid_at'] ? new Date(r['paid_at'] as string).toISOString() : null,
+        numbers: (r['numbers'] as number[] | null) ?? [],
+        labelDigits: (r['label_digits'] as number) === 3 ? 3 : 2,
+        drawSlug: r['draw_slug'] as string,
+        drawTitle: r['draw_title'] as string,
+        tenantSlug: r['tenant_slug'] as string,
+        tenantName: r['tenant_name'] as string,
+      }));
+
+      const ultimo = orders[orders.length - 1];
+      const response: AccountOrdersResponse = {
+        orders,
+        nextCursor: temMais && ultimo ? `${ultimo.createdAt}|${ultimo.orderId}` : null,
+      };
+      res.status(200).json(response);
+    }),
+
     login: asyncHandler(async (req, res) => {
       const body = loginRequestSchema.parse(req.body);
       const outcome = await login(deps, {
