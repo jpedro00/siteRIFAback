@@ -54,6 +54,9 @@ export async function handleMessage(pool: DbPool, message: QueueMessage): Promis
     case 'draw.sales_closed':
     case 'order.paid':
     case 'payment.refund_required':
+    case 'draw.apuration_started':
+    case 'draw.result_published':
+    case 'draw.result_corrected':
       // Ciclo de vida do sorteio e pagamento: gravados na mesma transacao da
       // mudanca, ainda sem consumidor. `draw.activated` e o gatilho da Fase 8.
       // Um evento CONHECIDO sem consumidor e log, nao erro: falhar aqui faria a

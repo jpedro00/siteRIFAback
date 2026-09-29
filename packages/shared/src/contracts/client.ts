@@ -34,6 +34,12 @@ import type {
   UpdateDrawRequest,
   UpdateDrawStatusRequest,
 } from './draws.js';
+import type {
+  CorrectResultRequest,
+  OrganizerDrawResult,
+  PublicDrawResult,
+  PublishResultRequest,
+} from './result.js';
 import { API_ERROR_MESSAGES, type ApiErrorBody, type ApiErrorCode } from './errors.js';
 
 /**
@@ -70,6 +76,10 @@ export interface RouteResponses {
   createOrder: OrderResponse;
   publicOrder: OrderResponse;
   publicOrderPayment: OrderResponse;
+  publicDrawResult: PublicDrawResult;
+  organizerDrawResult: OrganizerDrawResult;
+  publishDrawResult: OrganizerDrawResult;
+  correctDrawResult: OrganizerDrawResult;
   mercadopagoWebhook: { received: true };
   devConfirmPayment: OrderResponse;
   organizerDraws: OrganizerDrawListResponse;
@@ -90,6 +100,8 @@ export interface RouteBodies {
   createOrder: CreateOrderRequest;
   createDraw: CreateDrawRequest;
   updateDraw: UpdateDrawRequest;
+  publishDrawResult: PublishResultRequest;
+  correctDrawResult: CorrectResultRequest;
   updateDrawStatus: UpdateDrawStatusRequest;
   platformReviewDecide: ReviewDrawRequest;
 }

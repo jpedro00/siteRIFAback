@@ -363,6 +363,9 @@ export async function cleanup(owner: DbPool): Promise<void> {
     // ---------------------------------------------------------------------
     await client.query('ALTER TABLE draw_numbers DISABLE TRIGGER draw_numbers_protect_paid');
     try {
+      // Resultado e retrato sao imutaveis (DELETE barrado por gatilho, ate para o
+      // dono); TRUNCATE nao dispara gatilho de linha e e o jeito de limpar a bancada.
+      await client.query('TRUNCATE draw_results, draw_snapshots');
       await client.query('DELETE FROM order_items');
       await client.query('DELETE FROM draw_numbers');
       // Cobrancas referenciam o pedido (RESTRICT): saem antes dele.

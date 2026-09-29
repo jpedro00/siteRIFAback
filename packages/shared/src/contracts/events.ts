@@ -27,6 +27,9 @@ export const OUTBOX_EVENT_TYPES = [
   'draw.sales_closed',
   'order.paid',
   'payment.refund_required',
+  'draw.apuration_started',
+  'draw.result_published',
+  'draw.result_corrected',
 ] as const;
 
 export type OutboxEventType = (typeof OUTBOX_EVENT_TYPES)[number];
@@ -84,6 +87,7 @@ export const DRAW_EVENT_TYPES = [
   'draw.paused',
   'draw.resumed',
   'draw.sales_closed',
+  'draw.apuration_started',
 ] as const satisfies readonly OutboxEventType[];
 export type DrawEventType = (typeof DRAW_EVENT_TYPES)[number];
 
@@ -103,6 +107,7 @@ export function drawTransitionEvents(from: DrawStatus, to: DrawStatus): DrawEven
   if ((from === 'ATIVA' || from === 'PAUSADA') && to === 'VENDAS ENCERRADAS') {
     return ['draw.sales_closed'];
   }
+  if (from === 'VENDAS ENCERRADAS' && to === 'APURAÇÃO') return ['draw.apuration_started'];
   return [];
 }
 
@@ -136,6 +141,21 @@ export const paymentRefundRequiredPayloadSchema = z.object({
 });
 export type PaymentRefundRequiredPayload = z.infer<typeof paymentRefundRequiredPayloadSchema>;
 
+/**
+ * Resultado publicado ou corrigido. `winningNumber` nulo = ninguem contemplado.
+ * A publicacao e a correcao NAO saem de `drawTransitionEvents`: nascem no servico
+ * de resultado, porque carregam a prova (hash) alem da mudanca de estado.
+ */
+export const drawResultPayloadSchema = z.object({
+  tenantId: z.string().uuid(),
+  drawId: z.string().uuid(),
+  resultId: z.string().uuid(),
+  version: z.number().int().positive(),
+  winningNumber: z.number().int().nonnegative().nullable(),
+  proofSha256: z.string(),
+});
+export type DrawResultPayload = z.infer<typeof drawResultPayloadSchema>;
+
 export const OUTBOX_PAYLOAD_SCHEMAS = {
   'tenant.created': tenantCreatedPayloadSchema,
   'membership.granted': membershipGrantedPayloadSchema,
@@ -147,6 +167,9 @@ export const OUTBOX_PAYLOAD_SCHEMAS = {
   'draw.paused': drawLifecyclePayloadSchema,
   'draw.resumed': drawLifecyclePayloadSchema,
   'draw.sales_closed': drawLifecyclePayloadSchema,
+  'draw.apuration_started': drawLifecyclePayloadSchema,
+  'draw.result_published': drawResultPayloadSchema,
+  'draw.result_corrected': drawResultPayloadSchema,
   'order.paid': orderPaidPayloadSchema,
   'payment.refund_required': paymentRefundRequiredPayloadSchema,
 } as const satisfies Record<OutboxEventType, z.ZodTypeAny>;

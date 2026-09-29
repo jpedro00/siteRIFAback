@@ -17,6 +17,7 @@ import {
   type PublicDrawDetail,
   type DrawCloseMode,
   type DrawResultSource,
+  type NoWinnerPolicy,
   type DrawStatus,
   type Prize,
   type PublicDrawSummary,
@@ -74,6 +75,7 @@ interface DrawRow {
   close_mode: DrawCloseMode;
   close_at: string | null;
   result_source: DrawResultSource;
+  no_winner_policy: NoWinnerPolicy;
   thresholds: number[];
   review_note: string | null;
   created_at: string;
@@ -118,7 +120,15 @@ async function carregarPremios(client: PoolClient, drawId: string): Promise<Priz
 }
 
 /** Estados em que a vitrine mostra o sorteio. RASCUNHO nao aparece ao publico. */
-const STATUS_VISIVEL_NA_VITRINE = ['ATIVA', 'PAUSADA', 'VENDAS ENCERRADAS'];
+const STATUS_VISIVEL_NA_VITRINE = [
+  'ATIVA',
+  'PAUSADA',
+  'VENDAS ENCERRADAS',
+  // O sorteio continua na vitrine ate depois do resultado: e la que o
+  // participante o encontra, e a pagina publica do resultado parte dele.
+  'APURAÇÃO',
+  'RESULTADO PUBLICADO',
+];
 
 /** Somente ATIVA aceita reserva nova. */
 const STATUS_QUE_VENDE = 'ATIVA';
@@ -219,6 +229,7 @@ export async function getPublicDraw(
       closeAt: row.close_at,
       salesStartAt: row.sales_start_at,
       resultSource: row.result_source,
+      noWinnerPolicy: row.no_winner_policy,
       takenCount: contagem.taken,
     };
   });
@@ -616,6 +627,12 @@ async function montarOrganizerDraw(client: PoolClient, row: DrawRow): Promise<Or
     [row.id],
   );
 
+  const { rows: snapshots } = await client.query<{ sha256: string; paid_count: number; created_at: string }>(
+    'SELECT sha256, paid_count, created_at FROM draw_snapshots WHERE draw_id = $1',
+    [row.id],
+  );
+  const snapshot = snapshots[0];
+
   return {
     ...toSummary(row, contagem.paid),
     prizeDescription: row.prize_description,
@@ -624,6 +641,7 @@ async function montarOrganizerDraw(client: PoolClient, row: DrawRow): Promise<Or
     closeAt: row.close_at,
     salesStartAt: row.sales_start_at,
     resultSource: row.result_source,
+    noWinnerPolicy: row.no_winner_policy,
     takenCount: contagem.taken,
     reservedCount: contagem.reserved,
     pendingCount: contagem.pending,
@@ -633,6 +651,9 @@ async function montarOrganizerDraw(client: PoolClient, row: DrawRow): Promise<Or
     configuredPromotionalPriceCents: row.promotional_price_cents,
     configuredPromoUntil: row.promo_until,
     reviewNote: row.review_note,
+    snapshot: snapshot
+      ? { sha256: snapshot.sha256, paidCount: snapshot.paid_count, createdAt: snapshot.created_at }
+      : null,
   };
 }
 
@@ -696,6 +717,7 @@ const CAMPOS_EDITAVEIS: readonly {
   { chave: 'closeMode', coluna: 'close_mode', cast: 'draw_close_mode' },
   { chave: 'closeAt', coluna: 'close_at', cast: 'timestamptz' },
   { chave: 'thresholds', coluna: 'thresholds', cast: 'int[]' },
+  { chave: 'noWinnerPolicy', coluna: 'no_winner_policy' },
 ];
 
 /**
@@ -751,11 +773,13 @@ export async function createDraw(
         `INSERT INTO draws
            (tenant_id, slug, title, description, prize_name, prize_description,
             prize_image_url, ticket_price_cents, promotional_price_cents, promo_until,
-            total_numbers, draw_date, sales_start_at, close_mode, close_at, thresholds)
+            total_numbers, draw_date, sales_start_at, close_mode, close_at, thresholds,
+            no_winner_policy)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11,
                  $12::timestamptz, $13::timestamptz,
                  COALESCE($14::draw_close_mode, 'AO_ESGOTAR'), $15::timestamptz,
-                 COALESCE($16::int[], '{25,10}'))
+                 COALESCE($16::int[], '{25,10}'),
+                 COALESCE($17, 'PROXIMO_VENDIDO_ACIMA'))
          RETURNING ${DRAW_COLUMNS}`,
         [
           input.tenantId,
@@ -774,6 +798,7 @@ export async function createDraw(
           data.closeMode ?? null,
           data.closeAt ?? null,
           data.thresholds ?? null,
+          data.noWinnerPolicy ?? null,
         ],
       );
       const criado = rows[0]!;
@@ -889,12 +914,18 @@ export async function updateDraw(
   });
 }
 
-interface TransitionInput {
+export interface TransitionInput {
   drawId: string;
   to: DrawStatus;
   actor: { userId: string; kind: 'USER' | 'PLATFORM' };
   reason?: string | null | undefined;
   origin?: ActionOrigin | undefined;
+  /**
+   * APURAÇÃO -> RESULTADO PUBLICADO so acontece publicando um resultado (com a
+   * prova). Nao ha botao de status para isso: o servico de resultado liga esta
+   * marca, e nenhuma rota de status a liga.
+   */
+  allowResultPublication?: boolean | undefined;
 }
 
 /**
@@ -908,7 +939,10 @@ interface TransitionInput {
  * As tabelas de transicao vem do `shared`. Esta funcao nao guarda lista propria:
  * duas fontes de verdade foi exatamente o que deixou RASCUNHO ir direto a ATIVA.
  */
-async function transitionDrawStatus(client: PoolClient, input: TransitionInput): Promise<DrawRow> {
+export async function transitionDrawStatus(
+  client: PoolClient,
+  input: TransitionInput,
+): Promise<DrawRow> {
   const { rows } = await client.query<DrawRow & { tenant_id: string }>(
     `SELECT ${DRAW_COLUMNS} FROM draws WHERE id = $1 FOR UPDATE`,
     [input.drawId],
@@ -938,7 +972,10 @@ async function transitionDrawStatus(client: PoolClient, input: TransitionInput):
     input.actor.kind === 'PLATFORM'
       ? de === 'REVISÃO COMPLIANCE' &&
         (PLATFORM_REVIEW_DECISIONS as readonly string[]).includes(para)
-      : (ORGANIZER_DRAW_TRANSITIONS[de] ?? []).includes(para);
+      : (ORGANIZER_DRAW_TRANSITIONS[de] ?? []).includes(para) ||
+        (input.allowResultPublication === true &&
+          de === 'APURAÇÃO' &&
+          para === 'RESULTADO PUBLICADO');
   if (!permitidoAoAtor) {
     throw input.actor.kind === 'USER' && de === 'REVISÃO COMPLIANCE'
       ? ApiError.forbidden('Somente a equipe da plataforma decide sobre um sorteio em revisão.')

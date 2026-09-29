@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DRAW_EVENT_TYPES } from '@clubedarifa/shared';
 
-const EVENTOS_RECONHECIDOS = [...DRAW_EVENT_TYPES, 'order.paid', 'payment.refund_required'] as const;
+const EVENTOS_RECONHECIDOS = [
+  ...DRAW_EVENT_TYPES,
+  'order.paid',
+  'payment.refund_required',
+  'draw.result_published',
+  'draw.result_corrected',
+] as const;
 import type { DbPool } from '@clubedarifa/db';
 import { handleMessage } from '../src/dispatch.js';
 import type { QueueMessage } from '../src/queue.js';

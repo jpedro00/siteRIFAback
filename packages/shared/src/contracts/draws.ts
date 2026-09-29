@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ALLOWED_GRID_SIZES } from '../constants/grid.js';
+import { NO_WINNER_POLICIES, drawSnapshotInfoSchema } from './result.js';
 import {
   DRAW_CLOSE_MODES,
   DRAW_RESULT_SOURCES,
@@ -63,7 +64,8 @@ export const publicDrawSummarySchema = z.object({
   totalNumbers: z.number().int().positive(),
   /** RN13: 2 digitos na grade de 100; 3 nas de 500 e 1000. */
   labelDigits: z.union([z.literal(2), z.literal(3)]),
-  status: z.enum(DRAW_STATUSES_PHASE2),
+  /** A vitrine mostra o sorteio ate o resultado; rascunho e revisao nunca chegam aqui. */
+  status: z.enum(DRAW_STATUSES),
   drawDate: z.string().nullable(),
   /** RN18: somente PAGO conta como vendido. Reservado NAO entra aqui. */
   paidCount: z.number().int().nonnegative(),
@@ -91,6 +93,7 @@ export const publicDrawDetailSchema = publicDrawSummarySchema.extend({
   closeAt: z.string().nullable(),
   salesStartAt: z.string().nullable(),
   resultSource: z.enum(DRAW_RESULT_SOURCES),
+  noWinnerPolicy: z.enum(NO_WINNER_POLICIES),
   /** Indisponiveis no momento: pagos, pendentes e reservas ainda no prazo. */
   takenCount: z.number().int().nonnegative(),
 });
@@ -219,6 +222,8 @@ export const organizerDrawSchema = publicDrawDetailSchema.extend({
   configuredPromoUntil: z.string().nullable(),
   /** Motivo da ultima reprovacao na revisao, ate a proxima decisao. */
   reviewNote: z.string().nullable(),
+  /** Retrato congelado das vendas (RN20); nulo ate as vendas fecharem sem pendencia. */
+  snapshot: drawSnapshotInfoSchema.nullable(),
 });
 export type OrganizerDraw = z.infer<typeof organizerDrawSchema>;
 
@@ -330,6 +335,8 @@ const drawEditableFields = {
   closeAt: dateTimeSchema.optional(),
   /** Limiares "faltam X", em ordem decrescente. Padrao 25 e 10. */
   thresholds: z.array(z.number().int().min(1).max(99)).min(1).max(5).optional(),
+  /** Se o numero apurado nao foi vendido (S5). Padrao: o proximo vendido acima. */
+  noWinnerPolicy: z.enum(NO_WINNER_POLICIES).optional(),
 } as const;
 
 function refineDrawRules(

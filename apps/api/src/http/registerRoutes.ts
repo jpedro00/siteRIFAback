@@ -8,6 +8,7 @@ import { buildTenantHandlers } from '../modules/tenancy/tenantRoutes.js';
 import { buildHealthHandler } from '../modules/health/healthRoutes.js';
 import { buildDrawHandlers } from '../modules/draws/drawRoutes.js';
 import { buildPaymentHandlers } from '../modules/payments/paymentRoutes.js';
+import { buildResultHandlers } from '../modules/results/resultRoutes.js';
 
 /**
  * Registro das rotas a partir do contrato compartilhado.
@@ -36,6 +37,7 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
     ...buildTenantHandlers(deps),
     ...buildDrawHandlers(deps),
     ...buildPaymentHandlers(deps),
+    ...buildResultHandlers(deps),
   } as Partial<Record<RouteName, RequestHandler>>;
 
   const missing = ROUTE_NAMES.filter((name) => handlers[name] === undefined);
