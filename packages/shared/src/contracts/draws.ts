@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ALLOWED_GRID_SIZES } from '../constants/grid.js';
-import { DRAW_STATUSES } from '../states/drawStatus.js';
+import { DRAW_STATUSES, PLATFORM_REVIEW_DECISIONS } from '../states/drawStatus.js';
 
 /**
  * Contratos do nucleo de sorteios (Fase 2, primeira fatia).
@@ -152,6 +152,8 @@ export type OrderResponse = z.infer<typeof orderResponseSchema>;
 // ---------------------------------------------------------------------------
 
 export const organizerDrawSchema = publicDrawDetailSchema.extend({
+  /** O organizador enxerga o ciclo inteiro, inclusive REVISAO COMPLIANCE. */
+  status: z.enum(DRAW_STATUSES),
   reservedCount: z.number().int().nonnegative(),
   pendingCount: z.number().int().nonnegative(),
   /** RN18: arrecadacao conta somente o que foi PAGO. */
@@ -178,11 +180,51 @@ export const createDrawRequestSchema = z.object({
 });
 export type CreateDrawRequest = z.infer<typeof createDrawRequestSchema>;
 
-/** Transicoes permitidas nesta fatia. A maquina completa e do DOC-01 §7. */
+/**
+ * Pedido de mudanca de estado do organizador. Aceita qualquer estado do ciclo:
+ * quem decide o que e permitido e a API (ORGANIZER_DRAW_TRANSITIONS), com erro
+ * claro. Limitar o enum aqui devolveria 400 generico para "CANCELADA", que
+ * merece a explicacao de RN22.
+ */
 export const updateDrawStatusRequestSchema = z.object({
-  status: z.enum(['ATIVA', 'PAUSADA', 'VENDAS ENCERRADAS']),
+  status: z.enum(DRAW_STATUSES),
 });
 export type UpdateDrawStatusRequest = z.infer<typeof updateDrawStatusRequestSchema>;
+
+/**
+ * Decisao do Super Admin sobre um sorteio em REVISAO COMPLIANCE. RN02.
+ * Reprovar (voltar a RASCUNHO) exige motivo: sem ele o organizador nao sabe o
+ * que corrigir.
+ */
+export const reviewDrawRequestSchema = z
+  .object({
+    to: z.enum(PLATFORM_REVIEW_DECISIONS),
+    reason: z.string().trim().min(3).max(500).optional(),
+  })
+  .refine((v) => v.to !== 'RASCUNHO' || (v.reason !== undefined && v.reason.length >= 3), {
+    message: 'Informe o motivo da reprovação.',
+    path: ['reason'],
+  });
+export type ReviewDrawRequest = z.infer<typeof reviewDrawRequestSchema>;
+
+export const reviewQueueItemSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string(),
+  prizeName: z.string(),
+  unitPriceCents: z.number().int().positive(),
+  totalNumbers: z.number().int().positive(),
+  drawDate: z.string().nullable(),
+  createdAt: z.string(),
+  tenantId: z.string().uuid(),
+  tenantSlug: z.string(),
+  tenantName: z.string(),
+});
+export type ReviewQueueItem = z.infer<typeof reviewQueueItemSchema>;
+
+export const reviewQueueResponseSchema = z.object({
+  draws: z.array(reviewQueueItemSchema),
+});
+export type ReviewQueueResponse = z.infer<typeof reviewQueueResponseSchema>;
 
 /** Confirmacao de pagamento de DESENVOLVIMENTO. Recusada em producao. */
 export const devConfirmPaymentResponseSchema = orderResponseSchema;

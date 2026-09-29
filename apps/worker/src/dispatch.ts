@@ -45,6 +45,20 @@ export async function handleMessage(pool: DbPool, message: QueueMessage): Promis
       console.log(`${marca} reconhecido sem consumidor nesta fase`);
       return;
 
+    case 'draw.submitted':
+    case 'draw.approved':
+    case 'draw.rejected':
+    case 'draw.activated':
+    case 'draw.paused':
+    case 'draw.resumed':
+    case 'draw.sales_closed':
+      // Ciclo de vida do sorteio: gravados na mesma transacao da mudanca de
+      // estado, ainda sem consumidor. `draw.activated` e o gatilho da Fase 8.
+      // Um evento CONHECIDO sem consumidor e log, nao erro: falhar aqui faria a
+      // fila reentregar, ate a dead-letter, algo que nao tem o que executar.
+      console.log(`${marca} reconhecido sem consumidor nesta fase`);
+      return;
+
     default:
       // Evento desconhecido nao e descartado silenciosamente: falhar faz a
       // fila tentar de novo e deixa o problema visivel.

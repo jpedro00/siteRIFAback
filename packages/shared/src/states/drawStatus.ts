@@ -57,3 +57,34 @@ export const DRAW_STATUS_TRANSITIONS: Readonly<Record<DrawStatus, readonly DrawS
 
 /** Estados em que o sorteio pode vender. DOC-01 secao 7, coluna "Vende?". */
 export const DRAW_STATUSES_THAT_SELL: readonly DrawStatus[] = Object.freeze(['ATIVA']);
+
+/**
+ * QUEM pode fazer cada transicao. RN02.
+ *
+ * `DRAW_STATUS_TRANSITIONS` diz o que a maquina PERMITE; estas tabelas dizem
+ * quem aperta o botao. Sao a UNICA fonte para a API e para os paineis: o
+ * servico de sorteio nao mantem lista propria.
+ *
+ * O organizador nao ativa: RASCUNHO so vai para REVISAO COMPLIANCE, e sair de
+ * la e decisao do Super Admin (`platform:review:decide`).
+ */
+export const ORGANIZER_DRAW_TRANSITIONS: Readonly<
+  Partial<Record<DrawStatus, readonly DrawStatus[]>>
+> = Object.freeze({
+  RASCUNHO: ['REVISÃO COMPLIANCE'],
+  ATIVA: ['PAUSADA', 'VENDAS ENCERRADAS'],
+  PAUSADA: ['ATIVA', 'VENDAS ENCERRADAS'],
+});
+
+/** Decisoes possiveis do Super Admin sobre um sorteio em REVISAO COMPLIANCE. */
+export const PLATFORM_REVIEW_DECISIONS = ['ATIVA', 'AGENDADA', 'RASCUNHO'] as const;
+export type PlatformReviewDecision = (typeof PLATFORM_REVIEW_DECISIONS)[number];
+
+/**
+ * CANCELADA fica bloqueada para todos ate existir reembolso. RN22: cancelar um
+ * sorteio com numeros pagos sem devolver o dinheiro seria fechar a venda e
+ * ficar com o valor.
+ */
+export const DRAW_STATUSES_BLOCKED_UNTIL_REFUND: readonly DrawStatus[] = Object.freeze([
+  'CANCELADA',
+]);

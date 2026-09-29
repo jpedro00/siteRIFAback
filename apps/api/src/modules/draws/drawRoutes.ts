@@ -3,6 +3,7 @@ import {
   createDrawRequestSchema,
   createOrderRequestSchema,
   createReservationRequestSchema,
+  reviewDrawRequestSchema,
   updateDrawStatusRequestSchema,
 } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
@@ -18,6 +19,8 @@ import {
   getPublicDraw,
   listOrganizerDraws,
   listPublicDraws,
+  listReviewQueue,
+  reviewDraw,
   updateDrawStatus,
 } from './drawService.js';
 
@@ -39,6 +42,11 @@ function requireSession(req: Request) {
   const session = req.session;
   if (!session) throw ApiError.unauthenticated();
   return session;
+}
+
+/** IP e agente de quem fez a acao, para a trilha de auditoria (RN11). */
+function originOf(req: Request) {
+  return { ip: req.context?.ip ?? null, userAgent: req.context?.userAgent ?? null };
 }
 
 /** Parametro de caminho obrigatorio. Ausente e erro de requisicao, nao 500. */
@@ -165,6 +173,7 @@ export function buildDrawHandlers(deps: AppDeps): Record<string, RequestHandler>
         tenantId: tenant.tenantId,
         userId: session.userId,
         data: body,
+        origin: originOf(req),
       });
       res.status(201).json(draw);
     }),
@@ -178,6 +187,31 @@ export function buildDrawHandlers(deps: AppDeps): Record<string, RequestHandler>
         userId: session.userId,
         drawId: pathParam(req, 'id'),
         status: body.status,
+        origin: originOf(req),
+      });
+      res.status(200).json(draw);
+    }),
+
+    // -----------------------------------------------------------------------
+    // Super Admin · revisao de compliance (RN02)
+    //
+    // `platform:review:read` e `platform:review:decide` sao aplicadas pelo
+    // `authorizeRoute`, a partir do contrato, junto com o MFA (RN12).
+    // -----------------------------------------------------------------------
+    platformReviewQueue: asyncHandler(async (req, res) => {
+      const session = requireSession(req);
+      res.status(200).json(await listReviewQueue(deps, session.userId));
+    }),
+
+    platformReviewDecide: asyncHandler(async (req, res) => {
+      const session = requireSession(req);
+      const body = reviewDrawRequestSchema.parse(req.body);
+      const draw = await reviewDraw(deps, {
+        userId: session.userId,
+        drawId: pathParam(req, 'id'),
+        to: body.to,
+        reason: body.reason,
+        origin: originOf(req),
       });
       res.status(200).json(draw);
     }),

@@ -67,12 +67,10 @@ describe.skipIf(!hasTestDatabase)(`Fase 2 · sorteios ${hasTestDatabase ? '' : s
     expect(res.status, JSON.stringify(res.body)).toBe(201);
 
     if (ativar) {
-      const ativacao = await request(harness.app)
-        .post(`/api/tenant/draws/${res.body.id}/status`)
-        .set('Cookie', cookie)
-        .set('x-tenant-slug', slug)
-        .send({ status: 'ATIVA' });
-      expect(ativacao.status).toBe(200);
+      // Preparacao de cenario, nao caminho de produto: RASCUNHO nao vai direto a
+      // ATIVA pela API (RN02 — ver draw-lifecycle.test.ts). Aqui o interesse e a
+      // venda, entao o sorteio ja nasce aprovado.
+      await harness.owner.query("UPDATE draws SET status = 'ATIVA' WHERE id = $1", [res.body.id]);
     }
     return { id: res.body.id, slug: res.body.slug, unitPriceCents: res.body.unitPriceCents };
   }

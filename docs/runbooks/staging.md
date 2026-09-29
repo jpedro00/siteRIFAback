@@ -274,19 +274,38 @@ autorizada. Sem curinga: `*` é incompatível com `credentials: include`.
 registrável, mas cada um é uma origem distinta — CORS continua obrigatório em
 toda chamada.
 
-### Cookies
+### Cookie de sessão
+
+O valor certo depende da topologia. Não há um único "correto":
+
+| Topologia | Exemplo | `SameSite` | `Secure` | `Domain` |
+|---|---|---|---|---|
+| **Staging hoje** (sites diferentes) | vitrines em `*.vercel.app`, API em `*.onrender.com` | `none` | `true` | nenhum (host-only) |
+| **Domínio próprio** (mesmo site) | API em `api.<dominio>`, vitrines em `*.<dominio>` | `lax` | `true` | nenhum (host-only) |
+
+`vercel.app` e `onrender.com` estão na Public Suffix List, então cada um é um
+site à parte: a chamada do navegador é **cross-site** e um cookie `Lax` não é
+enviado no `fetch`. Sem `SameSite=None` + `Secure` o login "funciona" e a sessão
+some na requisição seguinte. O `render.yaml` e o `.env.staging.example` usam
+`none`; a configuração recusa `none` sem `Secure`.
+
+Com domínio próprio, `Lax` mantém a proteção contra POST vindo de um site
+externo, e não há motivo para abrir mão dela. Ao migrar de `*.vercel.app` para
+o domínio próprio, troque para `lax` **junto** com `CORS_ORIGINS`.
 
 ```text
+# staging atual (cross-site)
+SESSION_COOKIE_SECURE   = true
+SESSION_COOKIE_SAMESITE = none
+
+# domínio próprio (same-site)
 SESSION_COOKIE_SECURE   = true
 SESSION_COOKIE_SAMESITE = lax
 ```
 
-`api.staging.<BASE_DOMAIN>` e `painel.staging.<BASE_DOMAIN>` têm o mesmo
-domínio registrável, logo são **same-site** — e um cookie `Lax` **é** enviado
-no `fetch` entre eles. `None` só seria necessário com domínios registráveis
-diferentes (`*.vercel.app` × `*.onrender.com`, porque `vercel.app` está na
-Public Suffix List). Com domínio próprio, `Lax` mantém a proteção contra POST
-vindo de um site externo, e não há motivo para abrir mão dela.
+**Por que não `Domain=.<dominio>`, mesmo em produção.** O cookie pertence à API
+e é enviado em toda chamada same-site vinda de qualquer subdomínio: `Domain` não
+acrescenta nada.
 
 O cookie é **host-only**: nenhum atributo `Domain` é definido, então ele
 pertence exclusivamente a `api.staging.<BASE_DOMAIN>`. Um

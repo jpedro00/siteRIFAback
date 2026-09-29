@@ -419,6 +419,24 @@ export const ROUTE_CONTRACTS = {
     tenantScope: 'none',
     platformPermission: 'platform:tenant:create',
   },
+  platformReviewQueue: {
+    method: 'GET',
+    path: '/api/platform/draws/review',
+    summary: 'Fila de sorteios em REVISÃO COMPLIANCE, de todas as comunidades.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'none',
+    platformPermission: 'platform:review:read',
+  },
+  platformReviewDecide: {
+    method: 'POST',
+    path: '/api/platform/draws/:id/review',
+    summary: 'Aprova (ATIVA ou AGENDADA) ou reprova (RASCUNHO, com motivo) um sorteio. RN02.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'none',
+    platformPermission: 'platform:review:decide',
+  },
   // -------------------------------------------------------------------------
   // Fase 2 · vitrine publica de sorteios
   //
@@ -516,7 +534,7 @@ export const ROUTE_CONTRACTS = {
   updateDrawStatus: {
     method: 'POST',
     path: '/api/tenant/draws/:id/status',
-    summary: 'Ativa, pausa ou encerra as vendas de um sorteio.',
+    summary: 'Envia para revisão, pausa, retoma ou encerra as vendas de um sorteio.',
     auth: true,
     mfa: false,
     tenantScope: 'resolved',

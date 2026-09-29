@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DRAW_STATUSES, type DrawStatus } from '../states/drawStatus.js';
 
 /**
  * Tipos de evento gravados na tabela `outbox`.
@@ -10,13 +11,20 @@ import { z } from 'zod';
  * ausencia de duplicidade depende do consumidor ser idempotente, nao de
  * nenhuma constraint sozinha.
  *
- * Esta fase declara apenas eventos da fundacao. Eventos de sorteio, pagamento
- * e notificacao pertencem as fases seguintes.
+ * Fundacao e ciclo de vida do sorteio. Eventos de pagamento e notificacao
+ * pertencem as fases seguintes.
  */
 export const OUTBOX_EVENT_TYPES = [
   'tenant.created',
   'membership.granted',
   'membership.revoked',
+  'draw.submitted',
+  'draw.approved',
+  'draw.rejected',
+  'draw.activated',
+  'draw.paused',
+  'draw.resumed',
+  'draw.sales_closed',
 ] as const;
 
 export type OutboxEventType = (typeof OUTBOX_EVENT_TYPES)[number];
@@ -50,8 +58,61 @@ export const membershipRevokedPayloadSchema = z.object({
 });
 export type MembershipRevokedPayload = z.infer<typeof membershipRevokedPayloadSchema>;
 
+/**
+ * Eventos do ciclo de vida do sorteio. Todos compartilham o mesmo formato: o
+ * que muda de um para outro e o TIPO, nao os dados. `draw.activated` e o
+ * gatilho da Fase 8.
+ */
+export const drawLifecyclePayloadSchema = z.object({
+  tenantId: z.string().uuid(),
+  drawId: z.string().uuid(),
+  from: z.enum(DRAW_STATUSES),
+  to: z.enum(DRAW_STATUSES),
+  actorUserId: z.string().uuid().nullable(),
+  actorType: z.enum(['USER', 'PLATFORM', 'SYSTEM']),
+  reason: z.string().nullable(),
+});
+export type DrawLifecyclePayload = z.infer<typeof drawLifecyclePayloadSchema>;
+
+export const DRAW_EVENT_TYPES = [
+  'draw.submitted',
+  'draw.approved',
+  'draw.rejected',
+  'draw.activated',
+  'draw.paused',
+  'draw.resumed',
+  'draw.sales_closed',
+] as const satisfies readonly OutboxEventType[];
+export type DrawEventType = (typeof DRAW_EVENT_TYPES)[number];
+
+/**
+ * Eventos publicados por uma transicao. Aprovar para ATIVA publica DOIS: a
+ * aprovacao e a ativacao sao fatos distintos, e so o segundo dispara a Fase 8.
+ * Transicao sem evento devolve lista vazia — a API a recusa antes de chegar aqui.
+ */
+export function drawTransitionEvents(from: DrawStatus, to: DrawStatus): DrawEventType[] {
+  if (from === 'RASCUNHO' && to === 'REVISÃO COMPLIANCE') return ['draw.submitted'];
+  if (from === 'REVISÃO COMPLIANCE' && to === 'ATIVA') return ['draw.approved', 'draw.activated'];
+  if (from === 'REVISÃO COMPLIANCE' && to === 'AGENDADA') return ['draw.approved'];
+  if (from === 'REVISÃO COMPLIANCE' && to === 'RASCUNHO') return ['draw.rejected'];
+  if (from === 'AGENDADA' && to === 'ATIVA') return ['draw.activated'];
+  if (from === 'ATIVA' && to === 'PAUSADA') return ['draw.paused'];
+  if (from === 'PAUSADA' && to === 'ATIVA') return ['draw.resumed'];
+  if ((from === 'ATIVA' || from === 'PAUSADA') && to === 'VENDAS ENCERRADAS') {
+    return ['draw.sales_closed'];
+  }
+  return [];
+}
+
 export const OUTBOX_PAYLOAD_SCHEMAS = {
   'tenant.created': tenantCreatedPayloadSchema,
   'membership.granted': membershipGrantedPayloadSchema,
   'membership.revoked': membershipRevokedPayloadSchema,
+  'draw.submitted': drawLifecyclePayloadSchema,
+  'draw.approved': drawLifecyclePayloadSchema,
+  'draw.rejected': drawLifecyclePayloadSchema,
+  'draw.activated': drawLifecyclePayloadSchema,
+  'draw.paused': drawLifecyclePayloadSchema,
+  'draw.resumed': drawLifecyclePayloadSchema,
+  'draw.sales_closed': drawLifecyclePayloadSchema,
 } as const satisfies Record<OutboxEventType, z.ZodTypeAny>;

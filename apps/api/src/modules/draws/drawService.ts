@@ -1,18 +1,34 @@
-import { withTenant, type PoolClient } from '@clubedarifa/db';
+import { withContext, withPlatform, withTenant, type PoolClient } from '@clubedarifa/db';
 import {
+  DRAW_STATUSES_BLOCKED_UNTIL_REFUND,
+  DRAW_STATUS_TRANSITIONS,
+  ORGANIZER_DRAW_TRANSITIONS,
+  PLATFORM_REVIEW_DECISIONS,
   RESERVATION_TTL_MINUTES,
+  drawTransitionEvents,
+  isDrawStatus,
   labelDigitsForGridSize,
   type CreateDrawRequest,
   type DrawNumbersResponse,
   type OrderResponse,
   type OrganizerDraw,
   type PublicDrawDetail,
+  type DrawStatus,
   type PublicDrawSummary,
   type ReservationResponse,
+  type ReviewQueueResponse,
 } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
 import { isUniqueViolation } from '../../lib/pgError.js';
+import { recordAuditEvent } from '../audit/auditService.js';
+import { enqueueOutboxEvent } from '../outbox/outboxService.js';
+
+/** De onde veio a acao. Vai para a trilha de auditoria (RN11). */
+export interface ActionOrigin {
+  readonly ip: string | null;
+  readonly userAgent: string | null;
+}
 
 /**
  * M02/M03/M04 · sorteio, grade, reserva e pedido.
@@ -595,7 +611,7 @@ function slugify(titulo: string): string {
 
 export async function createDraw(
   deps: AppDeps,
-  input: { tenantId: string; userId: string; data: CreateDrawRequest },
+  input: { tenantId: string; userId: string; data: CreateDrawRequest; origin?: ActionOrigin | undefined },
 ): Promise<OrganizerDraw> {
   return withTenant(deps.pool, { tenantId: input.tenantId, userId: input.userId }, async (client) => {
     const { data } = input;
@@ -619,7 +635,22 @@ export async function createDraw(
           data.drawDate ?? null,
         ],
       );
-      return montarOrganizerDraw(client, rows[0]!);
+      const criado = rows[0]!;
+      await recordAuditEvent(client, {
+        tenantId: input.tenantId,
+        actorUserId: input.userId,
+        action: 'draw.created',
+        targetType: 'draw',
+        targetId: criado.id,
+        after: {
+          status: criado.status,
+          totalNumbers: criado.total_numbers,
+          unitPriceCents: criado.unit_price_cents,
+        },
+        ip: input.origin?.ip ?? null,
+        userAgent: input.origin?.userAgent ?? null,
+      });
+      return montarOrganizerDraw(client, criado);
     } catch (error) {
       // A constraint e a autoridade; a corrida de slug e conflito, nao falha.
       if (isUniqueViolation(error, 'draws_tenant_slug_key')) {
@@ -630,44 +661,218 @@ export async function createDraw(
   });
 }
 
-/**
- * Transicoes desta fatia. A maquina completa e do DOC-01 §7 e pertence a uma
- * fase propria; o que existe aqui e o subconjunto que as vendas exigem.
- *
- * Declarar as transicoes permitidas, em vez de aceitar qualquer destino, impede
- * que um sorteio volte de VENDAS ENCERRADAS para ATIVA e reabra a venda de uma
- * grade ja fechada.
- */
-const TRANSICOES_PERMITIDAS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  RASCUNHO: ['ATIVA'],
-  ATIVA: ['PAUSADA', 'VENDAS ENCERRADAS'],
-  PAUSADA: ['ATIVA', 'VENDAS ENCERRADAS'],
-  'VENDAS ENCERRADAS': [],
-});
+interface TransitionInput {
+  drawId: string;
+  to: DrawStatus;
+  actor: { userId: string; kind: 'USER' | 'PLATFORM' };
+  reason?: string | null | undefined;
+  origin?: ActionOrigin | undefined;
+}
 
+/**
+ * A UNICA porta de mudanca de estado do sorteio. RN02, RN11.
+ *
+ * Roda dentro da transacao do chamador. Trava a linha (`FOR UPDATE`), confere o
+ * estado ATUAL, aplica a regra de QUEM pode, muda o estado e — na mesma
+ * transacao — grava a auditoria e publica os eventos na outbox. Se qualquer
+ * passo falhar, nada disso existe.
+ *
+ * As tabelas de transicao vem do `shared`. Esta funcao nao guarda lista propria:
+ * duas fontes de verdade foi exatamente o que deixou RASCUNHO ir direto a ATIVA.
+ */
+async function transitionDrawStatus(client: PoolClient, input: TransitionInput): Promise<DrawRow> {
+  const { rows } = await client.query<DrawRow & { tenant_id: string }>(
+    'SELECT * FROM draws WHERE id = $1 FOR UPDATE',
+    [input.drawId],
+  );
+  const atual = rows[0];
+  if (!atual) throw ApiError.notFound('Sorteio não encontrado.');
+
+  const de = atual.status;
+  const para = input.to;
+
+  // RN22: bloqueado para todos ate existir reembolso.
+  if (DRAW_STATUSES_BLOCKED_UNTIL_REFUND.includes(para)) {
+    throw ApiError.conflict(
+      'O cancelamento de sorteio está bloqueado até existir reembolso dos pagamentos (RN22).',
+    );
+  }
+
+  if (!isDrawStatus(de)) throw ApiError.conflict(`Estado desconhecido no sorteio: "${de}".`);
+
+  // A maquina completa do DOC-01: o que ela nao permite ninguem faz.
+  if (!DRAW_STATUS_TRANSITIONS[de].includes(para)) {
+    throw ApiError.conflict(`Um sorteio em "${de}" não pode ir para "${para}".`);
+  }
+
+  // Quem aperta o botao.
+  const permitidoAoAtor =
+    input.actor.kind === 'PLATFORM'
+      ? de === 'REVISÃO COMPLIANCE' &&
+        (PLATFORM_REVIEW_DECISIONS as readonly string[]).includes(para)
+      : (ORGANIZER_DRAW_TRANSITIONS[de] ?? []).includes(para);
+  if (!permitidoAoAtor) {
+    throw input.actor.kind === 'USER' && de === 'REVISÃO COMPLIANCE'
+      ? ApiError.forbidden('Somente a equipe da plataforma decide sobre um sorteio em revisão.')
+      : ApiError.conflict(`Um sorteio em "${de}" não pode ir para "${para}" por esta via.`);
+  }
+
+  if (de === 'REVISÃO COMPLIANCE' && para === 'RASCUNHO' && !input.reason?.trim()) {
+    throw ApiError.badRequest('Informe o motivo da reprovação.');
+  }
+
+  // `AND status = $3`: o FOR UPDATE ja garante, e a condicao deixa a regra
+  // visivel no proprio UPDATE — uma mudanca concorrente nunca passa em silencio.
+  const { rows: atualizados } = await client.query<DrawRow>(
+    'UPDATE draws SET status = $2::draw_status WHERE id = $1 AND status = $3::draw_status RETURNING *',
+    [input.drawId, para, de],
+  );
+  const novo = atualizados[0];
+  if (!novo) {
+    throw ApiError.conflict('O sorteio mudou de estado. Atualize a página e tente de novo.');
+  }
+
+  const motivo = input.reason?.trim() || null;
+  await recordAuditEvent(client, {
+    tenantId: atual.tenant_id,
+    actorUserId: input.actor.userId,
+    actorType: input.actor.kind,
+    action: 'draw.status_changed',
+    targetType: 'draw',
+    targetId: input.drawId,
+    before: { status: de },
+    after: { status: para, reason: motivo },
+    ip: input.origin?.ip ?? null,
+    userAgent: input.origin?.userAgent ?? null,
+  });
+
+  for (const eventType of drawTransitionEvents(de, para)) {
+    await enqueueOutboxEvent(client, {
+      tenantId: atual.tenant_id,
+      eventType,
+      payload: {
+        tenantId: atual.tenant_id,
+        drawId: input.drawId,
+        from: de,
+        to: para,
+        actorUserId: input.actor.userId,
+        actorType: input.actor.kind,
+        reason: motivo,
+      },
+    });
+  }
+
+  return novo;
+}
+
+/** Organizador: envia para revisao, pausa, retoma ou encerra as vendas. */
 export async function updateDrawStatus(
   deps: AppDeps,
-  input: { tenantId: string; userId: string; drawId: string; status: string },
+  input: {
+    tenantId: string;
+    userId: string;
+    drawId: string;
+    status: string;
+    origin?: ActionOrigin | undefined;
+  },
 ): Promise<OrganizerDraw> {
+  if (!isDrawStatus(input.status)) throw ApiError.badRequest('Estado inválido.');
+  const to = input.status;
+
   return withTenant(deps.pool, { tenantId: input.tenantId, userId: input.userId }, async (client) => {
-    const { rows } = await client.query<DrawRow>(
-      'SELECT * FROM draws WHERE id = $1 FOR UPDATE',
+    const novo = await transitionDrawStatus(client, {
+      drawId: input.drawId,
+      to,
+      actor: { userId: input.userId, kind: 'USER' },
+      origin: input.origin,
+    });
+    return montarOrganizerDraw(client, novo);
+  });
+}
+
+/**
+ * Super Admin: decide sobre um sorteio em REVISAO COMPLIANCE. RN02.
+ *
+ * Duas transacoes, de proposito. A primeira, de plataforma, so descobre a
+ * comunidade do sorteio (a RLS de SELECT libera). A segunda abre o contexto
+ * dessa comunidade COM acesso de plataforma, e ai a linha e travada e o estado
+ * conferido de novo — a leitura da primeira nao vale como verificacao.
+ */
+export async function reviewDraw(
+  deps: AppDeps,
+  input: {
+    userId: string;
+    drawId: string;
+    to: DrawStatus;
+    reason?: string | undefined;
+    origin?: ActionOrigin | undefined;
+  },
+): Promise<OrganizerDraw> {
+  const tenantId = await withPlatform(deps.pool, { userId: input.userId }, async (client) => {
+    const { rows } = await client.query<{ tenant_id: string }>(
+      'SELECT tenant_id FROM draws WHERE id = $1',
       [input.drawId],
     );
-    const atual = rows[0];
-    if (!atual) throw ApiError.notFound('Sorteio não encontrado.');
+    return rows[0]?.tenant_id ?? null;
+  });
+  if (!tenantId) throw ApiError.notFound('Sorteio não encontrado.');
 
-    const permitidas = TRANSICOES_PERMITIDAS[atual.status] ?? [];
-    if (!permitidas.includes(input.status)) {
-      throw ApiError.conflict(
-        `Um sorteio em "${atual.status}" não pode ir para "${input.status}".`,
-      );
-    }
+  return withContext(
+    deps.pool,
+    { userId: input.userId, tenantId, platformAccess: true },
+    async (client) => {
+      const novo = await transitionDrawStatus(client, {
+        drawId: input.drawId,
+        to: input.to,
+        actor: { userId: input.userId, kind: 'PLATFORM' },
+        reason: input.reason,
+        origin: input.origin,
+      });
+      return montarOrganizerDraw(client, novo);
+    },
+  );
+}
 
-    const { rows: atualizados } = await client.query<DrawRow>(
-      'UPDATE draws SET status = $2::draw_status WHERE id = $1 RETURNING *',
-      [input.drawId, input.status],
+/** Fila do Super Admin: sorteios aguardando revisao, de todas as comunidades. */
+export async function listReviewQueue(
+  deps: AppDeps,
+  userId: string,
+): Promise<ReviewQueueResponse> {
+  return withPlatform(deps.pool, { userId }, async (client) => {
+    const { rows } = await client.query<{
+      id: string;
+      title: string;
+      prize_name: string;
+      unit_price_cents: number;
+      total_numbers: number;
+      draw_date: string | null;
+      created_at: string;
+      tenant_id: string;
+      tenant_slug: string;
+      tenant_name: string;
+    }>(
+      `SELECT d.id, d.title, d.prize_name, d.unit_price_cents, d.total_numbers,
+              d.draw_date, d.created_at, d.tenant_id,
+              t.slug AS tenant_slug, t.name AS tenant_name
+         FROM draws d
+         JOIN tenants t ON t.id = d.tenant_id
+        WHERE d.status = 'REVISÃO COMPLIANCE'
+        ORDER BY d.updated_at ASC, d.id ASC
+        LIMIT 200`,
     );
-    return montarOrganizerDraw(client, atualizados[0]!);
+    return {
+      draws: rows.map((r) => ({
+        id: r.id,
+        title: r.title,
+        prizeName: r.prize_name,
+        unitPriceCents: r.unit_price_cents,
+        totalNumbers: r.total_numbers,
+        drawDate: r.draw_date,
+        createdAt: r.created_at,
+        tenantId: r.tenant_id,
+        tenantSlug: r.tenant_slug,
+        tenantName: r.tenant_name,
+      })),
+    };
   });
 }

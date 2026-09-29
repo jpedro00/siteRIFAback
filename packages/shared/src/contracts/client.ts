@@ -25,6 +25,8 @@ import type {
   DrawNumbersResponse,
   OrderResponse,
   OrganizerDraw,
+  ReviewDrawRequest,
+  ReviewQueueResponse,
   OrganizerDrawListResponse,
   PublicDrawDetail,
   PublicDrawListResponse,
@@ -57,6 +59,8 @@ export interface RouteResponses {
   tenantAudit: AuditListResponse;
   platformTenants: TenantListResponse;
   platformCreateTenant: CreateTenantResponse;
+  platformReviewQueue: ReviewQueueResponse;
+  platformReviewDecide: OrganizerDraw;
   accountOrders: AccountOrdersResponse;
   publicDraws: PublicDrawListResponse;
   publicDraw: PublicDrawDetail;
@@ -82,6 +86,7 @@ export interface RouteBodies {
   createOrder: CreateOrderRequest;
   createDraw: CreateDrawRequest;
   updateDrawStatus: UpdateDrawStatusRequest;
+  platformReviewDecide: ReviewDrawRequest;
 }
 
 export type RouteBody<N extends RouteName> = N extends keyof RouteBodies
