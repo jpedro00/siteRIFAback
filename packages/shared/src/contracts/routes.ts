@@ -484,6 +484,23 @@ export const ROUTE_CONTRACTS = {
     mfa: false,
     tenantScope: 'resolved',
   },
+  publicOrderPayment: {
+    method: 'POST',
+    path: '/api/public/orders/:id/payment',
+    summary: 'Gera (ou devolve) o PIX do pedido. Idempotente: a chave e o pedido.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'resolved',
+  },
+  mercadopagoWebhook: {
+    method: 'POST',
+    path: '/api/webhooks/mercadopago/:tenant',
+    summary:
+      'Notificacao do Mercado Pago. Assinatura validada; o pagamento e CONSULTADO na API do PSP antes de valer.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'none',
+  },
   publicOrder: {
     method: 'GET',
     path: '/api/public/orders/:id',

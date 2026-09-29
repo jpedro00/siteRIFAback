@@ -3,6 +3,7 @@ import {
   DRAW_NUMBER_STATUSES,
   DRAW_STATUSES,
   MEMBERSHIP_ROLES,
+  PAYMENT_STATUSES,
   PLATFORM_ROLES,
 } from '@clubedarifa/shared';
 import type { DbPool } from '../src/pool.js';
@@ -54,6 +55,10 @@ describe.skipIf(!hasTestDatabase)(`E3 · enums do banco e do codigo ${
 
   it('draw_number_status do banco e identico a DRAW_NUMBER_STATUSES do codigo', async () => {
     expect(await enumLabels('draw_number_status')).toEqual([...DRAW_NUMBER_STATUSES]);
+  });
+
+  it('payment_status do banco e identico a PAYMENT_STATUSES do codigo', async () => {
+    expect(await enumLabels('payment_status')).toEqual([...PAYMENT_STATUSES]);
   });
 
   it('membership_role do banco e identico a MEMBERSHIP_ROLES do codigo', async () => {

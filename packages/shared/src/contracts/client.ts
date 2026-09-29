@@ -69,6 +69,8 @@ export interface RouteResponses {
   createReservation: ReservationResponse;
   createOrder: OrderResponse;
   publicOrder: OrderResponse;
+  publicOrderPayment: OrderResponse;
+  mercadopagoWebhook: { received: true };
   devConfirmPayment: OrderResponse;
   organizerDraws: OrganizerDrawListResponse;
   organizerDraw: OrganizerDraw;

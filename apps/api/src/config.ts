@@ -122,6 +122,29 @@ const configSchema = z.object({
 
   /** Emissor exibido no aplicativo autenticador. */
   MFA_ISSUER: z.string().default('Clube da Rifa'),
+
+  /**
+   * Provedor de pagamento (PIX). `none` = nenhum: o pedido e criado, mas nao ha
+   * como gerar a cobranca. E o padrao — e o estado de STAGING enquanto as
+   * credenciais sandbox nao existirem.
+   *
+   * O provedor FALSO dos testes nao e uma opcao aqui: nenhuma variavel de
+   * ambiente o liga em ambiente real.
+   *
+   * As credenciais moram em variavel de ambiente (ou no cofre do Render), nunca
+   * no codigo nem no banco. Valor vazio conta como ausente: um Render com a
+   * variavel declarada e sem valor nao pode ligar o provedor pela metade.
+   */
+  PSP_PROVIDER: z.enum(['none', 'mercadopago']).default('none'),
+  MERCADOPAGO_ACCESS_TOKEN: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  MERCADOPAGO_WEBHOOK_SECRET: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  /** E-mail usado quando o comprador nao informou o dele; o Mercado Pago exige um. */
+  MERCADOPAGO_FALLBACK_PAYER_EMAIL: z
+    .string()
+    .optional()
+    .transform((v) => (v?.trim() ? v.trim() : undefined)),
+  /** URL publica da API, para montar o endereco do webhook entregue ao PSP. */
+  PUBLIC_API_BASE_URL: z.string().optional().transform((v) => (v?.trim() ? v.trim().replace(/\/+$/, '') : undefined)),
 });
 
 export type AppConfig = Readonly<z.infer<typeof configSchema>> & {
@@ -153,6 +176,30 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         message:
           'SESSION_COOKIE_SECURE precisa ser true em staging e em producao: sem Secure o cookie de sessao viaja em texto claro.',
         path: ['SESSION_COOKIE_SECURE'],
+      },
+    )
+    .refine(
+      (value) =>
+        value.PSP_PROVIDER !== 'mercadopago' ||
+        (value.MERCADOPAGO_ACCESS_TOKEN !== undefined &&
+          value.MERCADOPAGO_WEBHOOK_SECRET !== undefined &&
+          value.PUBLIC_API_BASE_URL !== undefined),
+      {
+        message:
+          'PSP_PROVIDER=mercadopago exige MERCADOPAGO_ACCESS_TOKEN, MERCADOPAGO_WEBHOOK_SECRET e PUBLIC_API_BASE_URL: sem o segredo do webhook nao ha como validar o aviso, e sem a URL o Mercado Pago nao sabe para onde avisar.',
+        path: ['PSP_PROVIDER'],
+      },
+    )
+    .refine(
+      (value) =>
+        !(
+          (value.NODE_ENV === 'production' || value.NODE_ENV === 'staging') &&
+          value.PUBLIC_API_BASE_URL !== undefined &&
+          !value.PUBLIC_API_BASE_URL.startsWith('https://')
+        ),
+      {
+        message: 'PUBLIC_API_BASE_URL precisa ser https:// em staging e em producao.',
+        path: ['PUBLIC_API_BASE_URL'],
       },
     )
     .refine(

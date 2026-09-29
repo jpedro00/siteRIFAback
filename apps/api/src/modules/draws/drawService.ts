@@ -396,7 +396,7 @@ export async function createReservation(
 // Pedido
 // ---------------------------------------------------------------------------
 
-async function montarPedido(client: PoolClient, orderId: string): Promise<OrderResponse> {
+export async function montarPedido(client: PoolClient, orderId: string): Promise<OrderResponse> {
   const { rows } = await client.query<{
     id: string;
     status: string;
@@ -429,6 +429,20 @@ async function montarPedido(client: PoolClient, orderId: string): Promise<OrderR
   const row = rows[0];
   if (!row) throw ApiError.notFound('Pedido não encontrado.');
 
+  // Cobranca PIX mais recente, se ja foi gerada.
+  const { rows: pagamentos } = await client.query<{
+    status: OrderResponse['payment'] extends infer P ? (P extends { status: infer S } ? S : never) : never;
+    pix_copy_paste: string | null;
+    pix_qr_base64: string | null;
+    expires_at: string;
+    needs_manual_refund: boolean;
+  }>(
+    `SELECT status::text AS status, pix_copy_paste, pix_qr_base64, expires_at, needs_manual_refund
+       FROM payments WHERE order_id = $1 ORDER BY created_at DESC LIMIT 1`,
+    [orderId],
+  );
+  const pagamento = pagamentos[0];
+
   return {
     orderId: row.id,
     status: row.status as OrderResponse['status'],
@@ -444,6 +458,15 @@ async function montarPedido(client: PoolClient, orderId: string): Promise<OrderR
     paidAt: row.paid_at,
     // Depois de pago o prazo perde sentido: nao ha mais o que expirar.
     expiresAt: row.status === 'PAGO' ? null : row.expires_at,
+    payment: pagamento
+      ? {
+          status: pagamento.status,
+          copyPaste: pagamento.pix_copy_paste,
+          qrCodeBase64: pagamento.pix_qr_base64,
+          expiresAt: pagamento.expires_at,
+          needsManualRefund: pagamento.needs_manual_refund,
+        }
+      : null,
   };
 }
 
@@ -578,48 +601,6 @@ export async function getOrder(
   orderId: string,
 ): Promise<OrderResponse> {
   return withTenant(deps.pool, { tenantId }, async (client) => montarPedido(client, orderId));
-}
-
-/**
- * Confirmacao de pagamento SEM provedor — desenvolvimento apenas.
- *
- * A recusa em producao acontece na ROTA, antes daqui. Este servico assume que a
- * decisao ja foi tomada e cuida apenas de fazer a mudanca inteira numa unica
- * transacao: pedido e numeros mudam juntos ou nao mudam. Um pedido PAGO com
- * numeros PENDENTE seria dinheiro recebido sem numero entregue.
- */
-export async function devConfirmPayment(
-  deps: AppDeps,
-  tenantId: string,
-  orderId: string,
-): Promise<OrderResponse> {
-  return withTenant(deps.pool, { tenantId }, async (client) => {
-    const { rows } = await client.query<{ status: string }>(
-      `SELECT status::text AS status FROM orders WHERE id = $1 FOR UPDATE`,
-      [orderId],
-    );
-    const pedido = rows[0];
-    if (!pedido) throw ApiError.notFound('Pedido não encontrado.');
-
-    // Idempotente: confirmar duas vezes devolve o mesmo comprovante em vez de
-    // erro. Um botao clicado duas vezes nao e um caso excepcional.
-    if (pedido.status === 'PAGO') return montarPedido(client, orderId);
-    if (pedido.status === 'CANCELADO') {
-      throw ApiError.conflict('Este pedido foi cancelado.');
-    }
-
-    await client.query(
-      `UPDATE orders SET status = 'PAGO', paid_at = now() WHERE id = $1`,
-      [orderId],
-    );
-    await client.query(
-      `UPDATE draw_numbers SET status = 'PAGO', expires_at = NULL
-        WHERE order_id = $1 AND status = 'PENDENTE'`,
-      [orderId],
-    );
-
-    return montarPedido(client, orderId);
-  });
 }
 
 // ---------------------------------------------------------------------------

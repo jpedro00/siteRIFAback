@@ -96,6 +96,7 @@ export async function resetFoundationTables(): Promise<void> {
     try {
       await client.query('DELETE FROM order_items');
       await client.query('DELETE FROM draw_numbers');
+      await client.query('DELETE FROM payments');
       await client.query('DELETE FROM orders');
       await client.query('DELETE FROM reservations');
       await client.query('DELETE FROM buyers');

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DRAW_EVENT_TYPES } from '@clubedarifa/shared';
+
+const EVENTOS_RECONHECIDOS = [...DRAW_EVENT_TYPES, 'order.paid', 'payment.refund_required'] as const;
 import type { DbPool } from '@clubedarifa/db';
 import { handleMessage } from '../src/dispatch.js';
 import type { QueueMessage } from '../src/queue.js';
@@ -9,7 +11,7 @@ import type { QueueMessage } from '../src/queue.js';
  * fila reentregar ate a dead-letter algo que nao tem o que executar.
  */
 describe('dispatch · eventos do ciclo de vida do sorteio', () => {
-  for (const eventType of DRAW_EVENT_TYPES) {
+  for (const eventType of EVENTOS_RECONHECIDOS) {
     it(`${eventType} e reconhecido sem consumidor e nao lanca`, async () => {
       const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
       const message = {

@@ -154,6 +154,25 @@ export const createOrderRequestSchema = z.object({
 });
 export type CreateOrderRequest = z.infer<typeof createOrderRequestSchema>;
 
+/**
+ * Cobranca PIX de um pedido. `copyPaste` e o "copia e cola"; `qrCodeBase64` e a
+ * imagem, quando o provedor a entrega. O prazo (`expiresAt`) nunca passa do fim
+ * da reserva: o PIX morre antes de os numeros voltarem para a grade.
+ */
+/** Estados de uma cobranca. Identicos ao enum `payment_status` (0013); ha teste de paridade. */
+export const PAYMENT_STATUSES = ['PENDENTE', 'APROVADO', 'EXPIRADO', 'CANCELADO', 'ESTORNADO'] as const;
+export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
+
+export const pixPaymentSchema = z.object({
+  status: z.enum(PAYMENT_STATUSES),
+  copyPaste: z.string().nullable(),
+  qrCodeBase64: z.string().nullable(),
+  expiresAt: z.string(),
+  /** Pagamento aprovado depois de o numero ter outro dono: a devolucao e manual. */
+  needsManualRefund: z.boolean(),
+});
+export type PixPayment = z.infer<typeof pixPaymentSchema>;
+
 export const orderResponseSchema = z.object({
   orderId: z.string().uuid(),
   status: z.enum(['PENDENTE', 'PAGO', 'CANCELADO']),
@@ -176,6 +195,8 @@ export const orderResponseSchema = z.object({
   paidAt: z.string().nullable(),
   /** Prazo restante da reserva. Nulo depois de pago. */
   expiresAt: z.string().nullable(),
+  /** Cobranca PIX mais recente. Nula ate ser gerada (ou se o PSP estiver fora). */
+  payment: pixPaymentSchema.nullable(),
 });
 export type OrderResponse = z.infer<typeof orderResponseSchema>;
 

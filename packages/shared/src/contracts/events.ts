@@ -25,6 +25,8 @@ export const OUTBOX_EVENT_TYPES = [
   'draw.paused',
   'draw.resumed',
   'draw.sales_closed',
+  'order.paid',
+  'payment.refund_required',
 ] as const;
 
 export type OutboxEventType = (typeof OUTBOX_EVENT_TYPES)[number];
@@ -104,6 +106,36 @@ export function drawTransitionEvents(from: DrawStatus, to: DrawStatus): DrawEven
   return [];
 }
 
+/**
+ * `order.paid`: o PSP confirmou e a venda foi concluida (numeros PAGO). E o
+ * gatilho de esgotamento e de limiares ("faltam X"). Idempotente por pedido:
+ * publicado UMA vez, na transicao para PAGO.
+ */
+export const orderPaidPayloadSchema = z.object({
+  tenantId: z.string().uuid(),
+  orderId: z.string().uuid(),
+  drawId: z.string().uuid(),
+  paymentId: z.string().uuid().nullable(),
+  quantity: z.number().int().positive(),
+  totalCents: z.number().int().positive(),
+});
+export type OrderPaidPayload = z.infer<typeof orderPaidPayloadSchema>;
+
+/**
+ * Pagamento aprovado cujo numero ja tem outro dono (Suposicao S4): a venda nao
+ * se conclui e alguem precisa devolver o dinheiro. Estorno automatico fica para
+ * depois; este evento existe para o painel avisar.
+ */
+export const paymentRefundRequiredPayloadSchema = z.object({
+  tenantId: z.string().uuid(),
+  orderId: z.string().uuid(),
+  drawId: z.string().uuid(),
+  paymentId: z.string().uuid(),
+  amountCents: z.number().int().positive(),
+  reason: z.string(),
+});
+export type PaymentRefundRequiredPayload = z.infer<typeof paymentRefundRequiredPayloadSchema>;
+
 export const OUTBOX_PAYLOAD_SCHEMAS = {
   'tenant.created': tenantCreatedPayloadSchema,
   'membership.granted': membershipGrantedPayloadSchema,
@@ -115,4 +147,6 @@ export const OUTBOX_PAYLOAD_SCHEMAS = {
   'draw.paused': drawLifecyclePayloadSchema,
   'draw.resumed': drawLifecyclePayloadSchema,
   'draw.sales_closed': drawLifecyclePayloadSchema,
+  'order.paid': orderPaidPayloadSchema,
+  'payment.refund_required': paymentRefundRequiredPayloadSchema,
 } as const satisfies Record<OutboxEventType, z.ZodTypeAny>;

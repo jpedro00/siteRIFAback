@@ -23,6 +23,8 @@ export const API_ERROR_CODES = [
   'NOT_FOUND',
   'CONFLICT',
   'RATE_LIMITED',
+  /** O provedor de pagamento esta fora do ar ou nao respondeu. Tente de novo. */
+  'PAYMENT_PROVIDER_UNAVAILABLE',
   'INTERNAL',
 ] as const;
 
@@ -52,6 +54,7 @@ export const API_ERROR_STATUS: Readonly<Record<ApiErrorCode, number>> = Object.f
   NOT_FOUND: 404,
   CONFLICT: 409,
   RATE_LIMITED: 429,
+  PAYMENT_PROVIDER_UNAVAILABLE: 503,
   INTERNAL: 500,
 });
 
@@ -67,5 +70,7 @@ export const API_ERROR_MESSAGES: Readonly<Record<ApiErrorCode, string>> = Object
   NOT_FOUND: 'Recurso não encontrado.',
   CONFLICT: 'A operação conflita com o estado atual.',
   RATE_LIMITED: 'Muitas tentativas. Aguarde e tente novamente.',
+  PAYMENT_PROVIDER_UNAVAILABLE:
+    'Não foi possível gerar o PIX agora. Seus números continuam reservados; tente novamente.',
   INTERNAL: 'Erro interno. Tente novamente em instantes.',
 });

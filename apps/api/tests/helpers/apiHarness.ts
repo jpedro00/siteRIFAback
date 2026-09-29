@@ -6,6 +6,7 @@ import { createApp } from '../../src/app.js';
 import { loadConfig, type AppConfig } from '../../src/config.js';
 import { LoginThrottle } from '../../src/lib/loginThrottle.js';
 import { SecretBox } from '../../src/lib/secretBox.js';
+import type { PspGateway } from '../../src/psp/types.js';
 import { hashPassword } from '../../src/lib/password.js';
 
 const { Client } = pg;
@@ -95,6 +96,11 @@ export interface HarnessOptions {
    * recusa — e e a rota que precisa recusar.
    */
   readonly nodeEnv?: 'development' | 'test' | 'staging' | 'production';
+  /**
+   * Provedor de pagamento injetado. PADRAO nenhum. Os testes de pagamento passam
+   * o provedor FALSO — que so existe na bancada.
+   */
+  readonly psp?: PspGateway | null;
 }
 
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -134,7 +140,13 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     maxDistinctAccounts: config.LOGIN_ORIGIN_MAX_ACCOUNTS,
   });
 
-  const app = createApp({ config, pool, secretBox: new SecretBox(TEST_MFA_KEY), loginThrottle });
+  const app = createApp({
+    config,
+    pool,
+    secretBox: new SecretBox(TEST_MFA_KEY),
+    loginThrottle,
+    psp: options.psp ?? null,
+  });
 
   return {
     app,
@@ -353,6 +365,8 @@ export async function cleanup(owner: DbPool): Promise<void> {
     try {
       await client.query('DELETE FROM order_items');
       await client.query('DELETE FROM draw_numbers');
+      // Cobrancas referenciam o pedido (RESTRICT): saem antes dele.
+      await client.query('DELETE FROM payments');
       await client.query('DELETE FROM orders');
       await client.query('DELETE FROM reservations');
       await client.query('DELETE FROM buyers');

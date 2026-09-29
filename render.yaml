@@ -177,6 +177,26 @@ services:
       - key: LOGIN_ORIGIN_MAX_ACCOUNTS
         value: '5'
 
+      # PAGAMENTO PIX (Mercado Pago) — DESLIGADO em staging por padrao.
+      #
+      # `none` = o pedido nasce, mas nao ha como gerar a cobranca; o webhook
+      # responde 404. Para ligar com credenciais SANDBOX: troque para
+      # `mercadopago` e preencha os tres segredos abaixo no painel do Render
+      # (`sync: false` = o valor nunca entra no repositorio).
+      #
+      # O provedor falso dos testes nao e uma opcao: nenhuma variavel o liga.
+      - key: PSP_PROVIDER
+        value: none
+      - key: MERCADOPAGO_ACCESS_TOKEN
+        sync: false
+      - key: MERCADOPAGO_WEBHOOK_SECRET
+        sync: false
+      - key: MERCADOPAGO_FALLBACK_PAYER_EMAIL
+        sync: false
+      # URL publica da API (https), de onde sai o endereco do webhook.
+      - key: PUBLIC_API_BASE_URL
+        sync: false
+
   # ---------------------------------------------------------------------------
   # Worker — relay da outbox e consumidores
   #

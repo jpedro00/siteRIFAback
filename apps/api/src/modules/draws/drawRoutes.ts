@@ -8,12 +8,12 @@ import {
   updateDrawStatusRequestSchema,
 } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
+import { devConfirmPayment, ensurePixPayment } from '../payments/paymentService.js';
 import { ApiError } from '../../lib/apiError.js';
 import {
   createDraw,
   createOrder,
   createReservation,
-  devConfirmPayment,
   getDrawNumbers,
   getOrder,
   getOrganizerDraw,
@@ -105,6 +105,22 @@ export function buildDrawHandlers(deps: AppDeps): Record<string, RequestHandler>
         // para a conta; quem nao esta compra do mesmo jeito.
         userId: req.session?.userId ?? null,
       });
+
+      // O PIX e gerado logo apos o pedido, FORA da transacao dele. Se o provedor
+      // estiver fora (ou nao configurado), o pedido existe e os numeros seguem
+      // segurados: a resposta traz `payment: null` e a pessoa tenta de novo por
+      // POST /api/public/orders/:id/payment — idempotente.
+      try {
+        const comPix = await ensurePixPayment(deps, {
+          tenantId: tenant.tenantId,
+          tenantSlug: tenant.slug,
+          orderId: order.orderId,
+        });
+        res.status(201).json(comPix);
+        return;
+      } catch (falha) {
+        if (!(falha instanceof ApiError) || falha.code !== 'PAYMENT_PROVIDER_UNAVAILABLE') throw falha;
+      }
       res.status(201).json(order);
     }),
 
