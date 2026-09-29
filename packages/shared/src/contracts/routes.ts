@@ -531,6 +531,15 @@ export const ROUTE_CONTRACTS = {
     tenantScope: 'resolved',
     tenantPermission: 'draw:write',
   },
+  updateDraw: {
+    method: 'PATCH',
+    path: '/api/tenant/draws/:id',
+    summary: 'Edita um sorteio em RASCUNHO (preço, grade, prêmios, cronograma).',
+    auth: true,
+    mfa: false,
+    tenantScope: 'resolved',
+    tenantPermission: 'draw:write',
+  },
   updateDrawStatus: {
     method: 'POST',
     path: '/api/tenant/draws/:id/status',

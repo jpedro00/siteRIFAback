@@ -62,9 +62,11 @@ describe.skipIf(!hasTestDatabase)(`Ciclo de vida do sorteio ${hasTestDatabase ? 
       .set('x-tenant-slug', slug)
       .send({
         title: `Sorteio ${unique('t-')}`,
-        prizeName: 'Moto 0 km',
-        unitPriceCents: 1500,
+        prizes: [{ name: 'Moto 0 km' }],
+        ticketPriceCents: 1500,
         totalNumbers: 100,
+        // Rascunho COMPLETO: o envio para revisao exige a data do sorteio.
+        drawDate: new Date(Date.now() + 30 * 86_400_000).toISOString(),
       });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     return res.body.id as string;

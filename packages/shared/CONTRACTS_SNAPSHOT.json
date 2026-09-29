@@ -1,22 +1,22 @@
 {
   "_comment": "Gerado por scripts/contracts-snapshot.mjs no repositorio BACKEND, a fonte dos contratos. Nao editar a mao. O frontend carrega uma copia deste arquivo e apenas confere.",
   "package": "@clubedarifa/shared",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "tracked": [
     "src/contracts",
     "src/states",
     "src/permissions",
     "src/constants"
   ],
-  "digest": "6133d53ac4840fc1f93be9a7da7a64b00c87898c0901a5b53907de7e89dd28f7",
+  "digest": "4119ba8f851e85b12c9d1699dee0c3e3ef172d53484b8b3dbf735df51868bb8e",
   "files": {
-    "src/contracts/client.ts": "2842d30029a8ba1dda6df61af37b483171d0e57b0ed8b6fa503e5970b268479e",
-    "src/contracts/draws.ts": "d3e3e62edeecbcaba989bd9a8f505e36cabb6762e1eec34030837b4e3881787c",
+    "src/contracts/client.ts": "2d9c6a64a0cdfd638b2ad0a3f91489b2979c47cd4dbd7f4bd2ba48d3f32590a1",
+    "src/contracts/draws.ts": "33cc04bfc07cf282a51af26a25cf27f0d6532e5302017f6d5cf6c0f16db8d01c",
     "src/contracts/errors.ts": "29759c05b6d25c1fdf0a6dfd830da36a0ece40d3dea93cf94d5dab6a38bb2ad3",
     "src/contracts/events.ts": "c217591d4c134e2fa5b10a4c1d4c36c2f1afe4b51138c8837e47ff1c2e89f474",
     "src/contracts/index.ts": "2d601c84061af02e3cb6c5a6e2bdd2ac882ec53bfc97b63b13bd53c08781c2ad",
-    "src/contracts/routes.ts": "fe60e525dbd97f53cd554416057042c2f3bf9f9e641f75a637e4ec471e5a66a1",
-    "src/states/drawStatus.ts": "2be449aacb0f6eb8ac846423d36c73a81127a4d81bb7a3f506edf50b3b360bde",
+    "src/contracts/routes.ts": "6059b976e0dc7f1c6871b06b71b265b657476bac6b41e960870a64822acc8cc8",
+    "src/states/drawStatus.ts": "09561b13894774993188597b0f4b7c49acfb4279c85fce46aa1446ef768dc3cd",
     "src/states/index.ts": "0437d833638d4c95e57ac7a4572caa76285a13981bd679fe6bf94c2673622f3d",
     "src/states/numberStatus.ts": "2e89a8913afa1effa718b9b82dd3d6af219de09eea06a0587e8f3ba23449987c",
     "src/permissions/index.ts": "ba2a9b482d748bbdc8b7bf6d4e43eec2e5572348cd527317c5bc49f7229a2fb1",

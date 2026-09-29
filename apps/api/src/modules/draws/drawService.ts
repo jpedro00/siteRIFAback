@@ -5,18 +5,24 @@ import {
   ORGANIZER_DRAW_TRANSITIONS,
   PLATFORM_REVIEW_DECISIONS,
   RESERVATION_TTL_MINUTES,
+  drawReadinessProblems,
   drawTransitionEvents,
   isDrawStatus,
   labelDigitsForGridSize,
+  validateDrawRules,
   type CreateDrawRequest,
   type DrawNumbersResponse,
   type OrderResponse,
   type OrganizerDraw,
   type PublicDrawDetail,
+  type DrawCloseMode,
+  type DrawResultSource,
   type DrawStatus,
+  type Prize,
   type PublicDrawSummary,
   type ReservationResponse,
   type ReviewQueueResponse,
+  type UpdateDrawRequest,
 } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
@@ -53,11 +59,62 @@ interface DrawRow {
   prize_name: string;
   prize_description: string | null;
   prize_image_url: string | null;
+  /** Legado, espelhado de `ticket_price_cents` pelo banco (0012). Nao ler. */
   unit_price_cents: number;
+  ticket_price_cents: number;
+  promotional_price_cents: number | null;
+  promo_until: string | null;
+  /** Calculado pelo BANCO (`PROMO_ACTIVE_SQL`): promocao vigente agora. */
+  promo_active: boolean;
   total_numbers: number;
+  label_digits: 2 | 3;
   status: string;
   draw_date: string | null;
+  sales_start_at: string | null;
+  close_mode: DrawCloseMode;
+  close_at: string | null;
+  result_source: DrawResultSource;
+  thresholds: number[];
+  review_note: string | null;
   created_at: string;
+}
+
+/**
+ * Promocao vigente, decidida pelo RELOGIO DO BANCO. O relogio da aplicacao pode
+ * discordar por segundos; o preco cobrado e o preco mostrado saem da mesma fonte.
+ */
+const PROMO_ACTIVE_SQL = '(promotional_price_cents IS NOT NULL AND promo_until > now())';
+
+/** Projecao padrao de `draws`: todas as colunas mais o estado da promocao. */
+const DRAW_COLUMNS = `*, ${PROMO_ACTIVE_SQL} AS promo_active`;
+
+/** Preco efetivo por numero, em SQL: o promocional vigente ou o cheio. */
+const EFFECTIVE_PRICE_SQL = `CASE WHEN ${PROMO_ACTIVE_SQL}
+            THEN promotional_price_cents ELSE ticket_price_cents END`;
+
+function precoEfetivo(row: DrawRow): number {
+  return row.promo_active && row.promotional_price_cents !== null
+    ? row.promotional_price_cents
+    : row.ticket_price_cents;
+}
+
+async function carregarPremios(client: PoolClient, drawId: string): Promise<Prize[]> {
+  const { rows } = await client.query<{
+    position: number;
+    name: string;
+    description: string | null;
+    image_url: string | null;
+  }>(
+    `SELECT position, name, description, image_url
+       FROM prizes WHERE draw_id = $1 ORDER BY position`,
+    [drawId],
+  );
+  return rows.map((r) => ({
+    position: r.position,
+    name: r.name,
+    description: r.description,
+    imageUrl: r.image_url,
+  }));
 }
 
 /** Estados em que a vitrine mostra o sorteio. RASCUNHO nao aparece ao publico. */
@@ -74,8 +131,13 @@ function toSummary(row: DrawRow, paidCount: number): PublicDrawSummary {
     description: row.description,
     prizeName: row.prize_name,
     prizeImageUrl: row.prize_image_url,
-    unitPriceCents: row.unit_price_cents,
+    unitPriceCents: precoEfetivo(row),
+    ticketPriceCents: row.ticket_price_cents,
+    promotionalPriceCents: row.promo_active ? row.promotional_price_cents : null,
+    promoUntil: row.promo_active ? row.promo_until : null,
+    promoActive: row.promo_active,
     totalNumbers: row.total_numbers,
+    labelDigits: row.label_digits,
     status: row.status as PublicDrawSummary['status'],
     drawDate: row.draw_date,
     paidCount,
@@ -120,6 +182,7 @@ export async function listPublicDraws(
   return withTenant(deps.pool, { tenantId }, async (client) => {
     const { rows } = await client.query<DrawRow & { paid_count: string }>(
       `SELECT d.*,
+              (d.promotional_price_cents IS NOT NULL AND d.promo_until > now()) AS promo_active,
               (SELECT count(*) FROM draw_numbers n
                 WHERE n.draw_id = d.id AND n.status = 'PAGO')::text AS paid_count
          FROM draws d
@@ -141,7 +204,7 @@ export async function getPublicDraw(
 ): Promise<PublicDrawDetail> {
   return withTenant(deps.pool, { tenantId }, async (client) => {
     const { rows } = await client.query<DrawRow>(
-      `SELECT * FROM draws WHERE slug = $1 AND status = ANY($2::draw_status[])`,
+      `SELECT ${DRAW_COLUMNS} FROM draws WHERE slug = $1 AND status = ANY($2::draw_status[])`,
       [slug, STATUS_VISIVEL_NA_VITRINE],
     );
     const row = rows[0];
@@ -151,6 +214,11 @@ export async function getPublicDraw(
     return {
       ...toSummary(row, contagem.paid),
       prizeDescription: row.prize_description,
+      prizes: await carregarPremios(client, row.id),
+      closeMode: row.close_mode,
+      closeAt: row.close_at,
+      salesStartAt: row.sales_start_at,
+      resultSource: row.result_source,
       takenCount: contagem.taken,
     };
   });
@@ -243,7 +311,9 @@ export async function createReservation(
       status: string;
     }>(
       // `FOR SHARE`: impede que o sorteio seja pausado no meio desta reserva.
-      `SELECT id, total_numbers, unit_price_cents, status
+      // O preco EFETIVO e decidido aqui, no servidor, e gravado na reserva.
+      `SELECT id, total_numbers, status,
+              ${EFFECTIVE_PRICE_SQL} AS unit_price_cents
          FROM draws WHERE id = $1 FOR SHARE`,
       [input.drawId],
     );
@@ -265,9 +335,9 @@ export async function createReservation(
     const expiresAt = new Date(Date.now() + RESERVATION_TTL_MINUTES * 60_000);
 
     const { rows: reservaRows } = await client.query<{ id: string }>(
-      `INSERT INTO reservations (tenant_id, draw_id, expires_at)
-       VALUES ($1, $2, $3) RETURNING id`,
-      [input.tenantId, input.drawId, expiresAt.toISOString()],
+      `INSERT INTO reservations (tenant_id, draw_id, expires_at, unit_price_cents)
+       VALUES ($1, $2, $3, $4) RETURNING id`,
+      [input.tenantId, input.drawId, expiresAt.toISOString(), draw.unit_price_cents],
     );
     const reservationId = reservaRows[0]!.id;
 
@@ -403,8 +473,9 @@ export async function createOrder(
       draw_id: string;
       status: string;
       expires_at: string;
+      unit_price_cents: number | null;
     }>(
-      `SELECT id, draw_id, status::text AS status, expires_at
+      `SELECT id, draw_id, status::text AS status, expires_at, unit_price_cents
          FROM reservations WHERE id = $1 FOR UPDATE`,
       [input.reservationId],
     );
@@ -430,11 +501,17 @@ export async function createOrder(
     }
     const numeros = numeroRows.map((r) => r.number);
 
-    const { rows: drawRows } = await client.query<{ unit_price_cents: number }>(
-      'SELECT unit_price_cents FROM draws WHERE id = $1',
-      [reserva.draw_id],
-    );
-    const unitPriceCents = drawRows[0]!.unit_price_cents;
+    // O preco vem da RESERVA: e o que a pessoa viu ao segurar os numeros, e uma
+    // promocao que vence nos 30 minutos seguintes nao muda o total dela. Reserva
+    // anterior a 0012 nao guarda preco; cai no efetivo do momento.
+    let unitPriceCents = reserva.unit_price_cents;
+    if (unitPriceCents === null) {
+      const { rows: drawRows } = await client.query<{ unit_price_cents: number }>(
+        `SELECT ${EFFECTIVE_PRICE_SQL} AS unit_price_cents FROM draws WHERE id = $1`,
+        [reserva.draw_id],
+      );
+      unitPriceCents = drawRows[0]!.unit_price_cents;
+    }
 
     const { rows: buyerRows } = await client.query<{ id: string }>(
       `INSERT INTO buyers (tenant_id, name, phone, email)
@@ -561,11 +638,20 @@ async function montarOrganizerDraw(client: PoolClient, row: DrawRow): Promise<Or
   return {
     ...toSummary(row, contagem.paid),
     prizeDescription: row.prize_description,
+    prizes: await carregarPremios(client, row.id),
+    closeMode: row.close_mode,
+    closeAt: row.close_at,
+    salesStartAt: row.sales_start_at,
+    resultSource: row.result_source,
     takenCount: contagem.taken,
     reservedCount: contagem.reserved,
     pendingCount: contagem.pending,
     revenueCents: Number(receita[0]!.total),
     createdAt: row.created_at,
+    thresholds: row.thresholds,
+    configuredPromotionalPriceCents: row.promotional_price_cents,
+    configuredPromoUntil: row.promo_until,
+    reviewNote: row.review_note,
   };
 }
 
@@ -576,7 +662,7 @@ export async function listOrganizerDraws(
 ): Promise<OrganizerDraw[]> {
   return withTenant(deps.pool, { tenantId, userId }, async (client) => {
     const { rows } = await client.query<DrawRow>(
-      'SELECT * FROM draws ORDER BY created_at DESC LIMIT 200',
+      `SELECT ${DRAW_COLUMNS} FROM draws ORDER BY created_at DESC LIMIT 200`,
     );
     return Promise.all(rows.map((row) => montarOrganizerDraw(client, row)));
   });
@@ -589,7 +675,10 @@ export async function getOrganizerDraw(
   drawId: string,
 ): Promise<OrganizerDraw> {
   return withTenant(deps.pool, { tenantId, userId }, async (client) => {
-    const { rows } = await client.query<DrawRow>('SELECT * FROM draws WHERE id = $1', [drawId]);
+    const { rows } = await client.query<DrawRow>(
+      `SELECT ${DRAW_COLUMNS} FROM draws WHERE id = $1`,
+      [drawId],
+    );
     const row = rows[0];
     if (!row) throw ApiError.notFound('Sorteio não encontrado.');
     return montarOrganizerDraw(client, row);
@@ -609,33 +698,106 @@ function slugify(titulo: string): string {
   return base.length >= 3 ? `${base}-${sufixo}` : `sorteio-${sufixo}`;
 }
 
+/** Colunas de `draws` que o organizador edita, na ordem dos parametros SQL. */
+const CAMPOS_EDITAVEIS: readonly {
+  chave: keyof UpdateDrawRequest;
+  coluna: string;
+  cast?: string;
+}[] = [
+  { chave: 'title', coluna: 'title' },
+  { chave: 'description', coluna: 'description' },
+  { chave: 'ticketPriceCents', coluna: 'ticket_price_cents' },
+  { chave: 'promotionalPriceCents', coluna: 'promotional_price_cents' },
+  { chave: 'promoUntil', coluna: 'promo_until', cast: 'timestamptz' },
+  { chave: 'totalNumbers', coluna: 'total_numbers' },
+  { chave: 'drawDate', coluna: 'draw_date', cast: 'timestamptz' },
+  { chave: 'salesStartAt', coluna: 'sales_start_at', cast: 'timestamptz' },
+  { chave: 'closeMode', coluna: 'close_mode', cast: 'draw_close_mode' },
+  { chave: 'closeAt', coluna: 'close_at', cast: 'timestamptz' },
+  { chave: 'thresholds', coluna: 'thresholds', cast: 'int[]' },
+];
+
+/**
+ * Grava os premios de um sorteio em RASCUNHO, substituindo os anteriores.
+ *
+ * A posicao vem da ORDEM da lista (1 = premio principal). O premio principal
+ * tambem e espelhado nas colunas antigas de `draws` (`prize_name`, ...) enquanto
+ * elas existirem — a versao anterior da API e a listagem leem dali.
+ */
+async function gravarPremios(
+  client: PoolClient,
+  tenantId: string,
+  drawId: string,
+  prizes: NonNullable<CreateDrawRequest['prizes']>,
+): Promise<void> {
+  await client.query('DELETE FROM prizes WHERE draw_id = $1', [drawId]);
+  await client.query(
+    `INSERT INTO prizes (tenant_id, draw_id, position, name, description, image_url)
+     SELECT $1, $2, p.pos, p.name, p.description, p.image_url
+       FROM unnest($3::int[], $4::text[], $5::text[], $6::text[])
+            AS p(pos, name, description, image_url)`,
+    [
+      tenantId,
+      drawId,
+      prizes.map((_, i) => i + 1),
+      prizes.map((p) => p.name.trim()),
+      prizes.map((p) => p.description ?? null),
+      prizes.map((p) => p.imageUrl ?? null),
+    ],
+  );
+  const principal = prizes[0]!;
+  await client.query(
+    `UPDATE draws SET prize_name = $2, prize_description = $3, prize_image_url = $4
+      WHERE id = $1`,
+    [drawId, principal.name.trim(), principal.description ?? null, principal.imageUrl ?? null],
+  );
+}
+
 export async function createDraw(
   deps: AppDeps,
-  input: { tenantId: string; userId: string; data: CreateDrawRequest; origin?: ActionOrigin | undefined },
+  input: {
+    tenantId: string;
+    userId: string;
+    data: CreateDrawRequest;
+    origin?: ActionOrigin | undefined;
+  },
 ): Promise<OrganizerDraw> {
   return withTenant(deps.pool, { tenantId: input.tenantId, userId: input.userId }, async (client) => {
     const { data } = input;
     try {
+      const principal = data.prizes[0]!;
       const { rows } = await client.query<DrawRow>(
         `INSERT INTO draws
            (tenant_id, slug, title, description, prize_name, prize_description,
-            prize_image_url, unit_price_cents, total_numbers, draw_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         RETURNING *`,
+            prize_image_url, ticket_price_cents, promotional_price_cents, promo_until,
+            total_numbers, draw_date, sales_start_at, close_mode, close_at, thresholds)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11,
+                 $12::timestamptz, $13::timestamptz,
+                 COALESCE($14::draw_close_mode, 'AO_ESGOTAR'), $15::timestamptz,
+                 COALESCE($16::int[], '{25,10}'))
+         RETURNING ${DRAW_COLUMNS}`,
         [
           input.tenantId,
           slugify(data.title),
           data.title.trim(),
           data.description ?? null,
-          data.prizeName.trim(),
-          data.prizeDescription ?? null,
-          data.prizeImageUrl ?? null,
-          data.unitPriceCents,
+          principal.name.trim(),
+          principal.description ?? null,
+          principal.imageUrl ?? null,
+          data.ticketPriceCents,
+          data.promotionalPriceCents ?? null,
+          data.promoUntil ?? null,
           data.totalNumbers,
           data.drawDate ?? null,
+          data.salesStartAt ?? null,
+          data.closeMode ?? null,
+          data.closeAt ?? null,
+          data.thresholds ?? null,
         ],
       );
       const criado = rows[0]!;
+      await gravarPremios(client, input.tenantId, criado.id, data.prizes);
+
       await recordAuditEvent(client, {
         tenantId: input.tenantId,
         actorUserId: input.userId,
@@ -645,7 +807,8 @@ export async function createDraw(
         after: {
           status: criado.status,
           totalNumbers: criado.total_numbers,
-          unitPriceCents: criado.unit_price_cents,
+          ticketPriceCents: criado.ticket_price_cents,
+          prizeCount: data.prizes.length,
         },
         ip: input.origin?.ip ?? null,
         userAgent: input.origin?.userAgent ?? null,
@@ -658,6 +821,90 @@ export async function createDraw(
       }
       throw error;
     }
+  });
+}
+
+/**
+ * Edita um sorteio em RASCUNHO.
+ *
+ * So o rascunho e editavel: depois do envio para revisao o que a plataforma
+ * aprovou e o que foi enviado, e alterar por baixo dos panos anularia a revisao.
+ * (Depois da primeira reserva, o banco ainda barra grade e preco base — RN14 —
+ * como ultima defesa.)
+ *
+ * As regras entre campos sao conferidas sobre o estado JA MESCLADO: mandar so o
+ * prazo da promocao so faz sentido diante do preco promocional que ja existe.
+ */
+export async function updateDraw(
+  deps: AppDeps,
+  input: {
+    tenantId: string;
+    userId: string;
+    drawId: string;
+    data: UpdateDrawRequest;
+    origin?: ActionOrigin | undefined;
+  },
+): Promise<OrganizerDraw> {
+  return withTenant(deps.pool, { tenantId: input.tenantId, userId: input.userId }, async (client) => {
+    const { rows } = await client.query<DrawRow>(
+      `SELECT ${DRAW_COLUMNS} FROM draws WHERE id = $1 FOR UPDATE`,
+      [input.drawId],
+    );
+    const atual = rows[0];
+    if (!atual) throw ApiError.notFound('Sorteio não encontrado.');
+    if (atual.status !== 'RASCUNHO') {
+      throw ApiError.conflict(
+        `Só é possível editar um sorteio em rascunho (este está em "${atual.status}").`,
+      );
+    }
+
+    const { data } = input;
+    const tem = (chave: keyof UpdateDrawRequest) => Object.prototype.hasOwnProperty.call(data, chave);
+
+    const problemas = validateDrawRules({
+      ticketPriceCents: tem('ticketPriceCents') ? data.ticketPriceCents : atual.ticket_price_cents,
+      promotionalPriceCents: tem('promotionalPriceCents')
+        ? data.promotionalPriceCents
+        : atual.promotional_price_cents,
+      promoUntil: tem('promoUntil') ? data.promoUntil : atual.promo_until,
+      drawDate: tem('drawDate') ? data.drawDate : atual.draw_date,
+      salesStartAt: tem('salesStartAt') ? data.salesStartAt : atual.sales_start_at,
+      closeAt: tem('closeAt') ? data.closeAt : atual.close_at,
+    });
+    if (data.thresholds?.some((x, i) => i > 0 && x >= data.thresholds![i - 1]!)) {
+      problemas.push('Os limiares precisam estar em ordem decrescente.');
+    }
+    if (problemas.length > 0) throw ApiError.badRequest(problemas.join(' '), { problems: problemas });
+
+    const sets: string[] = [];
+    const valores: unknown[] = [input.drawId];
+    for (const campo of CAMPOS_EDITAVEIS) {
+      if (!tem(campo.chave)) continue;
+      const valor = data[campo.chave];
+      valores.push(campo.chave === 'title' && typeof valor === 'string' ? valor.trim() : (valor ?? null));
+      sets.push(`${campo.coluna} = $${valores.length}${campo.cast ? `::${campo.cast}` : ''}`);
+    }
+    if (sets.length > 0) {
+      await client.query(`UPDATE draws SET ${sets.join(', ')} WHERE id = $1`, valores);
+    }
+    if (data.prizes) await gravarPremios(client, input.tenantId, input.drawId, data.prizes);
+
+    await recordAuditEvent(client, {
+      tenantId: input.tenantId,
+      actorUserId: input.userId,
+      action: 'draw.updated',
+      targetType: 'draw',
+      targetId: input.drawId,
+      after: { changed: Object.keys(data) },
+      ip: input.origin?.ip ?? null,
+      userAgent: input.origin?.userAgent ?? null,
+    });
+
+    const { rows: depois } = await client.query<DrawRow>(
+      `SELECT ${DRAW_COLUMNS} FROM draws WHERE id = $1`,
+      [input.drawId],
+    );
+    return montarOrganizerDraw(client, depois[0]!);
   });
 }
 
@@ -682,7 +929,7 @@ interface TransitionInput {
  */
 async function transitionDrawStatus(client: PoolClient, input: TransitionInput): Promise<DrawRow> {
   const { rows } = await client.query<DrawRow & { tenant_id: string }>(
-    'SELECT * FROM draws WHERE id = $1 FOR UPDATE',
+    `SELECT ${DRAW_COLUMNS} FROM draws WHERE id = $1 FOR UPDATE`,
     [input.drawId],
   );
   const atual = rows[0];
@@ -721,11 +968,49 @@ async function transitionDrawStatus(client: PoolClient, input: TransitionInput):
     throw ApiError.badRequest('Informe o motivo da reprovação.');
   }
 
+  // Checklist do envio (DOC-01 §4, ultimo passo): so vai para revisao o sorteio
+  // COMPLETO. O rascunho e salvo a cada passo do assistente, entao o banco nao
+  // pode exigir tudo de uma vez — a exigencia mora aqui.
+  if (de === 'RASCUNHO' && para === 'REVISÃO COMPLIANCE') {
+    const premios = await carregarPremios(client, input.drawId);
+    const problemas = drawReadinessProblems({
+      title: atual.title,
+      prizes: premios,
+      ticketPriceCents: atual.ticket_price_cents,
+      promotionalPriceCents: atual.promotional_price_cents,
+      promoUntil: atual.promo_until,
+      drawDate: atual.draw_date,
+      salesStartAt: atual.sales_start_at,
+      closeMode: atual.close_mode,
+      closeAt: atual.close_at,
+    });
+    if (problemas.length > 0) {
+      throw ApiError.badRequest(`O sorteio ainda não pode ir para revisão. ${problemas.join(' ')}`, {
+        problems: problemas,
+      });
+    }
+  }
+
   // `AND status = $3`: o FOR UPDATE ja garante, e a condicao deixa a regra
   // visivel no proprio UPDATE — uma mudanca concorrente nunca passa em silencio.
+  // O motivo da reprovacao fica no sorteio para o organizador ler; some quando o
+  // sorteio e reenviado ou aprovado. A trilha de auditoria guarda o historico.
+  const tocaRevisao = de === 'REVISÃO COMPLIANCE' || para === 'REVISÃO COMPLIANCE';
   const { rows: atualizados } = await client.query<DrawRow>(
-    'UPDATE draws SET status = $2::draw_status WHERE id = $1 AND status = $3::draw_status RETURNING *',
-    [input.drawId, para, de],
+    `UPDATE draws
+        SET status = $2::draw_status,
+            review_note = CASE WHEN $4::boolean THEN $5 ELSE review_note END,
+            reviewed_at = CASE WHEN $4::boolean AND $6::boolean THEN now() ELSE reviewed_at END
+      WHERE id = $1 AND status = $3::draw_status
+      RETURNING ${DRAW_COLUMNS}`,
+    [
+      input.drawId,
+      para,
+      de,
+      tocaRevisao,
+      de === 'REVISÃO COMPLIANCE' && para === 'RASCUNHO' ? input.reason?.trim() || null : null,
+      de === 'REVISÃO COMPLIANCE',
+    ],
   );
   const novo = atualizados[0];
   if (!novo) {
@@ -851,7 +1136,7 @@ export async function listReviewQueue(
       tenant_slug: string;
       tenant_name: string;
     }>(
-      `SELECT d.id, d.title, d.prize_name, d.unit_price_cents, d.total_numbers,
+      `SELECT d.id, d.title, d.prize_name, d.ticket_price_cents AS unit_price_cents, d.total_numbers,
               d.draw_date, d.created_at, d.tenant_id,
               t.slug AS tenant_slug, t.name AS tenant_name
          FROM draws d

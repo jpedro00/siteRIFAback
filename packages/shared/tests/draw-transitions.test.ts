@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DRAW_CLOSE_MODES,
   DRAW_EVENT_TYPES,
   DRAW_STATUS_TRANSITIONS,
   DRAW_STATUSES,
@@ -8,8 +9,10 @@ import {
   OUTBOX_PAYLOAD_SCHEMAS,
   ORGANIZER_DRAW_TRANSITIONS,
   PLATFORM_REVIEW_DECISIONS,
+  drawReadinessProblems,
   drawTransitionEvents,
   reviewDrawRequestSchema,
+  validateDrawRules,
 } from '../src/index.js';
 
 /** RN02 · a tabela de quem-pode e um recorte da maquina do DOC-01, nunca uma segunda maquina. */
@@ -89,5 +92,80 @@ describe('contrato da decisao de revisao', () => {
   it('nao aceita destino fora das decisoes', () => {
     expect(reviewDrawRequestSchema.safeParse({ to: 'CANCELADA' }).success).toBe(false);
     expect(reviewDrawRequestSchema.safeParse({ to: 'PAUSADA' }).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regras de preco e cronograma (0012)
+// ---------------------------------------------------------------------------
+describe('validateDrawRules', () => {
+  it('sem promocao e sem datas: valido', () => {
+    expect(validateDrawRules({ ticketPriceCents: 1500 })).toEqual([]);
+  });
+
+  it('promocional menor que o cheio, com prazo: valido', () => {
+    expect(
+      validateDrawRules({ ticketPriceCents: 1500, promotionalPriceCents: 1000, promoUntil: '2030-01-01T00:00:00Z' }),
+    ).toEqual([]);
+  });
+
+  it('promocional igual ou maior que o cheio: problema', () => {
+    for (const promo of [1500, 2000]) {
+      expect(
+        validateDrawRules({ ticketPriceCents: 1500, promotionalPriceCents: promo, promoUntil: '2030-01-01T00:00:00Z' }),
+      ).toContainEqual(expect.stringContaining('menor que o preço cheio'));
+    }
+  });
+
+  it('promocional e prazo andam juntos', () => {
+    expect(validateDrawRules({ ticketPriceCents: 1500, promotionalPriceCents: 1000 })).not.toEqual([]);
+    expect(validateDrawRules({ ticketPriceCents: 1500, promoUntil: '2030-01-01T00:00:00Z' })).not.toEqual([]);
+  });
+
+  it('fechamento anterior ao sorteio e inicio anterior ao fechamento', () => {
+    expect(
+      validateDrawRules({ closeAt: '2030-01-02T00:00:00Z', drawDate: '2030-01-01T00:00:00Z' }),
+    ).toContainEqual(expect.stringContaining('anterior à data do sorteio'));
+    expect(
+      validateDrawRules({ salesStartAt: '2030-01-03T00:00:00Z', closeAt: '2030-01-02T00:00:00Z' }),
+    ).toContainEqual(expect.stringContaining('início das vendas'));
+    expect(
+      validateDrawRules({
+        salesStartAt: '2030-01-01T00:00:00Z',
+        closeAt: '2030-01-02T00:00:00Z',
+        drawDate: '2030-01-03T00:00:00Z',
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe('drawReadinessProblems (checklist de envio)', () => {
+  const completo = {
+    title: 'Sorteio de Natal',
+    prizes: [{ name: 'Moto' }],
+    ticketPriceCents: 1500,
+    drawDate: '2030-01-10T00:00:00Z',
+  };
+
+  it('rascunho completo: nada falta', () => {
+    expect(drawReadinessProblems(completo)).toEqual([]);
+  });
+
+  it('lista tudo o que falta, em portugues', () => {
+    const problemas = drawReadinessProblems({});
+    expect(problemas.join(' ')).toMatch(/título/);
+    expect(problemas.join(' ')).toMatch(/prêmio/);
+    expect(problemas.join(' ')).toMatch(/preço/);
+    expect(problemas.join(' ')).toMatch(/data do sorteio/);
+  });
+
+  it('fechamento que nao e AO_ESGOTAR exige a data de fechamento', () => {
+    for (const modo of DRAW_CLOSE_MODES.filter((m) => m !== 'AO_ESGOTAR')) {
+      expect(drawReadinessProblems({ ...completo, closeMode: modo })).toContainEqual(
+        expect.stringContaining('data de fechamento'),
+      );
+      expect(drawReadinessProblems({ ...completo, closeMode: modo, closeAt: '2030-01-09T00:00:00Z' })).toEqual([]);
+    }
+    expect(drawReadinessProblems({ ...completo, closeMode: 'AO_ESGOTAR' })).toEqual([]);
   });
 });

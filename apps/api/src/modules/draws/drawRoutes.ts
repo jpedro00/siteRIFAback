@@ -4,6 +4,7 @@ import {
   createOrderRequestSchema,
   createReservationRequestSchema,
   reviewDrawRequestSchema,
+  updateDrawRequestSchema,
   updateDrawStatusRequestSchema,
 } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
@@ -21,6 +22,7 @@ import {
   listPublicDraws,
   listReviewQueue,
   reviewDraw,
+  updateDraw,
   updateDrawStatus,
 } from './drawService.js';
 
@@ -176,6 +178,20 @@ export function buildDrawHandlers(deps: AppDeps): Record<string, RequestHandler>
         origin: originOf(req),
       });
       res.status(201).json(draw);
+    }),
+
+    updateDraw: asyncHandler(async (req, res) => {
+      const tenant = requireTenant(req);
+      const session = requireSession(req);
+      const body = updateDrawRequestSchema.parse(req.body);
+      const draw = await updateDraw(deps, {
+        tenantId: tenant.tenantId,
+        userId: session.userId,
+        drawId: pathParam(req, 'id'),
+        data: body,
+        origin: originOf(req),
+      });
+      res.status(200).json(draw);
     }),
 
     updateDrawStatus: asyncHandler(async (req, res) => {

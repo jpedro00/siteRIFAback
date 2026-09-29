@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { ALLOWED_GRID_SIZES } from '../constants/grid.js';
-import { DRAW_STATUSES, PLATFORM_REVIEW_DECISIONS } from '../states/drawStatus.js';
+import {
+  DRAW_CLOSE_MODES,
+  DRAW_RESULT_SOURCES,
+  DRAW_STATUSES,
+  PLATFORM_REVIEW_DECISIONS,
+} from '../states/drawStatus.js';
 
 /**
  * Contratos do nucleo de sorteios (Fase 2, primeira fatia).
@@ -43,8 +48,21 @@ export const publicDrawSummarySchema = z.object({
   description: z.string().nullable(),
   prizeName: z.string(),
   prizeImageUrl: z.string().nullable(),
+  /**
+   * Preco EFETIVO por numero: o promocional enquanto vigente, o cheio depois.
+   * E o valor que o pedido copia. Calculado no servidor (RN15); o cliente nunca
+   * decide qual preco vale.
+   */
   unitPriceCents: z.number().int().positive(),
+  /** Preco cheio, sem promocao. Mostrado riscado quando `promoActive`. */
+  ticketPriceCents: z.number().int().positive(),
+  /** Promocional VIGENTE; nulo quando nao ha promocao ou ela ja venceu. */
+  promotionalPriceCents: z.number().int().positive().nullable(),
+  promoUntil: z.string().nullable(),
+  promoActive: z.boolean(),
   totalNumbers: z.number().int().positive(),
+  /** RN13: 2 digitos na grade de 100; 3 nas de 500 e 1000. */
+  labelDigits: z.union([z.literal(2), z.literal(3)]),
   status: z.enum(DRAW_STATUSES_PHASE2),
   drawDate: z.string().nullable(),
   /** RN18: somente PAGO conta como vendido. Reservado NAO entra aqui. */
@@ -57,8 +75,22 @@ export const publicDrawListResponseSchema = z.object({
 });
 export type PublicDrawListResponse = z.infer<typeof publicDrawListResponseSchema>;
 
+export const prizeSchema = z.object({
+  position: z.number().int().positive(),
+  name: z.string(),
+  description: z.string().nullable(),
+  imageUrl: z.string().nullable(),
+});
+export type Prize = z.infer<typeof prizeSchema>;
+
 export const publicDrawDetailSchema = publicDrawSummarySchema.extend({
   prizeDescription: z.string().nullable(),
+  /** Todos os premios, em ordem de posicao. O primeiro e o "premio principal". */
+  prizes: z.array(prizeSchema),
+  closeMode: z.enum(DRAW_CLOSE_MODES),
+  closeAt: z.string().nullable(),
+  salesStartAt: z.string().nullable(),
+  resultSource: z.enum(DRAW_RESULT_SOURCES),
   /** Indisponiveis no momento: pagos, pendentes e reservas ainda no prazo. */
   takenCount: z.number().int().nonnegative(),
 });
@@ -159,6 +191,13 @@ export const organizerDrawSchema = publicDrawDetailSchema.extend({
   /** RN18: arrecadacao conta somente o que foi PAGO. */
   revenueCents: z.number().int().nonnegative(),
   createdAt: z.string(),
+  /** Limiares de aviso "faltam X". Padrao 25 e 10. */
+  thresholds: z.array(z.number().int()),
+  /** Promocao COMO CONFIGURADA, vigente ou nao — para o organizador editar. */
+  configuredPromotionalPriceCents: z.number().int().nullable(),
+  configuredPromoUntil: z.string().nullable(),
+  /** Motivo da ultima reprovacao na revisao, ate a proxima decisao. */
+  reviewNote: z.string().nullable(),
 });
 export type OrganizerDraw = z.infer<typeof organizerDrawSchema>;
 
@@ -167,18 +206,149 @@ export const organizerDrawListResponseSchema = z.object({
 });
 export type OrganizerDrawListResponse = z.infer<typeof organizerDrawListResponseSchema>;
 
-export const createDrawRequestSchema = z.object({
+/** Link de imagem: so https (Suposicao temporaria S-IMG1, ate haver armazenamento). */
+const httpsUrlSchema = z
+  .string()
+  .url()
+  .max(2000)
+  .refine((v) => v.toLowerCase().startsWith('https://'), {
+    message: 'O link da imagem precisa começar com https://',
+  });
+
+export const prizeInputSchema = z.object({
+  name: z.string().trim().min(2).max(160),
+  description: z.string().max(4000).optional(),
+  imageUrl: httpsUrlSchema.optional(),
+});
+export type PrizeInput = z.infer<typeof prizeInputSchema>;
+
+/**
+ * Regras entre campos de preco e cronograma. Funcao PURA, sem zod: a mesma
+ * verificacao serve a criacao, a edicao (sobre o estado JA mesclado) e o
+ * assistente do organizador, que a mostra enquanto a pessoa digita.
+ *
+ * Devolve a lista de problemas em portugues; vazia = valido. O banco tem as
+ * mesmas regras como CHECK — esta lista existe para dar a mensagem certa antes.
+ */
+export interface DrawRulesInput {
+  readonly ticketPriceCents?: number | null | undefined;
+  readonly promotionalPriceCents?: number | null | undefined;
+  readonly promoUntil?: string | null | undefined;
+  readonly salesStartAt?: string | null | undefined;
+  readonly closeAt?: string | null | undefined;
+  readonly drawDate?: string | null | undefined;
+}
+
+export function validateDrawRules(d: DrawRulesInput): string[] {
+  const problemas: string[] = [];
+  const has = <T>(v: T | null | undefined): v is T => v !== null && v !== undefined;
+
+  if (has(d.promotionalPriceCents) !== has(d.promoUntil)) {
+    problemas.push('O preço promocional e o prazo da promoção são informados juntos.');
+  }
+  if (
+    has(d.promotionalPriceCents) &&
+    has(d.ticketPriceCents) &&
+    d.promotionalPriceCents >= d.ticketPriceCents
+  ) {
+    problemas.push('O preço promocional precisa ser menor que o preço cheio.');
+  }
+
+  const t = (v: string | null | undefined) => (has(v) ? Date.parse(v) : NaN);
+  if (has(d.closeAt) && has(d.drawDate) && !(t(d.closeAt) < t(d.drawDate))) {
+    problemas.push('O fechamento das vendas precisa ser anterior à data do sorteio.');
+  }
+  if (has(d.salesStartAt) && has(d.closeAt) && !(t(d.salesStartAt) < t(d.closeAt))) {
+    problemas.push('O início das vendas precisa ser anterior ao fechamento.');
+  }
+  return problemas;
+}
+
+/**
+ * O que falta para enviar o sorteio a revisao (checklist do passo final do
+ * assistente, DOC-01 §4). `closeMode` diferente de AO_ESGOTAR exige `closeAt`:
+ * isso NAO e CHECK do banco — o rascunho e salvo a cada passo — e por isso e
+ * conferido AQUI, no envio.
+ */
+export interface DrawReadinessInput extends DrawRulesInput {
+  readonly title?: string | null | undefined;
+  readonly prizes?: readonly { readonly name: string }[] | undefined;
+  readonly closeMode?: (typeof DRAW_CLOSE_MODES)[number] | null | undefined;
+}
+
+export function drawReadinessProblems(d: DrawReadinessInput): string[] {
+  const problemas: string[] = [];
+  if (!d.title || d.title.trim().length < 3) problemas.push('Informe o título do sorteio.');
+  if (!d.prizes || d.prizes.length === 0 || d.prizes.some((p) => p.name.trim() === '')) {
+    problemas.push('Cadastre ao menos um prêmio, com nome.');
+  }
+  if (!d.ticketPriceCents || d.ticketPriceCents <= 0) problemas.push('Defina o preço por número.');
+  if (!d.drawDate) problemas.push('Defina a data do sorteio.');
+  if (d.closeMode && d.closeMode !== 'AO_ESGOTAR' && !d.closeAt) {
+    problemas.push('O modo de fechamento escolhido exige a data de fechamento das vendas.');
+  }
+  return [...problemas, ...validateDrawRules(d)];
+}
+
+const dateTimeSchema = z.string().datetime();
+
+const drawEditableFields = {
   title: z.string().min(3).max(160),
   description: z.string().max(4000).optional(),
-  prizeName: z.string().min(2).max(160),
-  prizeDescription: z.string().max(4000).optional(),
-  prizeImageUrl: z.string().url().max(2000).optional(),
-  unitPriceCents: z.number().int().positive().max(100_000_000),
+  /** Um ou mais premios; a ordem define a posicao (1 = principal). */
+  prizes: z.array(prizeInputSchema).min(1).max(20),
+  /** Preco cheio por numero, em centavos. */
+  ticketPriceCents: z.number().int().positive().max(100_000_000),
+  promotionalPriceCents: z.number().int().positive().max(100_000_000).optional(),
+  promoUntil: dateTimeSchema.optional(),
   /** RN13: 100, 500 ou 1000. A lista vem da constante protegida. */
   totalNumbers: z.union([z.literal(100), z.literal(500), z.literal(1000)]),
-  drawDate: z.string().datetime().optional(),
-});
+  drawDate: dateTimeSchema.optional(),
+  salesStartAt: dateTimeSchema.optional(),
+  closeMode: z.enum(DRAW_CLOSE_MODES).optional(),
+  closeAt: dateTimeSchema.optional(),
+  /** Limiares "faltam X", em ordem decrescente. Padrao 25 e 10. */
+  thresholds: z.array(z.number().int().min(1).max(99)).min(1).max(5).optional(),
+} as const;
+
+function refineDrawRules(
+  v: DrawRulesInput & { thresholds?: number[] | undefined },
+  ctx: z.RefinementCtx,
+): void {
+  for (const message of validateDrawRules(v)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+  }
+  const th = v.thresholds;
+  if (th && th.some((x, i) => i > 0 && x >= th[i - 1]!)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Os limiares precisam estar em ordem decrescente.',
+      path: ['thresholds'],
+    });
+  }
+}
+
+export const createDrawRequestSchema = z.object(drawEditableFields).superRefine(refineDrawRules);
 export type CreateDrawRequest = z.infer<typeof createDrawRequestSchema>;
+
+/**
+ * Edicao do RASCUNHO: qualquer subconjunto dos campos. As regras entre campos
+ * sao conferidas pelo servidor sobre o estado JA mesclado, porque um campo
+ * isolado ("so o prazo da promocao") nao tem contra o que ser validado aqui.
+ */
+export const updateDrawRequestSchema = z
+  .object(drawEditableFields)
+  .partial()
+  .extend({
+    // `null` LIMPA o campo (tirar a promocao, o fechamento por data, a descricao).
+    description: z.string().max(4000).nullable().optional(),
+    promotionalPriceCents: z.number().int().positive().max(100_000_000).nullable().optional(),
+    promoUntil: dateTimeSchema.nullable().optional(),
+    drawDate: dateTimeSchema.nullable().optional(),
+    salesStartAt: dateTimeSchema.nullable().optional(),
+    closeAt: dateTimeSchema.nullable().optional(),
+  });
+export type UpdateDrawRequest = z.infer<typeof updateDrawRequestSchema>;
 
 /**
  * Pedido de mudanca de estado do organizador. Aceita qualquer estado do ciclo:

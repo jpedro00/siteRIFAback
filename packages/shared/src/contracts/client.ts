@@ -31,6 +31,7 @@ import type {
   PublicDrawDetail,
   PublicDrawListResponse,
   ReservationResponse,
+  UpdateDrawRequest,
   UpdateDrawStatusRequest,
 } from './draws.js';
 import { API_ERROR_MESSAGES, type ApiErrorBody, type ApiErrorCode } from './errors.js';
@@ -72,6 +73,7 @@ export interface RouteResponses {
   organizerDraws: OrganizerDrawListResponse;
   organizerDraw: OrganizerDraw;
   createDraw: OrganizerDraw;
+  updateDraw: OrganizerDraw;
   updateDrawStatus: OrganizerDraw;
 }
 
@@ -85,6 +87,7 @@ export interface RouteBodies {
   createReservation: CreateReservationRequest;
   createOrder: CreateOrderRequest;
   createDraw: CreateDrawRequest;
+  updateDraw: UpdateDrawRequest;
   updateDrawStatus: UpdateDrawStatusRequest;
   platformReviewDecide: ReviewDrawRequest;
 }

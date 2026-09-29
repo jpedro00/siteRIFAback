@@ -88,3 +88,18 @@ export type PlatformReviewDecision = (typeof PLATFORM_REVIEW_DECISIONS)[number];
 export const DRAW_STATUSES_BLOCKED_UNTIL_REFUND: readonly DrawStatus[] = Object.freeze([
   'CANCELADA',
 ]);
+
+/**
+ * Como as vendas fecham. DOC-01 secao 4 passo 5.
+ *
+ * Os valores sao persistidos (enum `draw_close_mode`, migration 0012) e um teste
+ * compara o tipo do banco com esta lista, como faz com `draw_status`.
+ * Suposicao S-E1: sem escolha explicita o padrao e AO_ESGOTAR.
+ */
+export const DRAW_CLOSE_MODES = ['POR_DATA', 'AO_ESGOTAR', 'O_QUE_VIER_PRIMEIRO'] as const;
+export type DrawCloseMode = (typeof DRAW_CLOSE_MODES)[number];
+export const DEFAULT_DRAW_CLOSE_MODE: DrawCloseMode = 'AO_ESGOTAR';
+
+/** Fonte do resultado. Hoje so a Loteria Federal; a lista cresce por migration. */
+export const DRAW_RESULT_SOURCES = ['LOTERIA_FEDERAL'] as const;
+export type DrawResultSource = (typeof DRAW_RESULT_SOURCES)[number];
