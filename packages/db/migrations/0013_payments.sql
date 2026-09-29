@@ -53,7 +53,10 @@ CREATE TABLE payments (
   CONSTRAINT payments_provider_known CHECK (provider IN ('MERCADO_PAGO', 'FAKE')),
   CONSTRAINT payments_amount_positive CHECK (amount_cents > 0),
   CONSTRAINT payments_provider_id_not_blank CHECK (btrim(provider_payment_id) <> ''),
-  CONSTRAINT payments_paid_has_timestamp CHECK ((status = 'APROVADO') = (paid_at IS NOT NULL)),
+  -- Um pagamento estornado FOI pago: `paid_at` fica.
+  CONSTRAINT payments_paid_has_timestamp CHECK (
+    (status IN ('APROVADO', 'ESTORNADO')) = (paid_at IS NOT NULL)
+  ),
   CONSTRAINT payments_refund_has_reason CHECK (NOT needs_manual_refund OR refund_reason IS NOT NULL)
 );
 

@@ -71,6 +71,9 @@ export async function resetFoundationTables(): Promise<void> {
     // A ordem respeita as chaves estrangeiras. `tenants` cascateia para
     // branding, dominios e memberships.
     await client.query('DELETE FROM event_consumptions');
+    // Heartbeats de outros arquivos de teste nao podem contaminar a leitura da saude.
+    await client.query('DELETE FROM job_heartbeats');
+    await client.query('DELETE FROM outbox_archive');
     await client.query('DELETE FROM outbox');
     await client.query('DELETE FROM sessions');
     await client.query('DELETE FROM user_mfa_factors');

@@ -3,7 +3,7 @@ import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { LoginThrottle } from './lib/loginThrottle.js';
 import { SecretBox } from './lib/secretBox.js';
-import { createPspGateway } from './psp/index.js';
+import { createPspGateway } from '@clubedarifa/psp';
 
 /** Entrada do processo da API. */
 async function main(): Promise<void> {

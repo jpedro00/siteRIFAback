@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { withoutContext } from '@clubedarifa/db';
 import type { ApiErrorBody } from '@clubedarifa/shared';
 import type { AppDeps } from '../deps.js';
+import { log } from '../lib/log.js';
 
 /**
  * Controle de origem para uma API autenticada por cookie.
@@ -93,7 +94,7 @@ export function originGuard(deps: AppDeps) {
           allowed = await isTenantOrigin(deps, origin);
         } catch (error) {
           // Banco fora do ar nao pode virar "origem liberada".
-          console.error('[origin] falha ao verificar origem:', error);
+          log.error('falha ao verificar origem', { error });
           allowed = false;
         }
       }

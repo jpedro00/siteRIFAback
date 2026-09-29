@@ -2,18 +2,21 @@ import { withoutContext, withTenant, type PoolClient } from '@clubedarifa/db';
 import { RESERVATION_TTL_MINUTES, type OrderResponse } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
+import { log } from '../../lib/log.js';
 import {
   PspRejectedError,
   PspUnavailableError,
   type PspGateway,
   type PspPayment,
-} from '../../psp/types.js';
-import { recordAuditEvent } from '../audit/auditService.js';
+} from '@clubedarifa/psp';
 import { montarPedido } from '../draws/drawService.js';
-import { enqueueOutboxEvent } from '../outbox/outboxService.js';
 
 /**
  * M05 · pagamento PIX.
+ *
+ * A TRANSICAO PARA PAGO NAO E DAQUI: e a funcao `app.settle_order_paid`, no banco,
+ * chamada pela API e pelo worker. Este arquivo gera o PIX, consulta o PSP e chama
+ * a funcao com o que o PSP respondeu.
  *
  * TRES REGRAS ORGANIZAM ESTE ARQUIVO.
  *
@@ -29,152 +32,6 @@ import { enqueueOutboxEvent } from '../outbox/outboxService.js';
  * 3. UMA PORTA. `settleOrderPaid` e o unico lugar que escreve PAGO num pedido ou
  *    num numero. A confirmacao de desenvolvimento passa por ela tambem.
  */
-
-export type SettleOutcome = 'PAID' | 'ALREADY_PAID' | 'REFUND_REQUIRED';
-
-interface OrderLockRow {
-  id: string;
-  tenant_id: string;
-  draw_id: string;
-  status: string;
-  quantity: number;
-  total_cents: number;
-}
-
-/**
- * Conclui a venda de um pedido. Roda dentro da transacao do chamador.
- *
- * Os numeros do pedido ja sao dele (PENDENTE) no caminho normal. Se o PIX foi
- * pago DEPOIS de a varredura devolver os numeros a grade, tenta reavelos:
- *   - todos ainda livres -> a venda se conclui (Suposicao S4);
- *   - algum ja tem outro dono -> nada e alterado, o pagamento fica marcado para
- *     estorno MANUAL e o painel e avisado. Vender o mesmo numero duas vezes
- *     nunca e a saida.
- */
-export async function settleOrderPaid(
-  client: PoolClient,
-  input: { orderId: string; paymentId: string | null; actorLabel: string },
-): Promise<SettleOutcome> {
-  const { rows } = await client.query<OrderLockRow>(
-    `SELECT id, tenant_id, draw_id, status::text AS status, quantity, total_cents
-       FROM orders WHERE id = $1 FOR UPDATE`,
-    [input.orderId],
-  );
-  const pedido = rows[0];
-  if (!pedido) throw ApiError.notFound('Pedido não encontrado.');
-  if (pedido.status === 'PAGO') return 'ALREADY_PAID';
-
-  const { rows: itens } = await client.query<{ number: number }>(
-    'SELECT number FROM order_items WHERE order_id = $1 ORDER BY number',
-    [input.orderId],
-  );
-  const numeros = itens.map((i) => i.number);
-
-  // Tudo-ou-nada: um SAVEPOINT desfaz as reivindicacoes se faltar qualquer numero.
-  await client.query('SAVEPOINT settle_order');
-
-  const { rows: proprios } = await client.query<{ number: number }>(
-    `UPDATE draw_numbers SET status = 'PAGO', expires_at = NULL
-      WHERE order_id = $1 AND status = 'PENDENTE'
-      RETURNING number`,
-    [input.orderId],
-  );
-  const conquistados = new Set(proprios.map((r) => r.number));
-
-  const faltantes = numeros.filter((n) => !conquistados.has(n));
-  if (faltantes.length > 0) {
-    // Devolvidos a grade por uma reserva vencida: retomaveis.
-    const { rows: retomados } = await client.query<{ number: number }>(
-      `UPDATE draw_numbers
-          SET status = 'PAGO', order_id = $1, reservation_id = NULL, expires_at = NULL
-        WHERE draw_id = $2 AND number = ANY($3::int[])
-          AND status = 'RESERVADO' AND expires_at <= now()
-        RETURNING number`,
-      [input.orderId, pedido.draw_id, faltantes],
-    );
-    for (const r of retomados) conquistados.add(r.number);
-
-    const aindaFaltam = faltantes.filter((n) => !conquistados.has(n));
-    if (aindaFaltam.length > 0) {
-      // Sem linha nenhuma = livre de verdade: ocupa.
-      const { rows: novos } = await client.query<{ number: number }>(
-        `INSERT INTO draw_numbers (tenant_id, draw_id, number, status, order_id)
-         SELECT $1, $2, n, 'PAGO', $3 FROM unnest($4::int[]) AS n
-         ON CONFLICT (draw_id, number) DO NOTHING
-         RETURNING number`,
-        [pedido.tenant_id, pedido.draw_id, input.orderId, aindaFaltam],
-      );
-      for (const r of novos) conquistados.add(r.number);
-    }
-  }
-
-  if (conquistados.size !== numeros.length) {
-    await client.query('ROLLBACK TO SAVEPOINT settle_order');
-    const perdidos = numeros.filter((n) => !conquistados.has(n));
-
-    if (input.paymentId === null) {
-      // Confirmacao sem pagamento (so em desenvolvimento): nao ha o que estornar.
-      throw ApiError.conflict('Os números deste pedido não estão mais disponíveis.');
-    }
-
-    const motivo = `Pagamento aprovado depois de os números ${perdidos.join(', ')} terem outro dono.`;
-    await client.query(
-      `UPDATE payments SET needs_manual_refund = true, refund_reason = $2 WHERE id = $1`,
-      [input.paymentId, motivo],
-    );
-    await recordAuditEvent(client, {
-      tenantId: pedido.tenant_id,
-      actorUserId: null,
-      actorType: 'SYSTEM',
-      action: 'payment.refund_required',
-      targetType: 'order',
-      targetId: input.orderId,
-      after: { paymentId: input.paymentId, numbers: perdidos },
-    });
-    await enqueueOutboxEvent(client, {
-      tenantId: pedido.tenant_id,
-      eventType: 'payment.refund_required',
-      payload: {
-        tenantId: pedido.tenant_id,
-        orderId: input.orderId,
-        drawId: pedido.draw_id,
-        paymentId: input.paymentId,
-        amountCents: pedido.total_cents,
-        reason: motivo,
-      },
-    });
-    return 'REFUND_REQUIRED';
-  }
-  await client.query('RELEASE SAVEPOINT settle_order');
-
-  await client.query(`UPDATE orders SET status = 'PAGO', paid_at = now() WHERE id = $1`, [
-    input.orderId,
-  ]);
-
-  await recordAuditEvent(client, {
-    tenantId: pedido.tenant_id,
-    actorUserId: null,
-    actorType: 'SYSTEM',
-    action: 'order.paid',
-    targetType: 'order',
-    targetId: input.orderId,
-    before: { status: pedido.status },
-    after: { status: 'PAGO', via: input.actorLabel, paymentId: input.paymentId },
-  });
-  await enqueueOutboxEvent(client, {
-    tenantId: pedido.tenant_id,
-    eventType: 'order.paid',
-    payload: {
-      tenantId: pedido.tenant_id,
-      orderId: input.orderId,
-      drawId: pedido.draw_id,
-      paymentId: input.paymentId,
-      quantity: pedido.quantity,
-      totalCents: pedido.total_cents,
-    },
-  });
-  return 'PAID';
-}
 
 /**
  * Confirmacao de pagamento SEM provedor — so em development/test. A recusa nos
@@ -194,9 +51,33 @@ export async function devConfirmPayment(
     if (!pedido) throw ApiError.notFound('Pedido não encontrado.');
     if (pedido.status === 'CANCELADO') throw ApiError.conflict('Este pedido foi cancelado.');
 
-    await settleOrderPaid(client, { orderId, paymentId: null, actorLabel: 'DEV' });
+    await chamarFuncao(client, 'SELECT app.settle_order_paid($1, NULL, $2) AS r', [orderId, 'DEV']);
     return montarPedido(client, orderId);
   });
+}
+
+/**
+ * Chama uma funcao de estado do banco e traduz o erro em erro de API.
+ * P0002 = nao encontrado; P0001 = regra de negocio recusou (mensagem do banco).
+ */
+async function chamarFuncao(
+  client: PoolClient,
+  sql: string,
+  params: unknown[],
+): Promise<string> {
+  try {
+    const { rows } = await client.query<{ r: string }>(sql, params);
+    return rows[0]!.r;
+  } catch (error) {
+    const codigo = (error as { code?: string }).code;
+    if (codigo === 'P0002') throw ApiError.notFound('Pedido não encontrado.');
+    if (codigo === 'P0001') {
+      throw ApiError.conflict(
+        error instanceof Error ? error.message : 'A operação conflita com o estado atual.',
+      );
+    }
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -286,11 +167,15 @@ export async function ensurePixPayment(
     });
   } catch (error) {
     if (error instanceof PspUnavailableError) {
-      console.warn(`[pix] provedor indisponivel: pedido=${input.orderId}`);
+      log.warn('PIX: provedor indisponivel', { tenant_id: input.tenantId, order_id: input.orderId });
       throw new ApiError('PAYMENT_PROVIDER_UNAVAILABLE');
     }
     if (error instanceof PspRejectedError) {
-      console.error(`[pix] provedor recusou: pedido=${input.orderId} ${error.message}`);
+      log.error('PIX: provedor recusou o pedido', {
+        tenant_id: input.tenantId,
+        order_id: input.orderId,
+        error: error.message,
+      });
       throw new ApiError('PAYMENT_PROVIDER_UNAVAILABLE');
     }
     throw error;
@@ -338,97 +223,31 @@ export type ReconcileOutcome =
   | 'ignored';
 
 /**
- * Aplica o que o PSP diz sobre um pagamento. `remoto` veio de uma CONSULTA a API
- * do provedor — nunca do corpo do webhook (RN06). Idempotente.
+ * Aplica o que o PSP disse sobre um pagamento. `remoto` veio de uma CONSULTA a API
+ * do provedor — nunca do corpo do webhook (RN06). A regra inteira (conferir valor
+ * e pedido, idempotencia, concluir a venda, estorno manual) vive na funcao
+ * `app.apply_psp_payment`, a MESMA que o worker usa: uma transicao, uma
+ * implementacao.
  */
 export async function reconcilePayment(
   client: PoolClient,
   provider: string,
   remoto: PspPayment,
 ): Promise<ReconcileOutcome> {
-  const { rows } = await client.query<{
-    id: string;
-    tenant_id: string;
-    order_id: string;
-    status: string;
-    amount_cents: number;
-  }>(
-    `SELECT id, tenant_id, order_id, status::text AS status, amount_cents
-       FROM payments WHERE provider = $1 AND provider_payment_id = $2 FOR UPDATE`,
-    [provider, remoto.providerPaymentId],
+  const resultado = await chamarFuncao(
+    client,
+    'SELECT app.apply_psp_payment($1, $2, $3, $4, $5, $6::timestamptz, $7::jsonb) AS r',
+    [
+      provider,
+      remoto.providerPaymentId,
+      remoto.status,
+      remoto.amountCents,
+      remoto.externalReference,
+      remoto.paidAt,
+      JSON.stringify(remoto.raw ?? null),
+    ],
   );
-  const pagamento = rows[0];
-  if (!pagamento) return 'unknown_payment';
-
-  // O que o PSP diz precisa CONFERIR com o que cobramos. Valor ou pedido
-  // diferente nunca paga: e o sinal de aviso forjado ou de bug, e o custo de
-  // ignorar e baixo perto do de pagar errado.
-  if (
-    remoto.externalReference !== pagamento.order_id ||
-    remoto.amountCents !== pagamento.amount_cents
-  ) {
-    await recordAuditEvent(client, {
-      tenantId: pagamento.tenant_id,
-      actorUserId: null,
-      actorType: 'SYSTEM',
-      action: 'payment.mismatch',
-      targetType: 'payment',
-      targetId: pagamento.id,
-      after: {
-        expectedAmountCents: pagamento.amount_cents,
-        receivedAmountCents: remoto.amountCents,
-        referenceMatches: remoto.externalReference === pagamento.order_id,
-      },
-    });
-    return 'mismatch';
-  }
-
-  if (pagamento.status === 'APROVADO') return 'already_processed';
-
-  const raw = JSON.stringify(remoto.raw ?? null);
-
-  switch (remoto.status) {
-    case 'APROVADO': {
-      await client.query(
-        `UPDATE payments
-            SET status = 'APROVADO', paid_at = COALESCE($2::timestamptz, now()), raw = $3::jsonb
-          WHERE id = $1`,
-        [pagamento.id, remoto.paidAt, raw],
-      );
-      const resultado = await settleOrderPaid(client, {
-        orderId: pagamento.order_id,
-        paymentId: pagamento.id,
-        actorLabel: 'PSP',
-      });
-      return resultado === 'REFUND_REQUIRED' ? 'refund_required' : 'paid';
-    }
-    case 'EXPIRADO':
-    case 'CANCELADO': {
-      await client.query(`UPDATE payments SET status = $2::payment_status, raw = $3::jsonb WHERE id = $1`, [
-        pagamento.id,
-        remoto.status,
-        raw,
-      ]);
-      return 'closed';
-    }
-    case 'ESTORNADO': {
-      await client.query(`UPDATE payments SET status = 'ESTORNADO', raw = $2::jsonb WHERE id = $1`, [
-        pagamento.id,
-        raw,
-      ]);
-      await recordAuditEvent(client, {
-        tenantId: pagamento.tenant_id,
-        actorUserId: null,
-        actorType: 'SYSTEM',
-        action: 'payment.refunded',
-        targetType: 'payment',
-        targetId: pagamento.id,
-      });
-      return 'refunded';
-    }
-    default:
-      return 'pending';
-  }
+  return resultado as ReconcileOutcome;
 }
 
 /**
@@ -459,7 +278,7 @@ export async function handlePspWebhook(
     body: input.body,
   });
   if (!verificacao.valid) {
-    console.warn(`[webhook] assinatura recusada: ${verificacao.reason}`);
+    log.warn('webhook recusado: assinatura invalida', { reason: verificacao.reason });
     throw ApiError.unauthenticated('Assinatura inválida.');
   }
   if (!verificacao.isPaymentEvent || !verificacao.paymentId) return { outcome: 'ignored' };

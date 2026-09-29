@@ -42,12 +42,35 @@ const configSchema = z.object({
   OUTBOX_RETRY_BASE_SECONDS: z.coerce.number().int().positive().default(5),
 
   QUEUE_SCHEMA: z.string().default('pgboss'),
+
+  /**
+   * Provedor de pagamento, para os jobs `expirar-pix` e `conciliacao`, que
+   * CONSULTAM o PSP antes de liberar um numero. Mesmas variaveis da API; `none`
+   * (padrao) = os jobs de PIX registram aviso e nao liberam nada.
+   */
+  PSP_PROVIDER: z.enum(['none', 'mercadopago']).default('none'),
+  MERCADOPAGO_ACCESS_TOKEN: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  MERCADOPAGO_WEBHOOK_SECRET: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  MERCADOPAGO_FALLBACK_PAYER_EMAIL: z
+    .string()
+    .optional()
+    .transform((v) => (v?.trim() ? v.trim() : undefined)),
 });
 
 export type WorkerConfig = Readonly<z.infer<typeof configSchema>>;
 
 export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
-  const parsed = configSchema.safeParse(env);
+  const parsed = configSchema
+    .refine(
+      (v) =>
+        v.PSP_PROVIDER !== 'mercadopago' ||
+        (v.MERCADOPAGO_ACCESS_TOKEN !== undefined && v.MERCADOPAGO_WEBHOOK_SECRET !== undefined),
+      {
+        message: 'PSP_PROVIDER=mercadopago exige MERCADOPAGO_ACCESS_TOKEN e MERCADOPAGO_WEBHOOK_SECRET.',
+        path: ['PSP_PROVIDER'],
+      },
+    )
+    .safeParse(env);
   if (!parsed.success) {
     const issues = parsed.error.issues
       .map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`)

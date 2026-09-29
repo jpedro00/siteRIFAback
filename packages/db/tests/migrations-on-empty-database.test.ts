@@ -124,8 +124,9 @@ describe.skipIf(!hasTestDatabase)(`migrations em banco vazio ${
       const globalIdentity = ['users', 'user_credentials', 'user_mfa_factors', 'sessions', 'platform_admins'];
       // Tabelas de infraestrutura com tenant_id NULO permitido (evento e
       // trilha de plataforma).
-      const nullableTenant = ['audit_events', 'outbox'];
-      const internal = ['schema_migrations', 'event_consumptions'];
+      const nullableTenant = ['audit_events', 'outbox', 'outbox_archive'];
+      // `job_heartbeats` descreve o PROCESSO do worker, nao uma comunidade.
+      const internal = ['schema_migrations', 'event_consumptions', 'job_heartbeats'];
 
       const { rows: tableRows } = await client.query<{ tablename: string; rowsecurity: boolean }>(
         `SELECT c.relname AS tablename, c.relrowsecurity AS rowsecurity

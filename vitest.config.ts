@@ -93,6 +93,8 @@ export default defineConfig({
     include: [
       'packages/shared/tests/**/*.test.ts',
       'packages/db/tests/**/*.test.ts',
+      'packages/psp/tests/**/*.test.ts',
+      'packages/logging/tests/**/*.test.ts',
       'apps/api/tests/**/*.test.ts',
       'apps/worker/tests/**/*.test.ts',
     ],

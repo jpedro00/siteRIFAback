@@ -1,10 +1,13 @@
 import { pathToFileURL } from 'node:url';
 import { createPool, loadRootEnv, type DbPool } from '@clubedarifa/db';
 import type PgBoss from 'pg-boss';
+import { createPspGateway } from '@clubedarifa/psp';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
 import { buildPublisher, FOUNDATION_QUEUE, startQueue, type QueueMessage } from './queue.js';
 import { startRelayLoop, type RelayLoop } from './outbox/relayLoop.js';
 import { handleMessage } from './dispatch.js';
+import { registerJobs } from './jobs/schedule.js';
+import { log } from './lib/log.js';
 
 /**
  * Processo do worker.
@@ -54,6 +57,10 @@ export async function startWorker(config: WorkerConfig): Promise<WorkerRuntime> 
   console.log(`[fila] pronta no schema "${config.QUEUE_SCHEMA}"`);
 
   await startConsumer(boss, pool);
+
+  // Jobs agendados (expirar reservas e PIX, fechar sorteios, conciliar, limpar).
+  // O PSP e opcional: sem ele, os jobs de PIX avisam e nao liberam nada.
+  await registerJobs(boss, { pool, log, psp: createPspGateway(config) });
 
   const relay = startRelayLoop(pool, buildPublisher(boss), {
     batchSize: config.OUTBOX_BATCH_SIZE,

@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@clubedarifa/db": "*",
+    "@clubedarifa/logging": "*",
+    "@clubedarifa/psp": "*",
     "@clubedarifa/shared": "*",
     "cookie-parser": "^1.4.7",
     "express": "^4.21.2",

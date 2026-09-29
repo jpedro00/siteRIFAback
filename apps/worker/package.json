@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@clubedarifa/db": "*",
+    "@clubedarifa/logging": "*",
+    "@clubedarifa/psp": "*",
     "@clubedarifa/shared": "*",
     "pg": "^8.13.1",
     "pg-boss": "^10.3.2"

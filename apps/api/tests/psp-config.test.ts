@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config.js';
-import { createPspGateway } from '../src/psp/index.js';
+import { createPspGateway } from '@clubedarifa/psp';
 
 /**
  * Configuracao do provedor de pagamento. As credenciais vem de variavel de

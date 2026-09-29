@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { MercadoPagoGateway } from '../../src/psp/mercadopago.js';
+import { MercadoPagoGateway } from '../mercadopago.js';
 import {
   PspRejectedError,
   PspUnavailableError,
@@ -8,10 +8,13 @@ import {
   type PspPayment,
   type PspPaymentStatus,
   type WebhookVerification,
-} from '../../src/psp/types.js';
+} from '../types.js';
 
 /**
  * PSP FALSO. Existe SO na bancada de testes: nenhuma variavel de ambiente o liga.
+ * Recusa ser construido em staging ou producao — o pacote o exporta em um caminho
+ * proprio (`@clubedarifa/psp/testing`), fora do `index`, e esta guarda cobre o
+ * import por engano.
  *
  * A verificacao de assinatura NAO e falsa: delega ao adaptador REAL do Mercado
  * Pago, com um segredo de teste. Assim os testes de webhook exercitam o mesmo
@@ -35,7 +38,16 @@ export class FakePsp implements PspGateway {
     webhookSecret: FAKE_WEBHOOK_SECRET,
   });
   private readonly cobrancas = new Map<string, Cobranca>();
-  private proximoId = 900_000_100;
+  // Ponto de partida por instancia: o banco de teste guarda pagamentos de execucoes
+  // anteriores, e `(provider, provider_payment_id)` e unico.
+  private proximoId = 900_000_000 + Math.floor(Math.random() * 50_000_000);
+
+  constructor() {
+    const ambiente = process.env['NODE_ENV'];
+    if (ambiente === 'production' || ambiente === 'staging') {
+      throw new Error('O PSP falso nao pode ser usado em staging nem em producao.');
+    }
+  }
 
   readonly calls = { create: 0, get: 0 };
   /** Faz a proxima criacao falhar, uma vez. */

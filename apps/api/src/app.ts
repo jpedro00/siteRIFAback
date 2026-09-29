@@ -5,6 +5,7 @@ import { registerRoutes } from './http/registerRoutes.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { originGuard } from './middleware/originGuard.js';
 import { requestContext } from './middleware/requestContext.js';
+import { requestLogger } from './middleware/requestLogger.js';
 
 /**
  * Fabrica do aplicativo Express.
@@ -23,6 +24,7 @@ export function createApp(deps: AppDeps): Express {
   app.use(express.json({ limit: '1mb' }));
   app.use(cookieParser());
   app.use(requestContext());
+  app.use(requestLogger());
 
   // Controle de origem. Ver middleware/originGuard.ts.
   app.use(originGuard(deps));

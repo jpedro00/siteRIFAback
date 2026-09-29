@@ -6,6 +6,7 @@ import {
   type CreateTenantRequest,
   type CreateTenantResponse,
   type HealthResponse,
+  type PlatformHealthResponse,
   type LoginRequest,
   type LoginResponse,
   type MfaCodeRequest,
@@ -67,6 +68,7 @@ export interface RouteResponses {
   platformTenants: TenantListResponse;
   platformCreateTenant: CreateTenantResponse;
   platformReviewQueue: ReviewQueueResponse;
+  platformHealth: PlatformHealthResponse;
   platformReviewDecide: OrganizerDraw;
   accountOrders: AccountOrdersResponse;
   publicDraws: PublicDrawListResponse;

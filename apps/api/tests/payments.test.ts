@@ -10,7 +10,7 @@ import {
   unique,
   type Harness,
 } from './helpers/apiHarness.js';
-import { FakePsp } from './helpers/fakePsp.js';
+import { FakePsp } from '@clubedarifa/psp/testing';
 
 /**
  * M05 · pagamento PIX.

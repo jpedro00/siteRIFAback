@@ -60,12 +60,11 @@ jobs:
       - name: Conferir o manifesto dos contratos
         run: npm run contracts:verify
 
-      - name: Compilar pacotes compartilhados
-        # api e worker importam os tipos de @clubedarifa/shared e @clubedarifa/db;
-        # sem build, o typecheck não encontra as declarações.
-        run: |
-          npm run build -w @clubedarifa/shared
-          npm run build -w @clubedarifa/db
+      - name: Compilar pacotes internos
+        # api e worker importam os tipos de shared, db, logging e psp; sem build,
+        # o typecheck não encontra as declarações. `prepare:internal` os compila na
+        # ordem certa.
+        run: npm run prepare:internal
 
       - name: Lint
         run: npm run lint

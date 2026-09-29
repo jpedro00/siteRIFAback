@@ -38,18 +38,21 @@ services:
     region: oregon
     branch: main
 
-    # O build acontece na raiz do monorepo: a API importa @clubedarifa/shared e
-    # @clubedarifa/db, que precisam estar compilados antes do typecheck dela.
+    # O build acontece na raiz do monorepo: a API importa @clubedarifa/shared,
+    # @clubedarifa/db, @clubedarifa/logging e @clubedarifa/psp, que precisam estar
+    # compilados antes dela (`prepare:internal` os compila na ordem certa).
     buildCommand: >-
       npm ci &&
-      npm run build -w @clubedarifa/shared &&
-      npm run build -w @clubedarifa/db &&
+      npm run prepare:internal &&
       npm run build -w @clubedarifa/api
     startCommand: npm start -w @clubedarifa/api
 
-    # Healthcheck REAL: a rota consulta o banco e informa `database: up|down`.
-    # Ela responde 200 mesmo com o banco fora, de proposito — quem observa
-    # precisa distinguir "API fora" de "API no ar, banco fora".
+    # Healthcheck REAL: a rota consulta o banco (SELECT 1, prazo de 2s) e o
+    # heartbeat do worker.
+    #   banco fora ............ 503  -> o Render tira a instancia da rotacao
+    #   worker atrasado ....... 200 "degraded" -> reiniciar a API nao conserta o worker
+    #   tudo em dia ........... 200 "ok"
+    # O detalhe de cada job vive em GET /api/platform/health (Super Admin).
     healthCheckPath: /api/health
 
     envVars:
@@ -213,8 +216,7 @@ services:
 
     buildCommand: >-
       npm ci &&
-      npm run build -w @clubedarifa/shared &&
-      npm run build -w @clubedarifa/db &&
+      npm run prepare:internal &&
       npm run build -w @clubedarifa/worker
     startCommand: npm start -w @clubedarifa/worker
 
@@ -237,6 +239,16 @@ services:
         sync: false
       - key: QUEUE_SCHEMA
         value: pgboss
+
+      # PSP — o worker CONSULTA o provedor antes de liberar um PIX vencido e na
+      # conciliacao diaria. Mesmas variaveis da API. `none` = os jobs de PIX avisam
+      # e nao liberam nada (staging ate as credenciais sandbox existirem).
+      - key: PSP_PROVIDER
+        value: none
+      - key: MERCADOPAGO_ACCESS_TOKEN
+        sync: false
+      - key: MERCADOPAGO_WEBHOOK_SECRET
+        sync: false
       - key: DATABASE_SSL
         value: 'true'
       # Mesma CA publica da API. Ver o comentario no servico web acima.

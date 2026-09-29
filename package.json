@@ -10,12 +10,14 @@
   "workspaces": [
     "packages/shared",
     "packages/db",
+    "packages/logging",
+    "packages/psp",
     "apps/api",
     "apps/worker"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "prepare:internal": "npm run build -w @clubedarifa/shared && npm run build -w @clubedarifa/db",
+    "prepare:internal": "npm run build -w @clubedarifa/shared && npm run build -w @clubedarifa/db && npm run build -w @clubedarifa/logging && npm run build -w @clubedarifa/psp",
     "typecheck": "npm run prepare:internal && npm run typecheck --workspaces --if-present && npm run typecheck:tests",
     "typecheck:tests": "tsc -p tsconfig.tests.json",
     "lint": "eslint .",

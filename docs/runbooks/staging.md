@@ -397,6 +397,75 @@ escape**.
 
 ---
 
+## 8. Automação, saúde, PIX e migrações
+
+### Jobs do worker
+
+Agendados com `pg-boss.schedule` (fuso `America/Sao_Paulo`). Todos são
+idempotentes: rodar duas vezes seguidas não muda o resultado da primeira.
+
+| Job | Frequência | O que faz |
+|---|---|---|
+| `expirar-reservas` | 1 min | reserva `ATIVA` vencida → `EXPIRADA`. Nunca toca em número (nem `PAGO`) |
+| `ativar-agendados` | 1 min | `AGENDADA` → `ATIVA` quando `sales_start_at` chega |
+| `fechar-sorteios` | 1 min | fecha vendas (data vencida ou grade esgotada); com as vendas encerradas e **sem pendência**, congela o retrato (RN20) e abre a apuração |
+| `expirar-pix` | 5 min | PIX vencido: **consulta o PSP antes de liberar**. Aprovado → conclui a venda; senão devolve os números. PSP fora ou ausente → não libera nada |
+| `conciliacao` | diário 03:00 | pagamentos × pedidos; cobranças que o PSP aprovou e o webhook perdeu são curadas e registradas |
+| `limpeza-outbox` | diário 03:30 | arquiva eventos publicados há mais de 30 dias. **Nunca** apaga `audit_events` nem dead-letter |
+
+Cada ciclo grava um *heartbeat* (`job_heartbeats`) com início, fim, duração,
+contagem e último erro — inclusive quando falha.
+
+### Saúde
+
+- `GET /api/health` (usado pelo Render): `503` **só** se o banco não responde em 2 s.
+  Worker atrasado (algum job sem terminar um ciclo em mais de 3× o seu intervalo) é
+  `degraded` com `200`: reiniciar a API não conserta o worker.
+- `GET /api/platform/health` (Super Admin com `platform:health:read` e MFA): último
+  ciclo de cada job, tamanho da dead-letter, backlog da outbox e divergências de
+  conciliação em aberto (incluindo estornos manuais pendentes).
+
+### PIX (Mercado Pago) — desligado em staging por padrão
+
+`PSP_PROVIDER=none`: o pedido nasce, mas gerar o PIX responde 503 e o webhook 404.
+Para ligar com credenciais **sandbox**, no painel do Render (API **e** worker):
+
+```text
+PSP_PROVIDER                       = mercadopago
+MERCADOPAGO_ACCESS_TOKEN           = <sandbox>          (só na API e no worker; nunca no repositório)
+MERCADOPAGO_WEBHOOK_SECRET         = <assinatura do webhook>
+MERCADOPAGO_FALLBACK_PAYER_EMAIL   = <e-mail usado quando o comprador não informa o dele>
+PUBLIC_API_BASE_URL                = https://<api>.onrender.com     (só na API)
+```
+
+Webhook a cadastrar no painel do Mercado Pago, um por comunidade:
+`{PUBLIC_API_BASE_URL}/api/webhooks/mercadopago/{slug}`. O aviso **não paga**: a API
+valida a assinatura e **consulta** o pagamento no Mercado Pago antes de concluir a venda.
+
+### Logs
+
+Uma linha JSON por evento (`service`, `level`, `msg`, `ts`), com `request_id` (o mesmo
+do cabeçalho `x-request-id`), `tenant_id` e `event_id`. O logger mascara e-mail,
+telefone e nome e omite senha, token, cookie e assinatura. Corpo e *query string* de
+requisição nunca entram no log.
+
+### Migrações
+
+Ficam **fora** do deploy automático. Use o workflow **Migrar staging**
+(*Actions → Migrar staging → Run workflow*):
+
+1. crie o *environment* `staging` (Settings → Environments) e marque **Required
+   reviewers** — sem isso o workflow rodaria sem aprovação;
+2. cadastre o *secret* `MIGRATION_DATABASE_URL` (papel dono) e a *variable*
+   `DATABASE_CA_CERT` nesse environment;
+3. dispare o workflow, digite `MIGRAR`, e o revisor aprova.
+
+### Dependências
+
+O Dependabot abre um PR por semana (npm e GitHub Actions), agrupado.
+
+---
+
 ## O que NÃO entra nesta rodada
 
 Mercado Pago, Vindi, WhatsApp, e-mail real, Cloudflare R2, domínio próprio,

@@ -1,16 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DRAW_EVENT_TYPES } from '@clubedarifa/shared';
-
-const EVENTOS_RECONHECIDOS = [
-  ...DRAW_EVENT_TYPES,
-  'order.paid',
-  'payment.refund_required',
-  'draw.result_published',
-  'draw.result_corrected',
-] as const;
 import type { DbPool } from '@clubedarifa/db';
 import { handleMessage } from '../src/dispatch.js';
 import type { QueueMessage } from '../src/queue.js';
+
+/**
+ * Eventos CONHECIDOS que ainda nao tem consumidor. Os que tem (order.paid,
+ * draw.activated, draw.sales_closed, draw.result_published) sao exercitados, com
+ * banco, em consumers.test.ts.
+ */
+const EVENTOS_RECONHECIDOS = [
+  'draw.submitted',
+  'draw.approved',
+  'draw.rejected',
+  'draw.paused',
+  'draw.resumed',
+  'draw.apuration_started',
+  'draw.result_corrected',
+  'payment.refund_required',
+  'membership.granted',
+  'membership.revoked',
+] as const;
 
 /**
  * Evento de sorteio conhecido e sem consumidor e LOG, nao erro. Falhar faria a

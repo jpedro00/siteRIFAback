@@ -8,6 +8,7 @@ import {
   updateDrawStatusRequestSchema,
 } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
+import { log } from '../../lib/log.js';
 import { devConfirmPayment, ensurePixPayment } from '../payments/paymentService.js';
 import { ApiError } from '../../lib/apiError.js';
 import {
@@ -150,10 +151,12 @@ export function buildDrawHandlers(deps: AppDeps): Record<string, RequestHandler>
 
       const tenant = requireTenant(req);
       const order = await devConfirmPayment(deps, tenant.tenantId, pathParam(req, 'id'));
-      console.warn(
-        `[dev] pagamento confirmado SEM provedor: pedido=${order.orderId} ` +
-          `ambiente=${deps.config.NODE_ENV}`,
-      );
+      log.warn('pagamento confirmado SEM provedor (rota de desenvolvimento)', {
+        request_id: req.context?.requestId ?? null,
+        tenant_id: tenant.tenantId,
+        order_id: order.orderId,
+        environment: deps.config.NODE_ENV,
+      });
       res.status(200).json(order);
     }),
 

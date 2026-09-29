@@ -281,11 +281,52 @@ export const accountOrdersResponseSchema = z.object({
 });
 export type AccountOrdersResponse = z.infer<typeof accountOrdersResponseSchema>;
 
+/**
+ * Saude da API. `status`:
+ *  - ok       banco no ar, worker em dia (ou ainda sem historico)
+ *  - degraded banco no ar, mas algum job do worker esta atrasado
+ *  - down     banco fora: a API nao consegue atender (HTTP 503)
+ * `worker` e o resumo dos heartbeats: ok | stale (algum ciclo atrasado mais de 3x
+ * o intervalo) | unknown (nenhum job ainda registrou ciclo).
+ */
 export const healthResponseSchema = z.object({
-  status: z.literal('ok'),
+  status: z.enum(['ok', 'degraded', 'down']),
   database: z.enum(['up', 'down']),
+  worker: z.enum(['ok', 'stale', 'unknown']),
 });
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
+
+const nullableDate = z.string().nullable();
+
+/** Console Super Admin · Saude: o ultimo ciclo de cada job, dead-letter e conciliacao. */
+export const platformHealthResponseSchema = z.object({
+  generatedAt: z.string(),
+  worker: z.enum(['ok', 'stale', 'unknown']),
+  jobs: z.array(
+    z.object({
+      name: z.string(),
+      intervalSeconds: z.number().int().positive(),
+      lastStartedAt: nullableDate,
+      lastFinishedAt: nullableDate,
+      lastSuccessAt: nullableDate,
+      lastDurationMs: z.number().int().nullable(),
+      lastCount: z.number().int().nullable(),
+      lastError: z.string().nullable(),
+      consecutiveFailures: z.number().int().nonnegative(),
+      /** Nenhum ciclo terminou em mais de 3x o intervalo. */
+      stale: z.boolean(),
+    }),
+  ),
+  /** Eventos que esgotaram as tentativas do relay e esperam inspecao humana. */
+  deadLetter: z.object({ count: z.number().int().nonnegative(), oldestAt: nullableDate }),
+  /** Eventos ainda nao publicados: um backlog que cresce e sinal de relay parado. */
+  outboxPending: z.object({ count: z.number().int().nonnegative(), oldestAt: nullableDate }),
+  reconciliation: z.object({
+    openIssues: z.number().int().nonnegative(),
+    manualRefunds: z.number().int().nonnegative(),
+  }),
+});
+export type PlatformHealthResponse = z.infer<typeof platformHealthResponseSchema>;
 
 // ---------------------------------------------------------------------------
 // Registro de rotas
@@ -418,6 +459,15 @@ export const ROUTE_CONTRACTS = {
     mfa: true,
     tenantScope: 'none',
     platformPermission: 'platform:tenant:create',
+  },
+  platformHealth: {
+    method: 'GET',
+    path: '/api/platform/health',
+    summary: 'Saúde do worker: último ciclo de cada job, dead-letter e conciliação.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'none',
+    platformPermission: 'platform:health:read',
   },
   platformReviewQueue: {
     method: 'GET',

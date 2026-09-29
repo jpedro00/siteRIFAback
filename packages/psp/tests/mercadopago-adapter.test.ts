@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { MercadoPagoGateway } from '../src/psp/mercadopago.js';
-import { PspRejectedError, PspUnavailableError } from '../src/psp/types.js';
+import { MercadoPagoGateway } from '../src/mercadopago.js';
+import { PspRejectedError, PspUnavailableError } from '../src/types.js';
 
 /**
  * Adaptador do Mercado Pago, sem rede: `fetch` e substituido.

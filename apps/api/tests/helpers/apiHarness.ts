@@ -6,7 +6,7 @@ import { createApp } from '../../src/app.js';
 import { loadConfig, type AppConfig } from '../../src/config.js';
 import { LoginThrottle } from '../../src/lib/loginThrottle.js';
 import { SecretBox } from '../../src/lib/secretBox.js';
-import type { PspGateway } from '../../src/psp/types.js';
+import type { PspGateway } from '@clubedarifa/psp';
 import { hashPassword } from '../../src/lib/password.js';
 
 const { Client } = pg;
@@ -340,6 +340,9 @@ export async function cleanup(owner: DbPool): Promise<void> {
   await client.connect();
   try {
     await client.query('DELETE FROM event_consumptions');
+    // Heartbeats de outros arquivos de teste nao podem contaminar a leitura da saude.
+    await client.query('DELETE FROM job_heartbeats');
+    await client.query('DELETE FROM outbox_archive');
     await client.query('DELETE FROM outbox');
     await client.query('DELETE FROM sessions');
     await client.query('DELETE FROM user_mfa_factors');
