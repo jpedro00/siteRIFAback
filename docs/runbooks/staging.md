@@ -39,14 +39,30 @@ não efeito colateral de um deploy — inclusive de um rollback.
 
 ---
 
-## 1. Banco — Neon
+## 1. Banco — Supabase
 
-1. Criar um projeto Neon: **`clubedarifa-staging`**. Região próxima à do Render
-   (Oregon / `us-west-2`) — cada milissegundo de latência aqui aparece em toda
-   requisição, porque a RLS faz o banco participar de tudo.
-2. Anotar a connection string do **dono** → `DATABASE_ADMIN_URL`.
-3. Neon exige TLS. Todas as URLs precisam de `?sslmode=require`, e os serviços
-   sobem com `DATABASE_SSL=true`.
+1. Criar um projeto Supabase: **`clubedarifa-staging`**. Região próxima à do
+   Render (Oregon / `us-west-2`) — cada milissegundo de latência aqui aparece em
+   toda requisição, porque a RLS faz o banco participar de tudo.
+2. Anotar a connection string do **dono** (`postgres`) → `DATABASE_ADMIN_URL`.
+3. TLS é obrigatório. Os serviços sobem com `DATABASE_SSL=true` e
+   `DATABASE_CA_CERT` com a "Supabase Root 2021 CA" (certificado público).
+   **Não** ponha `?sslmode=require` na URL quando a CA vier por
+   `DATABASE_CA_CERT`: o `pg` trata `require` como `verify-full` e a opção da
+   URL passa por cima da CA informada, o que produz
+   `SELF_SIGNED_CERT_IN_CHAIN`. Nunca resolva isso com `rejectUnauthorized=false`.
+
+### Qual conexão cada processo usa
+
+| Processo | Papel | Endpoint | Porta | Por quê |
+|---|---|---|---|---|
+| API | `app_user.<project-ref>` | pooler (Supavisor) | 6543 (transaction) ou 5432 (session) | o contexto do tenant é `set_config(..., true)` dentro de **uma** transação, então o modo transaction é seguro |
+| Worker + pg-boss | `app_worker.<project-ref>` | conexão **direta** ou pooler em session mode | 5432 | usa `LISTEN` e advisory locks, que não sobrevivem ao modo transaction |
+| Migrations, bootstrap, `queue:install` | `postgres` (dono) | direta | 5432 | DDL e criação de papéis |
+
+No pooler o usuário leva o sufixo do projeto (`app_user.<project-ref>`).
+Staging hoje usa o pooler em **5432** (session mode) para a API; migrar para
+6543 é opcional.
 
 ### Bootstrap, migrations e fila
 
@@ -61,13 +77,13 @@ export WORKER_DB_PASSWORD="<gerada>"
 npm run db:bootstrap        # cria app_user e app_worker, restritos
 
 export MIGRATION_DATABASE_URL="<dono>"
-npm run db:migrate          # 0001 … 0008
+npm run db:migrate          # 0001 … 0011
 
 export QUEUE_ADMIN_DATABASE_URL="<dono>"
 npm run queue:install -w @clubedarifa/worker   # schema pgboss, posse do app_worker
 ```
 
-> Se o Neon não permitir `CREATE DATABASE` no plano usado, aponte
+> Se o Supabase não permitir `CREATE DATABASE` no plano usado, aponte
 > `ADMIN_DATABASE_URL` direto para o banco já existente e defina
 > `DATABASE_NAME` com o nome dele — o bootstrap detecta que já existe e segue
 > criando apenas os papéis.
@@ -119,7 +135,15 @@ restaurar o padrão amplo.
 
 ### Provar a RLS no banco gerenciado
 
-Migration aplicada não é prova de isolamento. Rodar a suíte contra o Neon:
+Migration aplicada não é prova de isolamento. A suíte apaga e recria dados: rode
+contra um banco **descartável** (um segundo projeto Supabase só de testes, ou um
+PostgreSQL 17 local). **Nunca** contra o banco que serve staging ou produção — a
+guarda do `vitest.config.ts` recusa `TEST_*` igual a `DATABASE_URL`, e essa
+recusa não deve ser contornada.
+
+A suíte confere mensagens de erro do PostgreSQL em inglês; um servidor com
+`lc_messages` em outro idioma reprova testes que, na verdade, passaram
+(`permissão negada` no lugar de `permission denied`). Use `lc_messages=C`.
 
 ```bash
 export TEST_MIGRATION_DATABASE_URL="<dono>"
@@ -322,7 +346,7 @@ escape**.
 - [ ] `app_user` e `app_worker` com `rolsuper=false`, `rolbypassrls=false`
 - [ ] `app_worker` **não** consegue criar schema
 - [ ] `pgboss` pertence a `app_worker`
-- [ ] suíte de isolamento verde contra o Neon
+- [ ] suíte de isolamento verde (0 pulados) contra um banco descartável
 
 ### API
 - [ ] `/api/health` → `{"status":"ok","database":"up"}`
