@@ -348,6 +348,7 @@ export async function cleanup(owner: DbPool): Promise<void> {
     await client.query('DELETE FROM user_mfa_factors');
     await client.query('DELETE FROM user_credentials');
     await client.query('DELETE FROM platform_admins');
+    await client.query('DELETE FROM invitations');
     await client.query('DELETE FROM memberships');
     // ---------------------------------------------------------------------
     // Fase 2 · sorteios, reservas e pedidos.

@@ -9,6 +9,7 @@ import {
 } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { log } from '../../lib/log.js';
+import { decodeCursor, parseLimit } from '../../lib/cursor.js';
 import { devConfirmPayment, ensurePixPayment } from '../payments/paymentService.js';
 import { ApiError } from '../../lib/apiError.js';
 import {
@@ -68,8 +69,11 @@ export function buildDrawHandlers(deps: AppDeps): Record<string, RequestHandler>
     // -----------------------------------------------------------------------
     publicDraws: asyncHandler(async (req, res) => {
       const tenant = requireTenant(req);
-      const draws = await listPublicDraws(deps, tenant.tenantId);
-      res.status(200).json({ draws });
+      const resposta = await listPublicDraws(deps, tenant.tenantId, {
+        cursor: decodeCursor(req.query['cursor'], { banded: true }),
+        limit: parseLimit(req.query['limit'], 30, 60),
+      });
+      res.status(200).json(resposta);
     }),
 
     publicDraw: asyncHandler(async (req, res) => {
@@ -81,6 +85,10 @@ export function buildDrawHandlers(deps: AppDeps): Record<string, RequestHandler>
     publicDrawNumbers: asyncHandler(async (req, res) => {
       const tenant = requireTenant(req);
       const numbers = await getDrawNumbers(deps, tenant.tenantId, pathParam(req, 'id'));
+      // A grade muda a cada compra: o navegador pode guardar a resposta, mas precisa
+      // REVALIDAR antes de usar. O Express poe o ETag e responde 304 a `If-None-Match`
+      // igual — o polling de 3s custa uma consulta e nenhum corpo quando nada mudou.
+      res.setHeader('Cache-Control', 'no-cache');
       res.status(200).json(numbers);
     }),
 
@@ -105,6 +113,7 @@ export function buildDrawHandlers(deps: AppDeps): Record<string, RequestHandler>
         // Rota publica: a sessao e OPCIONAL. Quem esta logado leva o pedido
         // para a conta; quem nao esta compra do mesmo jeito.
         userId: req.session?.userId ?? null,
+        messagingConsent: body.messagingConsent === true,
       });
 
       // O PIX e gerado logo apos o pedido, FORA da transacao dele. Se o provedor
@@ -170,8 +179,11 @@ export function buildDrawHandlers(deps: AppDeps): Record<string, RequestHandler>
     organizerDraws: asyncHandler(async (req, res) => {
       const tenant = requireTenant(req);
       const session = requireSession(req);
-      const draws = await listOrganizerDraws(deps, tenant.tenantId, session.userId);
-      res.status(200).json({ draws });
+      const resposta = await listOrganizerDraws(deps, tenant.tenantId, session.userId, {
+        cursor: decodeCursor(req.query['cursor']),
+        limit: parseLimit(req.query['limit'], 30, 100),
+      });
+      res.status(200).json(resposta);
     }),
 
     organizerDraw: asyncHandler(async (req, res) => {
@@ -235,7 +247,12 @@ export function buildDrawHandlers(deps: AppDeps): Record<string, RequestHandler>
     // -----------------------------------------------------------------------
     platformReviewQueue: asyncHandler(async (req, res) => {
       const session = requireSession(req);
-      res.status(200).json(await listReviewQueue(deps, session.userId));
+      res.status(200).json(
+        await listReviewQueue(deps, session.userId, {
+          cursor: decodeCursor(req.query['cursor']),
+          limit: parseLimit(req.query['limit'], 30, 100),
+        }),
+      );
     }),
 
     platformReviewDecide: asyncHandler(async (req, res) => {

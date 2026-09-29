@@ -157,6 +157,7 @@ export type AuditEvent = z.infer<typeof auditEventSchema>;
 
 export const auditListResponseSchema = z.object({
   events: z.array(auditEventSchema),
+  nextCursor: z.string().nullable(),
 });
 export type AuditListResponse = z.infer<typeof auditListResponseSchema>;
 
@@ -169,6 +170,7 @@ export const tenantListItemSchema = z.object({
 });
 export const tenantListResponseSchema = z.object({
   tenants: z.array(tenantListItemSchema),
+  nextCursor: z.string().nullable(),
 });
 export type TenantListResponse = z.infer<typeof tenantListResponseSchema>;
 
@@ -180,17 +182,14 @@ export const createTenantRequestSchema = z.object({
     .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, 'Use letras minúsculas, números e hífen.'),
   name: z.string().min(2).max(160),
   /**
-   * Dono da comunidade, por e-mail de uma conta JA EXISTENTE.
+   * Dono da comunidade, por e-mail.
    *
-   * Uma comunidade sem dono e uma comunidade que ninguem consegue operar: o
-   * Super Admin cria e nao administra, e nao ha a quem pedir. Por isso o dono
-   * entra na mesma transacao da criacao — ou nascem os dois, ou nao nasce
-   * nenhum.
-   *
-   * E-mail de conta existente, e nao convite: convidar exige envio, token,
-   * expiracao e uma tela de aceite — fase propria. Exigir que a pessoa ja
-   * tenha cadastro resolve o dono real agora, com o cadastro que acabou de
-   * existir, sem senha provisoria inventada.
+   * Uma comunidade sem dono e uma comunidade que ninguem consegue operar. Por isso
+   * o dono entra na MESMA transacao da criacao — ou nascem os dois, ou nao nasce
+   * nenhum:
+   *   - e-mail de conta EXISTENTE  -> a pessoa vira dona na hora;
+   *   - e-mail sem conta           -> nasce um CONVITE de dono, valido por 7 dias;
+   *     ao aceitar (depois de se cadastrar), a pessoa passa a ser dona.
    */
   ownerEmail: z.string().trim().toLowerCase().email().max(320),
 });
@@ -202,11 +201,18 @@ export const createTenantResponseSchema = z.object({
   name: z.string(),
   status: z.string(),
   createdAt: z.string(),
-  owner: z.object({
-    userId: z.string().uuid(),
-    email: z.string(),
-    displayName: z.string(),
-  }),
+  /** Preenchido quando o e-mail ja tinha conta: a pessoa ja e dona. */
+  owner: z
+    .object({
+      userId: z.string().uuid(),
+      email: z.string(),
+      displayName: z.string(),
+    })
+    .nullable(),
+  /** Preenchido quando o e-mail NAO tinha conta: convite de dono. O token aparece so aqui. */
+  ownerInvitation: z
+    .object({ id: z.string().uuid(), email: z.string(), expiresAt: z.string(), token: z.string() })
+    .nullable(),
 });
 export type CreateTenantResponse = z.infer<typeof createTenantResponseSchema>;
 
@@ -605,6 +611,94 @@ export const ROUTE_CONTRACTS = {
     mfa: false,
     tenantScope: 'resolved',
     tenantPermission: 'draw:write',
+  },
+  tenantDashboard: {
+    method: 'GET',
+    path: '/api/tenant/dashboard',
+    summary: 'Indicadores do organizador: vendidos, arrecadado, reservas, PIX pendentes, vendas por dia.',
+    auth: true,
+    mfa: false,
+    tenantScope: 'resolved',
+    tenantPermission: 'tenant:read',
+  },
+  organizerDrawOrders: {
+    method: 'GET',
+    path: '/api/tenant/draws/:id/orders',
+    summary: 'Pedidos de um sorteio, paginados. Contato do comprador só com buyer:read:full.',
+    auth: true,
+    mfa: false,
+    tenantScope: 'resolved',
+    tenantPermission: 'payment:read:status',
+  },
+  exportDrawOrders: {
+    method: 'GET',
+    path: '/api/tenant/draws/:id/orders/export',
+    summary: 'CSV dos pedidos de um sorteio. Carrega dado pessoal: exige buyer:read:full.',
+    auth: true,
+    mfa: false,
+    tenantScope: 'resolved',
+    tenantPermission: 'buyer:read:full',
+  },
+  tenantTeam: {
+    method: 'GET',
+    path: '/api/tenant/team',
+    summary: 'Equipe da comunidade e convites em aberto.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'resolved',
+    tenantPermission: 'team:manage',
+  },
+  inviteTeamMember: {
+    method: 'POST',
+    path: '/api/tenant/team/invitations',
+    summary: 'Convida alguém para a equipe. Válido por 7 dias; reenviar revoga o anterior.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'resolved',
+    tenantPermission: 'team:manage',
+  },
+  revokeTeamInvitation: {
+    method: 'DELETE',
+    path: '/api/tenant/team/invitations/:id',
+    summary: 'Revoga um convite em aberto.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'resolved',
+    tenantPermission: 'team:manage',
+  },
+  changeTeamMemberRole: {
+    method: 'PATCH',
+    path: '/api/tenant/team/members/:id',
+    summary: 'Troca o papel de um membro. O vínculo antigo é revogado e um novo é criado.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'resolved',
+    tenantPermission: 'team:manage',
+  },
+  removeTeamMember: {
+    method: 'DELETE',
+    path: '/api/tenant/team/members/:id',
+    summary: 'Remove um membro (revoga o vínculo). Efeito imediato.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'resolved',
+    tenantPermission: 'team:manage',
+  },
+  invitationPreview: {
+    method: 'GET',
+    path: '/api/auth/invitations/:token',
+    summary: 'Prévia de um convite pelo token: comunidade, papel e situação.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'none',
+  },
+  acceptInvitation: {
+    method: 'POST',
+    path: '/api/auth/invitations/:token/accept',
+    summary: 'Aceita o convite. Exige sessão cujo e-mail seja o do convite.',
+    auth: true,
+    mfa: false,
+    tenantScope: 'none',
   },
   organizerDrawResult: {
     method: 'GET',

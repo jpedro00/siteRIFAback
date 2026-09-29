@@ -1,22 +1,23 @@
 {
   "_comment": "Gerado por scripts/contracts-snapshot.mjs no repositorio BACKEND, a fonte dos contratos. Nao editar a mao. O frontend carrega uma copia deste arquivo e apenas confere.",
   "package": "@clubedarifa/shared",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "tracked": [
     "src/contracts",
     "src/states",
     "src/permissions",
     "src/constants"
   ],
-  "digest": "e4d4bd62910a97e226ad077e43ab846edb1eda38bda5b2af6b839d303cb40b3a",
+  "digest": "28a4849db93e217c8a268bb755eab1bf1863771adb45562334a890ff0a981295",
   "files": {
-    "src/contracts/client.ts": "2c9697dcb05d682e8cef7e65ba1c94e1d7c83698bfee1afcad76378679ec9d70",
-    "src/contracts/draws.ts": "30bebe7421773766bc18e335cdc57b41d15c4bf9b283c041420cb36bd969bb95",
+    "src/contracts/client.ts": "bd60912fb641786274153611515af8049cb138ef7d7d9f9ceff64b93491fd8d4",
+    "src/contracts/draws.ts": "5cb315b96dc36d3dd433405fee5707c4f240840268cd767409b4816f009011c2",
     "src/contracts/errors.ts": "813c0f3e7830b717e20f1daef76f853b96a6589a43b44f213a653da7c9e4beac",
     "src/contracts/events.ts": "592d4651c0aeec425d8782ebfd9dc6079e690b6c5d70b2aa9fe6ff289ec6a2ba",
-    "src/contracts/index.ts": "aad0655ea542ccf4a67365253b57f9793e95eca3cff031a897b9b459d0b5abea",
+    "src/contracts/index.ts": "9e9c613233fe20397945192238d467264f4b3cfb78b822d7b686f0ddf741bc33",
+    "src/contracts/panel.ts": "7fa151c9182ee62021c7f8d67ddf5d78c84b4031c230cc4562e98b9e63b00e82",
     "src/contracts/result.ts": "a25ef82617df3c47b4140f383b079fe6be84d52b4543fc32d9214a38262eb956",
-    "src/contracts/routes.ts": "86566746520d638bc8a4ce72e7ea32ddaed69802af90ce262ee7a4e5243b930f",
+    "src/contracts/routes.ts": "3bad8123dc648800ec00d7d7787b1fa7fca4b5cd7da446f5f079173d6469ca4e",
     "src/states/drawStatus.ts": "09561b13894774993188597b0f4b7c49acfb4279c85fce46aa1446ef768dc3cd",
     "src/states/index.ts": "0437d833638d4c95e57ac7a4572caa76285a13981bd679fe6bf94c2673622f3d",
     "src/states/numberStatus.ts": "2e89a8913afa1effa718b9b82dd3d6af219de09eea06a0587e8f3ba23449987c",
@@ -25,7 +26,8 @@
     "src/permissions/permissions.ts": "b753823af7d960850c7f35e7033c9cbbf3d3e483c787099312b98ddcce6dacd4",
     "src/permissions/roles.ts": "fd2a99e7f76a0397ebe97c4794d0e8e1f89e9a8e4dbc05ff166c21c48e3e6dcd",
     "src/constants/grid.ts": "f4e6315bc29e8095e0f20d7c48bd36bcf3e36d76d579a76f1502c03132fc9e9b",
-    "src/constants/index.ts": "370c974d1ac5ef3b3a5fd7a30479ffb3a16308303632d5513e97ce94c7de2ebf",
+    "src/constants/index.ts": "2418770758d24d2bde027af7acff1940d8c59e5472b353e40fb1e182c092bce4",
+    "src/constants/invitation.ts": "5d99566815eaf938411e77ccc568eb748ddd4c52ceb2be20646566ed2263b553",
     "src/constants/reservation.ts": "cd680b229104796a4349915945665db81a64a7f58153489458fa97835e7813f7",
     "src/constants/thresholds.ts": "d2ce79872f53d14da44d95259638a418c0051e4cd8e46841cf682447bf293cbb"
   }

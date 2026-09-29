@@ -36,6 +36,18 @@ import type {
   UpdateDrawStatusRequest,
 } from './draws.js';
 import type {
+  AcceptInvitationResponse,
+  ChangeMemberRoleRequest,
+  DashboardResponse,
+  DrawOrdersResponse,
+  ExportOrdersResponse,
+  InvitationPreview,
+  InviteMemberRequest,
+  InviteMemberResponse,
+  TeamMember,
+  TeamResponse,
+} from './panel.js';
+import type {
   CorrectResultRequest,
   OrganizerDrawResult,
   PublicDrawResult,
@@ -81,6 +93,16 @@ export interface RouteResponses {
   publicDrawResult: PublicDrawResult;
   organizerDrawResult: OrganizerDrawResult;
   publishDrawResult: OrganizerDrawResult;
+  tenantDashboard: DashboardResponse;
+  organizerDrawOrders: DrawOrdersResponse;
+  exportDrawOrders: ExportOrdersResponse;
+  tenantTeam: TeamResponse;
+  inviteTeamMember: InviteMemberResponse;
+  revokeTeamInvitation: undefined;
+  changeTeamMemberRole: TeamMember;
+  removeTeamMember: undefined;
+  invitationPreview: InvitationPreview;
+  acceptInvitation: AcceptInvitationResponse;
   correctDrawResult: OrganizerDrawResult;
   mercadopagoWebhook: { received: true };
   devConfirmPayment: OrderResponse;
@@ -103,6 +125,8 @@ export interface RouteBodies {
   createDraw: CreateDrawRequest;
   updateDraw: UpdateDrawRequest;
   publishDrawResult: PublishResultRequest;
+  inviteTeamMember: InviteMemberRequest;
+  changeTeamMemberRole: ChangeMemberRoleRequest;
   correctDrawResult: CorrectResultRequest;
   updateDrawStatus: UpdateDrawStatusRequest;
   platformReviewDecide: ReviewDrawRequest;
@@ -142,6 +166,12 @@ export interface RequestOptions {
   readonly params?: Record<string, string | number>;
   readonly query?: Record<string, string | number | undefined>;
   readonly signal?: AbortSignal;
+  /**
+   * Revalida a resposta com o servidor a cada chamada (`cache: 'no-cache'`). Com o
+   * ETag da API, o navegador manda `If-None-Match` e o servidor responde 304 quando
+   * nada mudou — e o que o polling da grade usa para ser barato.
+   */
+  readonly revalidate?: boolean;
 }
 
 /**
@@ -229,6 +259,7 @@ export class ApiClient {
       method: contract.method,
       headers,
       credentials: 'include',
+      ...(options?.revalidate ? { cache: 'no-cache' as const } : {}),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       ...(options?.signal ? { signal: options.signal } : {}),
     });

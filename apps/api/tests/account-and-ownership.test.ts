@@ -320,14 +320,37 @@ describe.skipIf(!hasTestDatabase)(`conta e propriedade${skipReason}`, () => {
      * O caso que o "tudo ou nada" existe para cobrir: e-mail sem conta. A
      * comunidade NAO pode sobrar criada e sem dono.
      */
-    it('desfaz tudo quando o e-mail do dono nao corresponde a conta nenhuma', async () => {
+    it('e-mail sem conta: a comunidade nasce COM um convite de dono (nunca orfa)', async () => {
       const { cookie } = await superAdmin();
+      const slug = unique('convite-');
+
+      const res = await request(h.app)
+        .post('/api/platform/tenants')
+        .set('Cookie', cookie)
+        .send({ slug, name: 'Nasce Com Convite', ownerEmail: 'ninguem@example.com' });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(res.body.owner).toBeNull();
+      expect(res.body.ownerInvitation).toMatchObject({ email: 'ninguem@example.com' });
+      // Comunidade e convite existem juntos: ha sempre um caminho para o dono.
+      const { rows } = await h.owner.query(
+        `SELECT count(*)::int AS n FROM invitations i JOIN tenants t ON t.id = i.tenant_id
+          WHERE t.slug = $1 AND i.role = 'OWNER' AND i.accepted_at IS NULL`,
+        [slug],
+      );
+      expect(rows[0]!.n).toBe(1);
+    });
+
+    it('desfaz tudo quando o dono indicado tem conta INATIVA', async () => {
+      const { cookie } = await superAdmin();
+      const inativa = await seedAccount(h.owner);
+      await h.owner.query("UPDATE users SET status = 'DISABLED' WHERE id = $1", [inativa.userId]);
       const slug = unique('rollback-');
 
       const res = await request(h.app)
         .post('/api/platform/tenants')
         .set('Cookie', cookie)
-        .send({ slug, name: 'Nao Deve Existir', ownerEmail: 'ninguem@example.com' });
+        .send({ slug, name: 'Nao Deve Existir', ownerEmail: inativa.email });
 
       expect(res.status).toBe(400);
       const orfa = await h.owner.query('SELECT 1 FROM tenants WHERE slug = $1', [slug]);

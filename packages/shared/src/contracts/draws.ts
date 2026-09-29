@@ -73,6 +73,8 @@ export const publicDrawSummarySchema = z.object({
 export type PublicDrawSummary = z.infer<typeof publicDrawSummarySchema>;
 
 export const publicDrawListResponseSchema = z.object({
+  /** Cursor para a proxima pagina; nulo no fim. */
+  nextCursor: z.string().nullable(),
   draws: z.array(publicDrawSummarySchema),
 });
 export type PublicDrawListResponse = z.infer<typeof publicDrawListResponseSchema>;
@@ -154,6 +156,11 @@ export const createOrderRequestSchema = z.object({
    * e recusado na validacao, em vez de virar pedido sem aceite.
    */
   acceptedTerms: z.literal(true),
+  /**
+   * Consentimento para receber mensagens sobre o pedido. E OUTRA decisao, separada
+   * do aceite do regulamento: nao e condicao para comprar. Ausente = nao consentiu.
+   */
+  messagingConsent: z.boolean().optional(),
 });
 export type CreateOrderRequest = z.infer<typeof createOrderRequestSchema>;
 
@@ -228,6 +235,7 @@ export const organizerDrawSchema = publicDrawDetailSchema.extend({
 export type OrganizerDraw = z.infer<typeof organizerDrawSchema>;
 
 export const organizerDrawListResponseSchema = z.object({
+  nextCursor: z.string().nullable(),
   draws: z.array(organizerDrawSchema),
 });
 export type OrganizerDrawListResponse = z.infer<typeof organizerDrawListResponseSchema>;
@@ -420,6 +428,7 @@ export const reviewQueueItemSchema = z.object({
 export type ReviewQueueItem = z.infer<typeof reviewQueueItemSchema>;
 
 export const reviewQueueResponseSchema = z.object({
+  nextCursor: z.string().nullable(),
   draws: z.array(reviewQueueItemSchema),
 });
 export type ReviewQueueResponse = z.infer<typeof reviewQueueResponseSchema>;

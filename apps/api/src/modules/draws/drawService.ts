@@ -28,6 +28,7 @@ import {
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
 import { isUniqueViolation } from '../../lib/pgError.js';
+import { paginate, type Keyset } from '../../lib/cursor.js';
 import { recordAuditEvent } from '../audit/auditService.js';
 import { enqueueOutboxEvent } from '../outbox/outboxService.js';
 
@@ -188,22 +189,38 @@ async function contarPorEstado(
 export async function listPublicDraws(
   deps: AppDeps,
   tenantId: string,
-): Promise<PublicDrawSummary[]> {
+  page: { cursor: Keyset | null; limit: number },
+): Promise<{ draws: PublicDrawSummary[]; nextCursor: string | null }> {
   return withTenant(deps.pool, { tenantId }, async (client) => {
-    const { rows } = await client.query<DrawRow & { paid_count: string }>(
+    // Faixa 0 = vendendo agora (e o que a pessoa veio ver); faixa 1 = o resto. O
+    // cursor leva a faixa: a ordem e (faixa, criacao DESC, id DESC).
+    const { rows } = await client.query<DrawRow & { paid_count: string; faixa: number; cursor_t: string }>(
       `SELECT d.*,
               (d.promotional_price_cents IS NOT NULL AND d.promo_until > now()) AS promo_active,
               (SELECT count(*) FROM draw_numbers n
-                WHERE n.draw_id = d.id AND n.status = 'PAGO')::text AS paid_count
+                WHERE n.draw_id = d.id AND n.status = 'PAGO')::text AS paid_count,
+              CASE WHEN d.status = 'ATIVA' THEN 0 ELSE 1 END AS faixa,
+              d.created_at::text AS cursor_t
          FROM draws d
         WHERE d.status = ANY($1::draw_status[])
-        ORDER BY
-          -- Sorteio que esta vendendo vem primeiro: e o que a pessoa veio ver.
-          CASE WHEN d.status = 'ATIVA' THEN 0 ELSE 1 END,
-          d.created_at DESC`,
-      [STATUS_VISIVEL_NA_VITRINE],
+          AND (
+            $2::int IS NULL
+            OR (CASE WHEN d.status = 'ATIVA' THEN 0 ELSE 1 END) > $2::int
+            OR ((CASE WHEN d.status = 'ATIVA' THEN 0 ELSE 1 END) = $2::int
+                AND (d.created_at, d.id) < ($3::timestamptz, $4::uuid))
+          )
+        ORDER BY faixa, d.created_at DESC, d.id DESC
+        LIMIT $5`,
+      [
+        STATUS_VISIVEL_NA_VITRINE,
+        page.cursor?.b ?? null,
+        page.cursor?.t ?? null,
+        page.cursor?.id ?? null,
+        page.limit + 1,
+      ],
     );
-    return rows.map((row) => toSummary(row, Number(row.paid_count)));
+    const { pagina, nextCursor } = paginate(rows, page.limit, (r) => ({ t: r.cursor_t, id: r.id, b: r.faixa }));
+    return { draws: pagina.map((row) => toSummary(row, Number(row.paid_count))), nextCursor };
   });
 }
 
@@ -496,6 +513,8 @@ export async function createOrder(
     buyer: { name: string; phone: string; email?: string | undefined };
     /** Conta autenticada, quando houver. Nulo = compra sem conta. */
     userId?: string | null;
+    /** Consentiu em receber mensagens? Decisao SEPARADA do aceite do regulamento. */
+    messagingConsent?: boolean;
   },
 ): Promise<OrderResponse> {
   return withTenant(
@@ -569,8 +588,8 @@ export async function createOrder(
     const { rows: orderRows } = await client.query<{ id: string }>(
       `INSERT INTO orders
          (tenant_id, draw_id, buyer_id, reservation_id, unit_price_cents,
-          quantity, total_cents, accepted_terms_at, user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8)
+          quantity, total_cents, accepted_terms_at, user_id, messaging_consent_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, CASE WHEN $9::boolean THEN now() END)
        RETURNING id`,
       [
         input.tenantId,
@@ -581,6 +600,7 @@ export async function createOrder(
         numeros.length,
         unitPriceCents * numeros.length,
         input.userId ?? null,
+        input.messagingConsent === true,
       ],
     );
     const orderId = orderRows[0]!.id;
@@ -661,12 +681,19 @@ export async function listOrganizerDraws(
   deps: AppDeps,
   tenantId: string,
   userId: string,
-): Promise<OrganizerDraw[]> {
+  page: { cursor: Keyset | null; limit: number },
+): Promise<{ draws: OrganizerDraw[]; nextCursor: string | null }> {
   return withTenant(deps.pool, { tenantId, userId }, async (client) => {
-    const { rows } = await client.query<DrawRow>(
-      `SELECT ${DRAW_COLUMNS} FROM draws ORDER BY created_at DESC LIMIT 200`,
+    const { rows } = await client.query<DrawRow & { cursor_t: string }>(
+      `SELECT ${DRAW_COLUMNS}, created_at::text AS cursor_t
+         FROM draws
+        WHERE ($1::timestamptz IS NULL OR (created_at, id) < ($1::timestamptz, $2::uuid))
+        ORDER BY created_at DESC, id DESC
+        LIMIT $3`,
+      [page.cursor?.t ?? null, page.cursor?.id ?? null, page.limit + 1],
     );
-    return Promise.all(rows.map((row) => montarOrganizerDraw(client, row)));
+    const { pagina, nextCursor } = paginate(rows, page.limit, (r) => ({ t: r.cursor_t, id: r.id }));
+    return { draws: await Promise.all(pagina.map((row) => montarOrganizerDraw(client, row))), nextCursor };
   });
 }
 
@@ -1136,10 +1163,11 @@ export async function reviewDraw(
   );
 }
 
-/** Fila do Super Admin: sorteios aguardando revisao, de todas as comunidades. */
+/** Fila do Super Admin: sorteios aguardando revisao, de todas as comunidades. Mais antigo primeiro. */
 export async function listReviewQueue(
   deps: AppDeps,
   userId: string,
+  page: { cursor: Keyset | null; limit: number },
 ): Promise<ReviewQueueResponse> {
   return withPlatform(deps.pool, { userId }, async (client) => {
     const { rows } = await client.query<{
@@ -1153,18 +1181,24 @@ export async function listReviewQueue(
       tenant_id: string;
       tenant_slug: string;
       tenant_name: string;
+      cursor_t: string;
     }>(
       `SELECT d.id, d.title, d.prize_name, d.ticket_price_cents AS unit_price_cents, d.total_numbers,
               d.draw_date, d.created_at, d.tenant_id,
-              t.slug AS tenant_slug, t.name AS tenant_name
+              t.slug AS tenant_slug, t.name AS tenant_name,
+              d.updated_at::text AS cursor_t
          FROM draws d
          JOIN tenants t ON t.id = d.tenant_id
         WHERE d.status = 'REVISÃO COMPLIANCE'
+          AND ($1::timestamptz IS NULL OR (d.updated_at, d.id) > ($1::timestamptz, $2::uuid))
         ORDER BY d.updated_at ASC, d.id ASC
-        LIMIT 200`,
+        LIMIT $3`,
+      [page.cursor?.t ?? null, page.cursor?.id ?? null, page.limit + 1],
     );
+    const { pagina, nextCursor } = paginate(rows, page.limit, (r) => ({ t: r.cursor_t, id: r.id }));
     return {
-      draws: rows.map((r) => ({
+      nextCursor,
+      draws: pagina.map((r) => ({
         id: r.id,
         title: r.title,
         prizeName: r.prize_name,
