@@ -1,7 +1,7 @@
 import type { Express } from 'express';
 import request from 'supertest';
 import pg from 'pg';
-import { createPool, migrate, pgConnectionConfig, type DbPool } from '@campaigns/db';
+import { createPool, migrate, pgConnectionConfig, type DbPool } from '@clubedarifa/db';
 import { createApp } from '../../src/app.js';
 import { loadConfig, type AppConfig } from '../../src/config.js';
 import { LoginThrottle } from '../../src/lib/loginThrottle.js';
@@ -26,7 +26,7 @@ export const hasTestDatabase = TEST_OWNER_URL !== '' && TEST_APP_URL !== '';
 export const skipReason =
   'PULADO: defina TEST_MIGRATION_DATABASE_URL e TEST_APP_DATABASE_URL para os testes de API com banco.';
 
-export const TEST_BASE_DOMAIN = 'plataforma.local';
+export const TEST_BASE_DOMAIN = 'clubedarifa.local';
 export const TEST_MFA_KEY = Buffer.alloc(32, 3).toString('base64');
 
 /**

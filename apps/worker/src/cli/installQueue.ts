@@ -1,4 +1,4 @@
-import { loadRootEnv } from '@campaigns/db';
+import { loadRootEnv } from '@clubedarifa/db';
 import { installQueue } from '../queue.js';
 
 /**
@@ -18,7 +18,7 @@ import { installQueue } from '../queue.js';
  *   DATABASE_SSL              'true' em provedor gerenciado
  *
  * Uso:
- *   npm run queue:install -w @campaigns/worker
+ *   npm run queue:install -w @clubedarifa/worker
  */
 async function main(): Promise<void> {
   await loadRootEnv();

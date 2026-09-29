@@ -4,7 +4,7 @@ import {
   DRAW_STATUSES,
   MEMBERSHIP_ROLES,
   PLATFORM_ROLES,
-} from '@campaigns/shared';
+} from '@clubedarifa/shared';
 import type { DbPool } from '../src/pool.js';
 import {
   describeSkipReason,

@@ -1,5 +1,5 @@
 import type { Request, RequestHandler, Response } from 'express';
-import type { HealthResponse } from '@campaigns/shared';
+import type { HealthResponse } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 
 /** M12 · diagnostico. Sem sessao, sem contexto de comunidade, sem dado de negocio. */

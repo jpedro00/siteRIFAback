@@ -19,7 +19,7 @@ function base(overrides: Record<string, string> = {}): Record<string, string> {
   return {
     DATABASE_URL: 'postgres://app_user:x@localhost:5432/qualquer',
     MFA_ENCRYPTION_KEY: CHAVE_MFA,
-    APP_BASE_DOMAIN: 'plataforma.local',
+    APP_BASE_DOMAIN: 'clubedarifa.local',
     CORS_ORIGINS: 'https://painel.example',
     SESSION_COOKIE_SECURE: 'true',
     ...overrides,

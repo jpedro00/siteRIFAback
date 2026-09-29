@@ -32,7 +32,7 @@ export function createPool(options: CreatePoolOptions): DbPool {
     // explicito e apagaria a CA. Ver `pgConnectionConfig`.
     ...pgConnectionConfig(options.connectionString, { ssl: options.ssl ?? false }),
     max: options.max ?? 10,
-    application_name: options.applicationName ?? 'campaigns-api',
+    application_name: options.applicationName ?? 'clubedarifa-api',
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
   });

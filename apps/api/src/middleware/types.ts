@@ -4,7 +4,7 @@ import type {
   PlatformPermission,
   PlatformRole,
   TenantPermission,
-} from '@campaigns/shared';
+} from '@clubedarifa/shared';
 
 /** Sessao autenticada, montada pelo middleware `authenticate`. */
 export interface AuthenticatedSession {

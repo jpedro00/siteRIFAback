@@ -73,7 +73,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const admin = new Client({ connectionString: adminUrl, application_name: 'campaigns-reset-test' });
+  const admin = new Client({ connectionString: adminUrl, application_name: 'clubedarifa-reset-test' });
   await admin.connect();
   try {
     await admin.query(

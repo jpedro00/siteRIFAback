@@ -1,5 +1,5 @@
 {
-  "name": "@campaigns/api",
+  "name": "@clubedarifa/api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,8 +10,8 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@campaigns/db": "*",
-    "@campaigns/shared": "*",
+    "@clubedarifa/db": "*",
+    "@clubedarifa/shared": "*",
     "cookie-parser": "^1.4.7",
     "express": "^4.21.2",
     "otplib": "^13.5.0",

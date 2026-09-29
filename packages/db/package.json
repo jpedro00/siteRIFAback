@@ -1,5 +1,5 @@
 {
-  "name": "@campaigns/db",
+  "name": "@clubedarifa/db",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -19,7 +19,7 @@
     "reset-test": "tsx src/cli/reset-test-db.ts"
   },
   "dependencies": {
-    "@campaigns/shared": "*",
+    "@clubedarifa/shared": "*",
     "dotenv": "^16.4.7",
     "pg": "^8.13.1"
   },

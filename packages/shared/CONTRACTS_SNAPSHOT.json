@@ -1,7 +1,7 @@
 {
   "_comment": "Gerado por scripts/contracts-snapshot.mjs no repositorio BACKEND, a fonte dos contratos. Nao editar a mao. O frontend carrega uma copia deste arquivo e apenas confere.",
-  "package": "@campaigns/shared",
-  "version": "0.2.0",
+  "package": "@clubedarifa/shared",
+  "version": "0.2.1",
   "tracked": [
     "src/contracts",
     "src/states",

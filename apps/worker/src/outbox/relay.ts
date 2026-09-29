@@ -1,5 +1,5 @@
-import type { DbPool, PoolClient } from '@campaigns/db';
-import type { OutboxEventType } from '@campaigns/shared';
+import type { DbPool, PoolClient } from '@clubedarifa/db';
+import type { OutboxEventType } from '@clubedarifa/shared';
 
 /**
  * Relay da outbox.

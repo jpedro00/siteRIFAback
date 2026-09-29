@@ -1,5 +1,5 @@
 import { pathToFileURL } from 'node:url';
-import { createPool, loadRootEnv, type DbPool } from '@campaigns/db';
+import { createPool, loadRootEnv, type DbPool } from '@clubedarifa/db';
 import type PgBoss from 'pg-boss';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
 import { buildPublisher, FOUNDATION_QUEUE, startQueue, type QueueMessage } from './queue.js';
@@ -46,7 +46,7 @@ async function startConsumer(boss: PgBoss, pool: DbPool): Promise<void> {
 export async function startWorker(config: WorkerConfig): Promise<WorkerRuntime> {
   const pool = createPool({
     connectionString: config.WORKER_DATABASE_URL,
-    applicationName: 'campaigns-worker',
+    applicationName: 'clubedarifa-worker',
     ssl: config.DATABASE_SSL,
   });
 

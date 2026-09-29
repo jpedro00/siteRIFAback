@@ -61,11 +61,11 @@ jobs:
         run: npm run contracts:verify
 
       - name: Compilar pacotes compartilhados
-        # api e worker importam os tipos de @campaigns/shared e @campaigns/db;
+        # api e worker importam os tipos de @clubedarifa/shared e @clubedarifa/db;
         # sem build, o typecheck não encontra as declarações.
         run: |
-          npm run build -w @campaigns/shared
-          npm run build -w @campaigns/db
+          npm run build -w @clubedarifa/shared
+          npm run build -w @clubedarifa/db
 
       - name: Lint
         run: npm run lint
@@ -84,7 +84,7 @@ jobs:
       # instalar, e o worker — que roda continuamente — não deve tê-lo.
       # Ver apps/worker/src/queue.ts.
       - name: Instalar o schema da fila
-        run: npm run queue:install -w @campaigns/worker
+        run: npm run queue:install -w @clubedarifa/worker
 
       # UMA execução da suíte, com dois repórteres: o legível, para quem lê o
       # log, e o JSON, para a verificação de teste pulado logo abaixo.

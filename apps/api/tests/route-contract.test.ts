@@ -7,13 +7,13 @@ import {
   PLATFORM_PERMISSIONS,
   routeKey,
   type RouteContract,
-} from '@campaigns/shared';
+} from '@clubedarifa/shared';
 import { createApp } from '../src/app.js';
 import { listRegisteredRoutes } from '../src/http/registerRoutes.js';
 import { loadConfig } from '../src/config.js';
 import { LoginThrottle } from '../src/lib/loginThrottle.js';
 import { SecretBox } from '../src/lib/secretBox.js';
-import { createPool } from '@campaigns/db';
+import { createPool } from '@clubedarifa/db';
 
 /**
  * E4 · contrato frontend/backend. Este teste falha nos dois sentidos:
@@ -30,7 +30,7 @@ function buildTestApp() {
     NODE_ENV: 'test',
     DATABASE_URL: 'postgres://app_user:x@localhost:5432/nao-usado-neste-teste',
     MFA_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString('base64'),
-    APP_BASE_DOMAIN: 'plataforma.local',
+    APP_BASE_DOMAIN: 'clubedarifa.local',
   });
   const pool = createPool({ connectionString: config.DATABASE_URL, max: 1 });
   const app = createApp({

@@ -1,5 +1,5 @@
-import type { DbPool } from '@campaigns/db';
-import { tenantCreatedPayloadSchema } from '@campaigns/shared';
+import type { DbPool } from '@clubedarifa/db';
+import { tenantCreatedPayloadSchema } from '@clubedarifa/shared';
 
 /**
  * Consumidor do evento `tenant.created`: provisiona a marca padrao da

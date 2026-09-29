@@ -1,11 +1,11 @@
-# TironiRifa — backend
+# Clube da Rifa — backend
 
 API HTTP, worker e banco da plataforma de sorteios por comunidades. Este
 repositorio e tambem a **fonte versionada dos contratos** que o frontend
 consome.
 
 O frontend — vitrine, painel do organizador e console da plataforma — vive em
-`tironirifa-frontend`. Os dois repositorios instalam e compilam sem depender da
+`clubedarifa-frontend`. Os dois repositorios instalam e compilam sem depender da
 pasta local um do outro: nenhuma dependencia `file:../` atravessa a fronteira.
 
 ## Estrutura
@@ -75,7 +75,7 @@ Os tres papeis existem para usos distintos e nao sao intercambiaveis:
 ```bash
 npm run db:bootstrap                    # cria banco e os dois papeis restritos
 npm run db:migrate                      # aplica as migrations pendentes
-npm run queue:install -w @campaigns/worker
+npm run queue:install -w @clubedarifa/worker
 ```
 
 > `db:bootstrap` e `db:migrate` executam DDL. Num banco que ja existe, rode

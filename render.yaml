@@ -32,20 +32,20 @@ services:
   # API HTTP
   # ---------------------------------------------------------------------------
   - type: web
-    name: campaigns-api-staging
+    name: clubedarifa-api-staging
     runtime: node
     plan: starter
     region: oregon
     branch: main
 
-    # O build acontece na raiz do monorepo: a API importa @campaigns/shared e
-    # @campaigns/db, que precisam estar compilados antes do typecheck dela.
+    # O build acontece na raiz do monorepo: a API importa @clubedarifa/shared e
+    # @clubedarifa/db, que precisam estar compilados antes do typecheck dela.
     buildCommand: >-
       npm ci &&
-      npm run build -w @campaigns/shared &&
-      npm run build -w @campaigns/db &&
-      npm run build -w @campaigns/api
-    startCommand: npm start -w @campaigns/api
+      npm run build -w @clubedarifa/shared &&
+      npm run build -w @clubedarifa/db &&
+      npm run build -w @clubedarifa/api
+    startCommand: npm start -w @clubedarifa/api
 
     # Healthcheck REAL: a rota consulta o banco e informa `database: up|down`.
     # Ela responde 200 mesmo com o banco fora, de proposito — quem observa
@@ -185,7 +185,7 @@ services:
   # pode derrubar o atendimento HTTP.
   # ---------------------------------------------------------------------------
   - type: worker
-    name: campaigns-worker-staging
+    name: clubedarifa-worker-staging
     runtime: node
     plan: starter
     region: oregon
@@ -193,10 +193,10 @@ services:
 
     buildCommand: >-
       npm ci &&
-      npm run build -w @campaigns/shared &&
-      npm run build -w @campaigns/db &&
-      npm run build -w @campaigns/worker
-    startCommand: npm start -w @campaigns/worker
+      npm run build -w @clubedarifa/shared &&
+      npm run build -w @clubedarifa/db &&
+      npm run build -w @clubedarifa/worker
+    startCommand: npm start -w @clubedarifa/worker
 
     envVars:
       # Mesma versao da API e do CI. Ver o comentario no servico web acima.
@@ -241,7 +241,7 @@ services:
 # executadas deliberadamente antes do deploy:
 #
 #   DATABASE_ADMIN_URL=... npm run db:migrate
-#   QUEUE_ADMIN_DATABASE_URL=... npm run queue:install -w @campaigns/worker
+#   QUEUE_ADMIN_DATABASE_URL=... npm run queue:install -w @clubedarifa/worker
 #
 # Amarrar isso ao `buildCommand` faria cada deploy — inclusive um rollback —
 # tentar aplicar DDL, com a credencial errada e no momento errado.

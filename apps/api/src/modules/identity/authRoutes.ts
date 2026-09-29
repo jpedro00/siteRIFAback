@@ -1,5 +1,5 @@
 import type { Request, RequestHandler, Response } from 'express';
-import { withUser } from '@campaigns/db';
+import { withUser } from '@clubedarifa/db';
 import {
   loginRequestSchema,
   mfaCodeRequestSchema,
@@ -10,7 +10,7 @@ import {
   type MembershipRole,
   type MembershipSummary,
   type SessionResponse,
-} from '@campaigns/shared';
+} from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
 import {

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createPool, migrate, type DbPool } from '@campaigns/db';
+import { createPool, migrate, type DbPool } from '@clubedarifa/db';
 import { startRelayLoop } from '../src/outbox/relayLoop.js';
 import { startWorker } from '../src/worker.js';
 import { installQueue } from '../src/queue.js';
@@ -225,7 +225,7 @@ describe.skipIf(!hasDb)(`RN21 · encerramento gracioso ${hasDb ? '' : skipReason
 
       const durante = await owner.query<{ n: string }>(
         `SELECT count(*)::text AS n FROM pg_stat_activity
-          WHERE application_name = 'campaigns-worker'`,
+          WHERE application_name = 'clubedarifa-worker'`,
       );
       expect(Number(durante.rows[0]!.n)).toBeGreaterThan(0);
 
@@ -249,7 +249,7 @@ describe.skipIf(!hasDb)(`RN21 · encerramento gracioso ${hasDb ? '' : skipReason
       for (let tentativa = 0; tentativa < 15; tentativa += 1) {
         const depois = await owner.query<{ n: string }>(
           `SELECT count(*)::text AS n FROM pg_stat_activity
-            WHERE application_name = 'campaigns-worker'`,
+            WHERE application_name = 'clubedarifa-worker'`,
         );
         abertas = Number(depois.rows[0]!.n);
         if (abertas === 0) break;

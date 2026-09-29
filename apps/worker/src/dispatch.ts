@@ -1,4 +1,4 @@
-import type { DbPool } from '@campaigns/db';
+import type { DbPool } from '@clubedarifa/db';
 import type { QueueMessage } from './queue.js';
 import { provisionTenantBranding } from './consumers/provisionTenantBranding.js';
 

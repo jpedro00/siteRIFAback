@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
-import type { PlatformPermission, RouteContract, TenantPermission } from '@campaigns/shared';
+import type { PlatformPermission, RouteContract, TenantPermission } from '@clubedarifa/shared';
 import type { AppDeps } from '../deps.js';
 import { ApiError } from '../lib/apiError.js';
 import { authenticateSession } from '../modules/identity/authService.js';

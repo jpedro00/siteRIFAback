@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
-import { RESERVATION_TTL_MINUTES } from '@campaigns/shared';
+import { RESERVATION_TTL_MINUTES } from '@clubedarifa/shared';
 import {
   cleanup,
   createHarness,

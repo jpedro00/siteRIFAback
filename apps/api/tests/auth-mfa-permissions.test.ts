@@ -791,7 +791,7 @@ describe.skipIf(!hasTestDatabase)(`API · autenticacao e autorizacao ${
       await seedTenantWithSlug(harness.owner, slug);
       const res = await request(harness.app)
         .get('/api/public/tenant')
-        .set('Host', `${slug}.plataforma.local`);
+        .set('Host', `${slug}.clubedarifa.local`);
       expect(res.status).toBe(200);
       expect(res.body.slug).toBe(slug);
     });
@@ -852,16 +852,16 @@ describe.skipIf(!hasTestDatabase)(`API · autenticacao e autorizacao ${
 
       const res = await request(harness.app)
         .get('/api/health')
-        .set('Origin', `https://${slug}.plataforma.local`);
+        .set('Origin', `https://${slug}.clubedarifa.local`);
 
       expect(res.status).toBe(200);
-      expect(res.headers['access-control-allow-origin']).toBe(`https://${slug}.plataforma.local`);
+      expect(res.headers['access-control-allow-origin']).toBe(`https://${slug}.clubedarifa.local`);
     });
 
     it('subdominio de comunidade INEXISTENTE e recusado', async () => {
       const res = await request(harness.app)
         .get('/api/health')
-        .set('Origin', 'https://comunidade-que-nao-existe.plataforma.local');
+        .set('Origin', 'https://comunidade-que-nao-existe.clubedarifa.local');
       expect(res.status).toBe(403);
     });
 
@@ -936,7 +936,7 @@ describe.skipIf(!hasTestDatabase)(`API · autenticacao e autorizacao ${
 
       const res = await request(semLista.app)
         .get('/api/health')
-        .set('Origin', `https://${slug}.plataforma.local`);
+        .set('Origin', `https://${slug}.clubedarifa.local`);
       expect(res.status).toBe(200);
     });
 

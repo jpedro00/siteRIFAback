@@ -1,5 +1,5 @@
-import type { PoolClient } from '@campaigns/db';
-import { OUTBOX_PAYLOAD_SCHEMAS, type OutboxEventType } from '@campaigns/shared';
+import type { PoolClient } from '@clubedarifa/db';
+import { OUTBOX_PAYLOAD_SCHEMAS, type OutboxEventType } from '@clubedarifa/shared';
 
 /**
  * M12 · gravacao de evento na outbox.

@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { ZodError } from 'zod';
-import { API_ERROR_MESSAGES, type ApiErrorBody } from '@campaigns/shared';
-import { TenantContextError } from '@campaigns/db';
+import { API_ERROR_MESSAGES, type ApiErrorBody } from '@clubedarifa/shared';
+import { TenantContextError } from '@clubedarifa/db';
 import { ApiError } from '../lib/apiError.js';
 
 /**

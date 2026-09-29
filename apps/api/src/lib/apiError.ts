@@ -1,4 +1,4 @@
-import { API_ERROR_MESSAGES, API_ERROR_STATUS, type ApiErrorCode } from '@campaigns/shared';
+import { API_ERROR_MESSAGES, API_ERROR_STATUS, type ApiErrorCode } from '@clubedarifa/shared';
 
 /**
  * Erro com codigo de contrato. Os frontends decidem o estado de tela pelo

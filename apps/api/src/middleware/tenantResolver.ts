@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
-import { withUser, withoutContext } from '@campaigns/db';
-import { tenantPermissionsFor, type MembershipRole } from '@campaigns/shared';
+import { withUser, withoutContext } from '@clubedarifa/db';
+import { tenantPermissionsFor, type MembershipRole } from '@clubedarifa/shared';
 import type { AppDeps } from '../deps.js';
 import { ApiError } from '../lib/apiError.js';
 

@@ -1,6 +1,6 @@
 import PgBoss from 'pg-boss';
 import pg from 'pg';
-import { pgConnectionConfig } from '@campaigns/db';
+import { pgConnectionConfig } from '@clubedarifa/db';
 import type { Publisher } from './outbox/relay.js';
 
 const { Client } = pg;
@@ -108,7 +108,7 @@ export async function installQueue(input: {
 
   const admin = new Client({
     ...pgConnectionConfig(input.adminConnectionString, { ssl: input.ssl ?? false }),
-    application_name: 'campaigns-queue-install',
+    application_name: 'clubedarifa-queue-install',
   });
   await admin.connect();
 
@@ -228,7 +228,7 @@ async function queueIsInstalled(client: pg.Client, schema: string): Promise<bool
 export async function startQueue(config: QueueOptions): Promise<PgBoss> {
   const probe = new Client({
     ...pgConnectionConfig(config.QUEUE_DATABASE_URL, { ssl: config.DATABASE_SSL }),
-    application_name: 'campaigns-queue-probe',
+    application_name: 'clubedarifa-queue-probe',
   });
   await probe.connect();
   try {
@@ -237,7 +237,7 @@ export async function startQueue(config: QueueOptions): Promise<PgBoss> {
         `A fila nao esta instalada no schema "${config.QUEUE_SCHEMA}".\n` +
           'Instalar cria objetos e exige papel administrativo — o worker roda ' +
           'com um papel restrito de proposito.\n' +
-          'Rode uma vez, junto das migrations: npm run queue:install -w @campaigns/worker',
+          'Rode uma vez, junto das migrations: npm run queue:install -w @clubedarifa/worker',
       );
     }
   } finally {

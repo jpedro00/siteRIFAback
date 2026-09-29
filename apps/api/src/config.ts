@@ -44,7 +44,7 @@ const configSchema = z.object({
     }, 'MFA_ENCRYPTION_KEY deve ser 32 bytes em base64.'),
 
   /** Dominio base das vitrines: {slug}.{APP_BASE_DOMAIN}. */
-  APP_BASE_DOMAIN: z.string().min(1).default('plataforma.local'),
+  APP_BASE_DOMAIN: z.string().min(1).default('clubedarifa.local'),
 
   /**
    * Aceitar o cabecalho `x-tenant-slug` para escolher a comunidade.
@@ -69,7 +69,7 @@ const configSchema = z.object({
   /** Origens permitidas para os tres frontends, separadas por virgula. */
   CORS_ORIGINS: z.string().default(''),
 
-  SESSION_COOKIE_NAME: z.string().default('campaigns_session'),
+  SESSION_COOKIE_NAME: z.string().default('clubedarifa_session'),
   SESSION_TTL_HOURS: z.coerce.number().int().positive().default(12),
   SESSION_COOKIE_SECURE: z
     .enum(['true', 'false'])
@@ -121,7 +121,7 @@ const configSchema = z.object({
   LOGIN_ORIGIN_MAX_ACCOUNTS: z.coerce.number().int().positive().default(5),
 
   /** Emissor exibido no aplicativo autenticador. */
-  MFA_ISSUER: z.string().default('Campanhas & Comunidades'),
+  MFA_ISSUER: z.string().default('Clube da Rifa'),
 });
 
 export type AppConfig = Readonly<z.infer<typeof configSchema>> & {

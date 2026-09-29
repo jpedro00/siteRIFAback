@@ -4,7 +4,7 @@ import {
   createOrderRequestSchema,
   createReservationRequestSchema,
   updateDrawStatusRequestSchema,
-} from '@campaigns/shared';
+} from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
 import {

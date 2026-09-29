@@ -1,5 +1,5 @@
 import type { Express, RequestHandler } from 'express';
-import { ROUTE_CONTRACTS, ROUTE_NAMES, type RouteName } from '@campaigns/shared';
+import { ROUTE_CONTRACTS, ROUTE_NAMES, type RouteName } from '@clubedarifa/shared';
 import type { AppDeps } from '../deps.js';
 import { authenticate, authorizeRoute, enforceMfaGate } from '../middleware/authorize.js';
 import { tenantResolver } from '../middleware/tenantResolver.js';

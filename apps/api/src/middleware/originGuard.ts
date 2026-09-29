@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
-import { withoutContext } from '@campaigns/db';
-import type { ApiErrorBody } from '@campaigns/shared';
+import { withoutContext } from '@clubedarifa/db';
+import type { ApiErrorBody } from '@clubedarifa/shared';
 import type { AppDeps } from '../deps.js';
 
 /**

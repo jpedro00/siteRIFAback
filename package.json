@@ -1,8 +1,8 @@
 {
-  "name": "tironirifa-backend",
+  "name": "clubedarifa-backend",
   "private": true,
   "version": "0.1.0",
-  "description": "TironiRifa - backend: API HTTP, worker e banco. Fonte versionada dos contratos.",
+  "description": "Clube da Rifa - backend: API HTTP, worker e banco. Fonte versionada dos contratos.",
   "type": "module",
   "engines": {
     "node": ">=20.11"
@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "prepare:internal": "npm run build -w @campaigns/shared && npm run build -w @campaigns/db",
+    "prepare:internal": "npm run build -w @clubedarifa/shared && npm run build -w @clubedarifa/db",
     "typecheck": "npm run prepare:internal && npm run typecheck --workspaces --if-present && npm run typecheck:tests",
     "typecheck:tests": "tsc -p tsconfig.tests.json",
     "lint": "eslint .",
@@ -23,12 +23,12 @@
     "test:watch": "npm run prepare:internal && vitest",
     "contracts:snapshot": "node scripts/contracts-snapshot.mjs --write",
     "contracts:verify": "node scripts/contracts-snapshot.mjs",
-    "db:migrate": "npm run migrate -w @campaigns/db",
-    "db:bootstrap": "npm run bootstrap -w @campaigns/db",
-    "db:reset-test": "npm run reset-test -w @campaigns/db",
-    "queue:install": "npm run queue:install -w @campaigns/worker",
-    "dev:api": "npm run prepare:internal && npm run dev -w @campaigns/api",
-    "dev:worker": "npm run prepare:internal && npm run dev -w @campaigns/worker"
+    "db:migrate": "npm run migrate -w @clubedarifa/db",
+    "db:bootstrap": "npm run bootstrap -w @clubedarifa/db",
+    "db:reset-test": "npm run reset-test -w @clubedarifa/db",
+    "queue:install": "npm run queue:install -w @clubedarifa/worker",
+    "dev:api": "npm run prepare:internal && npm run dev -w @clubedarifa/api",
+    "dev:worker": "npm run prepare:internal && npm run dev -w @clubedarifa/worker"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

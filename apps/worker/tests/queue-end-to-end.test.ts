@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import PgBoss from 'pg-boss';
-import { createPool, migrate, type DbPool } from '@campaigns/db';
+import { createPool, migrate, type DbPool } from '@clubedarifa/db';
 import { runRelayOnce } from '../src/outbox/relay.js';
 import { handleMessage } from '../src/dispatch.js';
 import {

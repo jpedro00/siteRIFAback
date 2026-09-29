@@ -1,4 +1,4 @@
-import type { DbPool } from '@campaigns/db';
+import type { DbPool } from '@clubedarifa/db';
 import { runRelayOnce, type Publisher, type RelayOptions } from './relay.js';
 
 /**

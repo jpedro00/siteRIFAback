@@ -46,7 +46,7 @@ async function main(): Promise<void> {
 
   const admin = new Client({
     ...pgConnectionConfig(adminUrl),
-    application_name: 'campaigns-bootstrap',
+    application_name: 'clubedarifa-bootstrap',
   });
   await admin.connect();
 

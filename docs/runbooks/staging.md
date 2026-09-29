@@ -41,7 +41,7 @@ não efeito colateral de um deploy — inclusive de um rollback.
 
 ## 1. Banco — Neon
 
-1. Criar um projeto Neon: **`campaigns-staging`**. Região próxima à do Render
+1. Criar um projeto Neon: **`clubedarifa-staging`**. Região próxima à do Render
    (Oregon / `us-west-2`) — cada milissegundo de latência aqui aparece em toda
    requisição, porque a RLS faz o banco participar de tudo.
 2. Anotar a connection string do **dono** → `DATABASE_ADMIN_URL`.
@@ -54,7 +54,7 @@ Da máquina do operador, com `DATABASE_ADMIN_URL` em mãos:
 
 ```bash
 export ADMIN_DATABASE_URL="<dono>"          # cria banco e papéis
-export DATABASE_NAME=campaigns_staging
+export DATABASE_NAME=clubedarifa_staging
 export APP_DB_PASSWORD="<gerada>"
 export WORKER_DB_PASSWORD="<gerada>"
 
@@ -64,7 +64,7 @@ export MIGRATION_DATABASE_URL="<dono>"
 npm run db:migrate          # 0001 … 0008
 
 export QUEUE_ADMIN_DATABASE_URL="<dono>"
-npm run queue:install -w @campaigns/worker   # schema pgboss, posse do app_worker
+npm run queue:install -w @clubedarifa/worker   # schema pgboss, posse do app_worker
 ```
 
 > Se o Neon não permitir `CREATE DATABASE` no plano usado, aponte
@@ -177,7 +177,7 @@ banco fora".
 
 ## 3. Worker — Render
 
-Mesmo Blueprint, serviço `campaigns-worker-staging`, tipo `worker`.
+Mesmo Blueprint, serviço `clubedarifa-worker-staging`, tipo `worker`.
 
 ```text
 WORKER_DATABASE_URL    app_worker
@@ -197,9 +197,9 @@ unificar: são três aplicações, com públicos e superfícies de ataque difere
 
 | Projeto | Root Directory |
 |---|---|
-| `campaigns-storefront-staging` | `apps/storefront` |
-| `campaigns-organizer-staging` | `apps/organizer` |
-| `campaigns-admin-staging` | `apps/admin` |
+| `clubedarifa-storefront-staging` | `apps/storefront` |
+| `clubedarifa-organizer-staging` | `apps/organizer` |
+| `clubedarifa-admin-staging` | `apps/admin` |
 
 Build e output vêm do `vercel.json` de cada app; não há o que preencher no
 painel além do Root Directory.

@@ -1,4 +1,4 @@
-import { withUser, type PoolClient } from '@campaigns/db';
+import { withUser, type PoolClient } from '@clubedarifa/db';
 import type { AppDeps } from '../../deps.js';
 import { recordAuditEvent } from './auditService.js';
 

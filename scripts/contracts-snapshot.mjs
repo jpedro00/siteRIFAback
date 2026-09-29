@@ -68,7 +68,7 @@ if (process.argv.includes('--write')) {
     _comment:
       'Gerado por scripts/contracts-snapshot.mjs no repositorio BACKEND, a fonte dos contratos. ' +
       'Nao editar a mao. O frontend carrega uma copia deste arquivo e apenas confere.',
-    package: '@campaigns/shared',
+    package: '@clubedarifa/shared',
     version,
     tracked: TRACKED,
     digest,
@@ -105,7 +105,7 @@ if (problems.length > 0) {
   for (const problem of problems) console.error(`  - ${problem}`);
   console.error(
     '\nOs contratos sao versionados no repositorio BACKEND. Para atualizar:' +
-      '\n  1. altere em tironirifa-backend/packages/shared' +
+      '\n  1. altere em clubedarifa-backend/packages/shared' +
       '\n  2. rode `npm run contracts:snapshot` la, subindo a versao do pacote' +
       '\n  3. copie as arvores e o CONTRACTS_SNAPSHOT.json para este repositorio' +
       '\nNao editar os contratos diretamente aqui.',

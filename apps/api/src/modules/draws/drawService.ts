@@ -1,4 +1,4 @@
-import { withTenant, type PoolClient } from '@campaigns/db';
+import { withTenant, type PoolClient } from '@clubedarifa/db';
 import {
   RESERVATION_TTL_MINUTES,
   labelDigitsForGridSize,
@@ -9,7 +9,7 @@ import {
   type PublicDrawDetail,
   type PublicDrawSummary,
   type ReservationResponse,
-} from '@campaigns/shared';
+} from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
 import { isUniqueViolation } from '../../lib/pgError.js';

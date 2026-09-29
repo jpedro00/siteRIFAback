@@ -1,4 +1,4 @@
-import type { DbPool } from '@campaigns/db';
+import type { DbPool } from '@clubedarifa/db';
 import type { AppConfig } from './config.js';
 import type { LoginThrottle } from './lib/loginThrottle.js';
 import type { SecretBox } from './lib/secretBox.js';

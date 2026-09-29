@@ -1,4 +1,4 @@
-import type { PoolClient } from '@campaigns/db';
+import type { PoolClient } from '@clubedarifa/db';
 
 /**
  * M12 · trilha de auditoria. RN11.

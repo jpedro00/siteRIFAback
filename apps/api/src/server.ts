@@ -1,4 +1,4 @@
-import { createPool, loadRootEnv } from '@campaigns/db';
+import { createPool, loadRootEnv } from '@clubedarifa/db';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { LoginThrottle } from './lib/loginThrottle.js';
@@ -13,7 +13,7 @@ async function main(): Promise<void> {
 
   const pool = createPool({
     connectionString: config.DATABASE_URL,
-    applicationName: 'campaigns-api',
+    applicationName: 'clubedarifa-api',
     ssl: config.DATABASE_SSL,
   });
 

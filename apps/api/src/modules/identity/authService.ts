@@ -1,10 +1,10 @@
-import { withUser, withoutContext, type PoolClient } from '@campaigns/db';
+import { withUser, withoutContext, type PoolClient } from '@clubedarifa/db';
 import {
   platformPermissionsFor,
   requiresMfa,
   type MembershipRole,
   type PlatformRole,
-} from '@campaigns/shared';
+} from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
 import { isUniqueViolation } from '../../lib/pgError.js';

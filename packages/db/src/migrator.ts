@@ -99,7 +99,7 @@ export async function migrate(connectionString: string, dir?: string): Promise<M
   const migrations = await loadMigrations(dir);
   const client = new Client({
     ...pgConnectionConfig(connectionString),
-    application_name: 'campaigns-migrator',
+    application_name: 'clubedarifa-migrator',
   });
   await client.connect();
 
