@@ -136,8 +136,21 @@ const configSchema = z.object({
    * variavel declarada e sem valor nao pode ligar o provedor pela metade.
    */
   PSP_PROVIDER: z.enum(['none', 'mercadopago']).default('none'),
-  MERCADOPAGO_ACCESS_TOKEN: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
   MERCADOPAGO_WEBHOOK_SECRET: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  /**
+   * NAO existe access token global do Mercado Pago. Cada comunidade conecta a PROPRIA conta por
+   * OAuth; o que a plataforma tem e a APLICACAO (client id + secret, para o OAuth) e o segredo
+   * de ASSINATURA do webhook (`MERCADOPAGO_WEBHOOK_SECRET`, da aplicacao, um so para todas).
+   */
+  MERCADOPAGO_OAUTH_CLIENT_ID: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  MERCADOPAGO_OAUTH_CLIENT_SECRET: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  /**
+   * Chave (base64, 32 bytes) que cifra as credenciais de pagamento no banco. PROPRIA: nao e a do
+   * MFA (`MFA_ENCRYPTION_KEY`) — vazar uma nao abre a outra.
+   */
+  PAYMENT_CREDENTIALS_KEY: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  /** URL do painel do organizador (sem barra final): para onde o retorno do OAuth redireciona. */
+  ORGANIZER_PANEL_URL: z.string().optional().transform((v) => (v?.trim() ? v.trim().replace(/\/+$/, '') : undefined)),
   /** E-mail usado quando o comprador nao informou o dele; o Mercado Pago exige um. */
   MERCADOPAGO_FALLBACK_PAYER_EMAIL: z
     .string()
@@ -145,6 +158,22 @@ const configSchema = z.object({
     .transform((v) => (v?.trim() ? v.trim() : undefined)),
   /** URL publica da API, para montar o endereco do webhook entregue ao PSP. */
   PUBLIC_API_BASE_URL: z.string().optional().transform((v) => (v?.trim() ? v.trim().replace(/\/+$/, '') : undefined)),
+
+  /**
+   * Cobranca da PLATAFORMA (assinaturas SaaS, Stripe). Fase 7 · FLUXO A.
+   * Independente do PSP dos sorteios (`PSP_PROVIDER`): sao contas, credenciais e
+   * webhooks diferentes, e nunca se misturam.
+   *
+   * `none` = desligado (padrao): o webhook nao existe (404), contratar e abrir o portal
+   * respondem `BILLING_UNAVAILABLE`, e a leitura da assinatura local segue funcionando.
+   *
+   * Chave `sk_live_` so em producao. Em desenvolvimento e staging, sempre `sk_test_`.
+   */
+  BILLING_PROVIDER: z.enum(['none', 'stripe']).default('none'),
+  STRIPE_SECRET_KEY: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  STRIPE_WEBHOOK_SECRET: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  /** URL do painel do organizador: para onde a Stripe devolve a pessoa (sem barra final). */
+  BILLING_RETURN_URL: z.string().optional().transform((v) => (v?.trim() ? v.trim().replace(/\/+$/, '') : undefined)),
 });
 
 export type AppConfig = Readonly<z.infer<typeof configSchema>> & {
@@ -181,14 +210,69 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     .refine(
       (value) =>
         value.PSP_PROVIDER !== 'mercadopago' ||
-        (value.MERCADOPAGO_ACCESS_TOKEN !== undefined &&
-          value.MERCADOPAGO_WEBHOOK_SECRET !== undefined &&
-          value.PUBLIC_API_BASE_URL !== undefined),
+        (value.MERCADOPAGO_WEBHOOK_SECRET !== undefined &&
+          value.PUBLIC_API_BASE_URL !== undefined &&
+          value.MERCADOPAGO_OAUTH_CLIENT_ID !== undefined &&
+          value.MERCADOPAGO_OAUTH_CLIENT_SECRET !== undefined &&
+          value.PAYMENT_CREDENTIALS_KEY !== undefined &&
+          value.ORGANIZER_PANEL_URL !== undefined),
       {
         message:
-          'PSP_PROVIDER=mercadopago exige MERCADOPAGO_ACCESS_TOKEN, MERCADOPAGO_WEBHOOK_SECRET e PUBLIC_API_BASE_URL: sem o segredo do webhook nao ha como validar o aviso, e sem a URL o Mercado Pago nao sabe para onde avisar.',
+          'PSP_PROVIDER=mercadopago exige MERCADOPAGO_WEBHOOK_SECRET, PUBLIC_API_BASE_URL, MERCADOPAGO_OAUTH_CLIENT_ID, MERCADOPAGO_OAUTH_CLIENT_SECRET, PAYMENT_CREDENTIALS_KEY e ORGANIZER_PANEL_URL: sem o segredo do webhook nao ha como validar o aviso; sem o aplicativo OAuth e a chave de cifragem nao ha como conectar (nem guardar) a conta de ninguem. Nao existe token global.',
         path: ['PSP_PROVIDER'],
       },
+    )
+    .refine(
+      (value) =>
+        value.BILLING_PROVIDER !== 'stripe' ||
+        (value.STRIPE_SECRET_KEY !== undefined &&
+          value.STRIPE_WEBHOOK_SECRET !== undefined &&
+          value.BILLING_RETURN_URL !== undefined),
+      {
+        message:
+          'BILLING_PROVIDER=stripe exige STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET e BILLING_RETURN_URL: sem o segredo do webhook nao ha como validar os eventos, e sem a URL de retorno a Stripe nao sabe para onde devolver a pessoa.',
+        path: ['BILLING_PROVIDER'],
+      },
+    )
+    .refine(
+      (value) => !(value.STRIPE_SECRET_KEY?.startsWith('sk_live_') && value.NODE_ENV !== 'production'),
+      {
+        message: 'Chave LIVE da Stripe (sk_live_...) so e aceita com NODE_ENV=production. Use sk_test_... aqui.',
+        path: ['STRIPE_SECRET_KEY'],
+      },
+    )
+    .refine(
+      (value) =>
+        !(
+          (value.NODE_ENV === 'production' || value.NODE_ENV === 'staging') &&
+          value.BILLING_RETURN_URL !== undefined &&
+          !value.BILLING_RETURN_URL.startsWith('https://')
+        ),
+      {
+        message: 'BILLING_RETURN_URL precisa ser https:// em staging e em producao.',
+        path: ['BILLING_RETURN_URL'],
+      },
+    )
+    .refine(
+      (value) =>
+        value.PAYMENT_CREDENTIALS_KEY === undefined ||
+        Buffer.from(value.PAYMENT_CREDENTIALS_KEY, 'base64').length === 32,
+      { message: 'PAYMENT_CREDENTIALS_KEY precisa ser uma chave de 32 bytes em base64.', path: ['PAYMENT_CREDENTIALS_KEY'] },
+    )
+    .refine(
+      (value) =>
+        value.PAYMENT_CREDENTIALS_KEY === undefined ||
+        value.PAYMENT_CREDENTIALS_KEY !== value.MFA_ENCRYPTION_KEY,
+      { message: 'PAYMENT_CREDENTIALS_KEY nao pode ser igual a MFA_ENCRYPTION_KEY: cada segredo tem a sua chave.', path: ['PAYMENT_CREDENTIALS_KEY'] },
+    )
+    .refine(
+      (value) =>
+        !(
+          (value.NODE_ENV === 'production' || value.NODE_ENV === 'staging') &&
+          value.ORGANIZER_PANEL_URL !== undefined &&
+          !value.ORGANIZER_PANEL_URL.startsWith('https://')
+        ),
+      { message: 'ORGANIZER_PANEL_URL precisa ser https:// em staging e em producao.', path: ['ORGANIZER_PANEL_URL'] },
     )
     .refine(
       (value) =>

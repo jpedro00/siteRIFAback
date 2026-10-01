@@ -112,8 +112,9 @@ describe.skipIf(!hasTestDatabase)(`Saude, logs e dominio ${hasTestDatabase ? '' 
         config: harness.config,
         pool: pendurado,
         secretBox: new SecretBox(TEST_MFA_KEY),
+        billing: null,
         loginThrottle: new LoginThrottle({ windowMs: 60_000, maxFailures: 10, maxDistinctAccounts: 10 }),
-        psp: null,
+        paymentAccounts: null,
       });
 
       const inicio = Date.now();
@@ -288,8 +289,9 @@ describe.skipIf(!hasTestDatabase)(`Saude, logs e dominio ${hasTestDatabase ? '' 
         config: harness.config,
         pool: quebrado,
         secretBox: new SecretBox(TEST_MFA_KEY),
+        billing: null,
         loginThrottle: new LoginThrottle({ windowMs: 60_000, maxFailures: 10, maxDistinctAccounts: 10 }),
-        psp: null,
+        paymentAccounts: null,
       });
 
       const { resultado, linhas } = await capturar(() => request(app).get('/api/public/draws').set('x-tenant-slug', slug));

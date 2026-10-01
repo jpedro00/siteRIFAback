@@ -190,14 +190,36 @@ services:
       # O provedor falso dos testes nao e uma opcao: nenhuma variavel o liga.
       - key: PSP_PROVIDER
         value: none
-      - key: MERCADOPAGO_ACCESS_TOKEN
+      # Recebimentos por comunidade (OAuth): nao ha token global. Tokens dos vendedores
+      # ficam cifrados no banco com PAYMENT_CREDENTIALS_KEY (32 bytes, base64, != chave do MFA).
+      - key: MERCADOPAGO_OAUTH_CLIENT_ID
+        sync: false
+      - key: MERCADOPAGO_OAUTH_CLIENT_SECRET
         sync: false
       - key: MERCADOPAGO_WEBHOOK_SECRET
+        sync: false
+      - key: PAYMENT_CREDENTIALS_KEY
+        sync: false
+      - key: ORGANIZER_PANEL_URL
         sync: false
       - key: MERCADOPAGO_FALLBACK_PAYER_EMAIL
         sync: false
       # URL publica da API (https), de onde sai o endereco do webhook.
       - key: PUBLIC_API_BASE_URL
+        sync: false
+
+      # ASSINATURAS DA PLATAFORMA (Stripe Billing) — DESLIGADO em staging por padrao.
+      # Independente do PSP acima. Para ligar com o modo de TESTE da Stripe: troque para
+      # `stripe` e preencha os segredos no painel (`sync: false`). Chave `sk_live_` e
+      # recusada fora de producao.
+      - key: BILLING_PROVIDER
+        value: none
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      # URL https do painel do organizador (retorno do Checkout e do Customer Portal).
+      - key: BILLING_RETURN_URL
         sync: false
 
   # ---------------------------------------------------------------------------
@@ -245,9 +267,25 @@ services:
       # e nao liberam nada (staging ate as credenciais sandbox existirem).
       - key: PSP_PROVIDER
         value: none
-      - key: MERCADOPAGO_ACCESS_TOKEN
+      # Sem token global: o worker resolve a conta ORIGINAL de cada pagamento e renova os tokens.
+      - key: MERCADOPAGO_OAUTH_CLIENT_ID
+        sync: false
+      - key: MERCADOPAGO_OAUTH_CLIENT_SECRET
         sync: false
       - key: MERCADOPAGO_WEBHOOK_SECRET
+        sync: false
+      - key: PAYMENT_CREDENTIALS_KEY
+        sync: false
+      - key: PUBLIC_API_BASE_URL
+        sync: false
+
+      # Assinaturas da plataforma (Stripe): o worker processa e reprocessa os eventos.
+      # Mesmas variaveis da API; `none` = os eventos ficam gravados e nada e descartado.
+      - key: BILLING_PROVIDER
+        value: none
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
         sync: false
       - key: DATABASE_SSL
         value: 'true'

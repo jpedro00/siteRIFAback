@@ -48,6 +48,21 @@ import type {
   TeamResponse,
 } from './panel.js';
 import type {
+  ConnectPaymentAccountRequest,
+  CreateCheckoutSessionRequest,
+  EntitlementsResponse,
+  MySubscriptionResponse,
+  PaymentAccount,
+  PaymentAccountsResponse,
+  CreatePlanRequest,
+  PlanListResponse,
+  PlatformPlan,
+  PlatformPlanListResponse,
+  PlatformSubscriptionListResponse,
+  RedirectResponse,
+  UpdatePlanRequest,
+} from './billing.js';
+import type {
   CorrectResultRequest,
   OrganizerDrawResult,
   PublicDrawResult,
@@ -111,6 +126,20 @@ export interface RouteResponses {
   createDraw: OrganizerDraw;
   updateDraw: OrganizerDraw;
   updateDrawStatus: OrganizerDraw;
+  platformPlans: PlatformPlanListResponse;
+  platformCreatePlan: PlatformPlan;
+  platformUpdatePlan: PlatformPlan;
+  platformSubscriptions: PlatformSubscriptionListResponse;
+  tenantBillingPlans: PlanListResponse;
+  tenantBilling: MySubscriptionResponse;
+  tenantEntitlements: EntitlementsResponse;
+  tenantBillingCheckout: RedirectResponse;
+  tenantBillingPortal: RedirectResponse;
+  stripeWebhook: { received: true };
+  tenantPaymentAccounts: PaymentAccountsResponse;
+  connectPaymentAccount: RedirectResponse;
+  paymentAccountOAuthCallback: undefined;
+  disconnectPaymentAccount: PaymentAccount;
 }
 
 /** Corpo esperado por rota. Rotas ausentes daqui nao recebem corpo. */
@@ -130,6 +159,10 @@ export interface RouteBodies {
   correctDrawResult: CorrectResultRequest;
   updateDrawStatus: UpdateDrawStatusRequest;
   platformReviewDecide: ReviewDrawRequest;
+  tenantBillingCheckout: CreateCheckoutSessionRequest;
+  platformCreatePlan: CreatePlanRequest;
+  platformUpdatePlan: UpdatePlanRequest;
+  connectPaymentAccount: ConnectPaymentAccountRequest;
 }
 
 export type RouteBody<N extends RouteName> = N extends keyof RouteBodies

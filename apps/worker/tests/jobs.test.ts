@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { FakePsp } from '@clubedarifa/psp/testing';
+import { staticPaymentAccountsRuntime } from '@clubedarifa/payment-accounts/testing';
 import {
   ativarAgendados,
   conciliacao,
@@ -43,7 +44,7 @@ describe.skipIf(!hasDb)(`Jobs do worker ${hasDb ? '' : skipReason}`, () => {
     bench = await openBench('test-jobs');
     psp = new FakePsp();
     tenantId = await seedTenant(bench.owner);
-    ctx = { pool: bench.worker, log: silentLog, psp };
+    ctx = { pool: bench.worker, log: silentLog, paymentAccounts: staticPaymentAccountsRuntime(psp) };
   }, 120_000);
 
   afterAll(async () => {
@@ -55,7 +56,7 @@ describe.skipIf(!hasDb)(`Jobs do worker ${hasDb ? '' : skipReason}`, () => {
 
   // -------------------------------------------------------------------------
   describe('catalogo', () => {
-    it('os seis jobs, com nome, cron e intervalo coerentes', () => {
+    it('os dez jobs (seis dos sorteios, dois da cobranca da plataforma e dois dos recebimentos), com nome, cron e intervalo coerentes', () => {
       expect(JOBS.map((j) => j.name)).toEqual([
         'expirar-reservas',
         'ativar-agendados',
@@ -63,6 +64,10 @@ describe.skipIf(!hasDb)(`Jobs do worker ${hasDb ? '' : skipReason}`, () => {
         'expirar-pix',
         'conciliacao',
         'limpeza-outbox',
+        'processar-stripe-eventos',
+        'limpar-stripe-eventos',
+        'renovar-credenciais-pagamento',
+        'finalizar-desconexoes-pagamento',
       ]);
       const porNome = Object.fromEntries(JOBS.map((j) => [j.name, j]));
       expect(porNome['expirar-reservas']).toMatchObject({ cron: '* * * * *', intervalSeconds: 60 });
@@ -288,7 +293,7 @@ describe.skipIf(!hasDb)(`Jobs do worker ${hasDb ? '' : skipReason}`, () => {
     it('SEM provedor configurado: cobranca vencida nao e liberada', async () => {
       const draw = await seedDraw(bench.owner, tenantId);
       const p = await seedPendingOrder(bench.owner, tenantId, draw, [14]);
-      await expirarPix.run({ ...ctx, psp: null });
+      await expirarPix.run({ ...ctx, paymentAccounts: null });
       expect(await statusOf(bench.owner, 'orders', p.orderId)).toBe('PENDENTE');
     });
 
@@ -370,7 +375,7 @@ describe.skipIf(!hasDb)(`Jobs do worker ${hasDb ? '' : skipReason}`, () => {
       const draw = await seedDraw(bench.owner, tenantId);
       const p = await seedPendingOrder(bench.owner, tenantId, draw, [31]);
       await bench.owner.query("UPDATE payments SET status = 'APROVADO', paid_at = now() WHERE id = $1", [p.paymentId]);
-      const n = await conciliacao.run({ ...ctx, psp: null });
+      const n = await conciliacao.run({ ...ctx, paymentAccounts: null });
       expect(n).toBeGreaterThanOrEqual(1);
     });
 

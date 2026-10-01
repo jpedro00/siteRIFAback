@@ -30,6 +30,7 @@ import { ApiError } from '../../lib/apiError.js';
 import { isUniqueViolation } from '../../lib/pgError.js';
 import { paginate, type Keyset } from '../../lib/cursor.js';
 import { recordAuditEvent } from '../audit/auditService.js';
+import { withEntitlementErrors } from '../billing/entitlementService.js';
 import { enqueueOutboxEvent } from '../outbox/outboxService.js';
 
 /** De onde veio a acao. Vai para a trilha de auditoria (RN11). */
@@ -1041,7 +1042,10 @@ export async function transitionDrawStatus(
   // O motivo da reprovacao fica no sorteio para o organizador ler; some quando o
   // sorteio e reenviado ou aprovado. A trilha de auditoria guarda o historico.
   const tocaRevisao = de === 'REVISÃO COMPLIANCE' || para === 'REVISÃO COMPLIANCE';
-  const { rows: atualizados } = await client.query<DrawRow>(
+  // O envio para revisao passa pelo gatilho comercial do banco (limite do plano), na MESMA
+  // transacao deste UPDATE; a recusa vira erro do contrato.
+  const { rows: atualizados } = await withEntitlementErrors(() =>
+    client.query<DrawRow>(
     `UPDATE draws
         SET status = $2::draw_status,
             review_note = CASE WHEN $4::boolean THEN $5 ELSE review_note END,
@@ -1056,6 +1060,7 @@ export async function transitionDrawStatus(
       de === 'REVISÃO COMPLIANCE' && para === 'RASCUNHO' ? input.reason?.trim() || null : null,
       de === 'REVISÃO COMPLIANCE',
     ],
+    ),
   );
   const novo = atualizados[0];
   if (!novo) {

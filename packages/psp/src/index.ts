@@ -1,31 +1,16 @@
-import { MercadoPagoGateway } from './mercadopago.js';
 import type { PspGateway } from './types.js';
 
 export * from './types.js';
-export { MercadoPagoGateway } from './mercadopago.js';
-
-/** O recorte da configuracao que o PSP precisa. Vale para a API e para o worker. */
-export interface PspConfig {
-  readonly PSP_PROVIDER: 'none' | 'mercadopago';
-  readonly MERCADOPAGO_ACCESS_TOKEN?: string | undefined;
-  readonly MERCADOPAGO_WEBHOOK_SECRET?: string | undefined;
-  readonly MERCADOPAGO_FALLBACK_PAYER_EMAIL?: string | undefined;
-}
+export { MercadoPagoGateway, verifyMercadoPagoWebhook, type MercadoPagoOptions } from './mercadopago.js';
 
 /**
- * Monta o PSP a partir da configuracao. `null` = nenhum provedor ligado.
+ * NAO existe `createPspGateway(config)` com uma credencial global.
  *
- * O provedor FALSO nao existe aqui, de proposito: ele vive so em
- * `@clubedarifa/psp/testing` e e injetado pelos testes. Nenhuma variavel de
- * ambiente o liga em producao.
+ * Cada comunidade conecta a PROPRIA conta Mercado Pago por OAuth, e o gateway de cada uma e
+ * resolvido por `PspGatewayResolver` (implementado em `@clubedarifa/payment-accounts`). O unico
+ * segredo que sobra no ambiente e o de ASSINATURA DO WEBHOOK, que pertence a aplicacao da
+ * plataforma — ele verifica avisos, nunca cria nem consulta cobranca.
+ *
+ * O PSP falso dos testes vive em `@clubedarifa/psp/testing` e nenhuma variavel o liga.
  */
-export function createPspGateway(config: PspConfig): PspGateway | null {
-  if (config.PSP_PROVIDER === 'mercadopago') {
-    return new MercadoPagoGateway({
-      accessToken: config.MERCADOPAGO_ACCESS_TOKEN!,
-      webhookSecret: config.MERCADOPAGO_WEBHOOK_SECRET!,
-      fallbackPayerEmail: config.MERCADOPAGO_FALLBACK_PAYER_EMAIL,
-    });
-  }
-  return null;
-}
+export type { PspGateway };

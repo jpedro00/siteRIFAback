@@ -428,19 +428,28 @@ contagem e último erro — inclusive quando falha.
 ### PIX (Mercado Pago) — desligado em staging por padrão
 
 `PSP_PROVIDER=none`: o pedido nasce, mas gerar o PIX responde 503 e o webhook 404.
-Para ligar com credenciais **sandbox**, no painel do Render (API **e** worker):
+
+Não existe access token global: cada comunidade conecta a **sua** conta por OAuth
+(Recebimentos → conectar Mercado Pago; nada é digitado à mão). No Render só entram os
+segredos do **aplicativo** da plataforma. Para ligar em **sandbox**, na API **e** no worker:
 
 ```text
 PSP_PROVIDER                       = mercadopago
-MERCADOPAGO_ACCESS_TOKEN           = <sandbox>          (só na API e no worker; nunca no repositório)
-MERCADOPAGO_WEBHOOK_SECRET         = <assinatura do webhook>
+MERCADOPAGO_OAUTH_CLIENT_ID        = <id do aplicativo sandbox>
+MERCADOPAGO_OAUTH_CLIENT_SECRET    = <segredo do aplicativo>      (nunca no repositório)
+MERCADOPAGO_WEBHOOK_SECRET         = <segredo de assinatura do webhook do aplicativo>
+PAYMENT_CREDENTIALS_KEY            = <openssl rand -base64 32>    (≠ MFA_ENCRYPTION_KEY)
+PUBLIC_API_BASE_URL                = https://<api>.onrender.com
+ORGANIZER_PANEL_URL                = https://<painel>.onrender.com   (só na API)
 MERCADOPAGO_FALLBACK_PAYER_EMAIL   = <e-mail usado quando o comprador não informa o dele>
-PUBLIC_API_BASE_URL                = https://<api>.onrender.com     (só na API)
 ```
 
-Webhook a cadastrar no painel do Mercado Pago, um por comunidade:
-`{PUBLIC_API_BASE_URL}/api/webhooks/mercadopago/{slug}`. O aviso **não paga**: a API
-valida a assinatura e **consulta** o pagamento no Mercado Pago antes de concluir a venda.
+No painel do aplicativo no Mercado Pago: Redirect URI
+`{PUBLIC_API_BASE_URL}/api/payment-accounts/oauth/callback` e webhook
+`{PUBLIC_API_BASE_URL}/api/webhooks/mercadopago/{slug}`. O aviso **não paga**: a API valida a
+assinatura do aplicativo, descobre a conta do pagamento e **consulta** o pagamento no Mercado
+Pago com a conta original antes de concluir a venda. Trocar `PAYMENT_CREDENTIALS_KEY` invalida
+as credenciais guardadas (as comunidades precisam reconectar).
 
 ### Logs
 

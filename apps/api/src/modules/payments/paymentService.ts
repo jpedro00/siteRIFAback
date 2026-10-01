@@ -4,10 +4,12 @@ import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
 import { log } from '../../lib/log.js';
 import {
+  PaymentAccountUnavailableError,
+  PaymentsNotConfiguredError,
   PspRejectedError,
   PspUnavailableError,
-  type PspGateway,
   type PspPayment,
+  type PspResolution,
 } from '@clubedarifa/psp';
 import { montarPedido } from '../draws/drawService.js';
 
@@ -84,9 +86,25 @@ async function chamarFuncao(
 // Gerar o PIX
 // ---------------------------------------------------------------------------
 
-function exigirPsp(deps: AppDeps): PspGateway {
-  if (!deps.psp) throw new ApiError('PAYMENT_PROVIDER_UNAVAILABLE');
-  return deps.psp;
+function exigirPagamentos(deps: AppDeps) {
+  if (!deps.paymentAccounts) throw new ApiError('PAYMENT_PROVIDER_UNAVAILABLE');
+  return deps.paymentAccounts;
+}
+
+/**
+ * O PSP DA COMUNIDADE para criar uma cobranca nova. Sem conta conectada: PAYMENTS_NOT_CONFIGURED.
+ * Conta ou autorizacao inutilizavel: PAYMENT_ACCOUNT_UNAVAILABLE. Nunca ha outra credencial.
+ */
+async function resolverPspDaComunidade(deps: AppDeps, tenantId: string): Promise<PspResolution> {
+  try {
+    return await exigirPagamentos(deps).resolver.forTenant(tenantId);
+  } catch (error) {
+    if (error instanceof PaymentsNotConfiguredError) throw new ApiError('PAYMENTS_NOT_CONFIGURED');
+    if (error instanceof PaymentAccountUnavailableError) {
+      throw new ApiError('PAYMENT_ACCOUNT_UNAVAILABLE', undefined, { reason: error.reason });
+    }
+    throw error;
+  }
 }
 
 /**
@@ -104,7 +122,7 @@ export async function ensurePixPayment(
   deps: AppDeps,
   input: { tenantId: string; tenantSlug: string; orderId: string },
 ): Promise<OrderResponse> {
-  const psp = exigirPsp(deps);
+  exigirPagamentos(deps);
 
   const preparo = await withTenant(deps.pool, { tenantId: input.tenantId }, async (client) => {
     const { rows } = await client.query<{
@@ -152,6 +170,9 @@ export async function ensurePixPayment(
   if ('pronto' in preparo) return preparo.pronto;
   const { pedido, expiraEm } = preparo;
 
+  // A conta que vai receber e escolhida AGORA, pela comunidade do pedido.
+  const { gateway: psp, paymentAccountId } = await resolverPspDaComunidade(deps, input.tenantId);
+
   const base = deps.config.PUBLIC_API_BASE_URL;
   let cobranca: PspPayment;
   try {
@@ -170,6 +191,9 @@ export async function ensurePixPayment(
       log.warn('PIX: provedor indisponivel', { tenant_id: input.tenantId, order_id: input.orderId });
       throw new ApiError('PAYMENT_PROVIDER_UNAVAILABLE');
     }
+    if (error instanceof PaymentAccountUnavailableError) {
+      throw new ApiError('PAYMENT_ACCOUNT_UNAVAILABLE', undefined, { reason: error.reason });
+    }
     if (error instanceof PspRejectedError) {
       log.error('PIX: provedor recusou o pedido', {
         tenant_id: input.tenantId,
@@ -187,8 +211,8 @@ export async function ensurePixPayment(
     await client.query(
       `INSERT INTO payments
          (tenant_id, order_id, provider, provider_payment_id, status, idempotency_key,
-          amount_cents, pix_copy_paste, pix_qr_base64, expires_at, raw)
-       VALUES ($1, $2, $3, $4, 'PENDENTE', $5, $6, $7, $8, $9, $10::jsonb)
+          amount_cents, pix_copy_paste, pix_qr_base64, expires_at, raw, payment_account_id)
+       VALUES ($1, $2, $3, $4, 'PENDENTE', $5, $6, $7, $8, $9, $10::jsonb, $11)
        ON CONFLICT (idempotency_key) DO NOTHING`,
       [
         input.tenantId,
@@ -201,6 +225,7 @@ export async function ensurePixPayment(
         cobranca.qrCodeBase64,
         expiraEm.toISOString(),
         JSON.stringify(cobranca.raw ?? null),
+        paymentAccountId,
       ],
     );
     return montarPedido(client, input.orderId);
@@ -233,10 +258,11 @@ export async function reconcilePayment(
   client: PoolClient,
   provider: string,
   remoto: PspPayment,
+  paymentAccountId: string | null,
 ): Promise<ReconcileOutcome> {
   const resultado = await chamarFuncao(
     client,
-    'SELECT app.apply_psp_payment($1, $2, $3, $4, $5, $6::timestamptz, $7::jsonb) AS r',
+    'SELECT app.apply_psp_payment($1, $2, $3, $4, $5, $6::timestamptz, $7::jsonb, $8::uuid) AS r',
     [
       provider,
       remoto.providerPaymentId,
@@ -245,6 +271,7 @@ export async function reconcilePayment(
       remoto.externalReference,
       remoto.paidAt,
       JSON.stringify(remoto.raw ?? null),
+      paymentAccountId,
     ],
   );
   return resultado as ReconcileOutcome;
@@ -253,12 +280,16 @@ export async function reconcilePayment(
 /**
  * Processa um aviso do Mercado Pago.
  *
- *  1. valida a ASSINATURA (401 se nao confere, sem nenhum efeito);
- *  2. CONSULTA o pagamento na API do PSP;
- *  3. aplica o resultado, idempotente.
+ *  1. valida a ASSINATURA (401 se nao confere, sem nenhum efeito) — o segredo e o da APLICACAO;
+ *  2. acha o pagamento no NOSSO registro e descobre a comunidade e a CONTA dele. O `:tenant` da
+ *     URL e so uma pista de roteamento: se nao for a comunidade dona do pagamento, o aviso e
+ *     ignorado — um aviso enderecado a B nunca altera um pagamento da A;
+ *  3. CONSULTA o pagamento no provedor COM AS CREDENCIAIS DA CONTA ORIGINAL do pagamento (RN06:
+ *     webhook dispara a consulta, nunca paga);
+ *  4. aplica o resultado, conferindo comunidade, conta, valor e referencia; idempotente.
  *
- * Aviso valido que nao pede acao responde 200 — o PSP so reenvia o que recebe
- * como erro. Provedor fora do ar responde 503, para o PSP tentar de novo.
+ * Aviso valido que nao pede acao responde 200 — o PSP so reenvia o que recebe como erro.
+ * Provedor fora do ar responde 503, para o PSP tentar de novo.
  */
 export async function handlePspWebhook(
   deps: AppDeps,
@@ -269,10 +300,10 @@ export async function handlePspWebhook(
     body: unknown;
   },
 ): Promise<{ outcome: ReconcileOutcome }> {
-  const psp = deps.psp;
-  if (!psp) throw ApiError.notFound('Recurso indisponível.');
+  const resolver = deps.paymentAccounts?.resolver;
+  if (!resolver) throw ApiError.notFound('Recurso indisponível.');
 
-  const verificacao = psp.verifyWebhook({
+  const verificacao = resolver.verifyWebhook({
     headers: input.headers,
     query: input.query,
     body: input.body,
@@ -283,26 +314,61 @@ export async function handlePspWebhook(
   }
   if (!verificacao.isPaymentEvent || !verificacao.paymentId) return { outcome: 'ignored' };
 
-  const tenantId = await withoutContext(deps.pool, async (client) => {
-    const { rows } = await client.query<{ tenant_id: string }>(
+  // Roteamento pelo NOSSO registro, nao pela URL.
+  const { rota, dicaTenant } = await withoutContext(deps.pool, async (client) => {
+    const { rows } = await client.query<{
+      tenant_id: string;
+      payment_account_id: string | null;
+      provider_account_id: string | null;
+    }>('SELECT * FROM app.find_payment_route($1, $2)', [resolver.provider, verificacao.paymentId]);
+    const { rows: t } = await client.query<{ tenant_id: string }>(
       'SELECT tenant_id FROM app.resolve_tenant_by_slug($1)',
       [input.tenantSlug.toLowerCase()],
     );
-    return rows[0]?.tenant_id ?? null;
+    return { rota: rows[0] ?? null, dicaTenant: t[0]?.tenant_id ?? null };
   });
-  if (!tenantId) return { outcome: 'ignored' };
+  if (!rota) return { outcome: 'ignored' };
+  if (dicaTenant !== rota.tenant_id) {
+    log.warn('webhook: a comunidade da URL nao e a dona do pagamento; ignorado', {
+      url_tenant_id: dicaTenant,
+      payment_tenant_id: rota.tenant_id,
+    });
+    return { outcome: 'ignored' };
+  }
+  // O Mercado Pago informa o vendedor (`user_id`) no aviso: se vier e nao for o da conta do
+  // pagamento, nao e deste pagamento.
+  const vendedor = (input.body as { user_id?: string | number } | null)?.user_id;
+  if (vendedor !== undefined && rota.provider_account_id && String(vendedor) !== rota.provider_account_id) {
+    log.warn('webhook: o vendedor do aviso nao e o da conta do pagamento; ignorado', {
+      payment_tenant_id: rota.tenant_id,
+    });
+    return { outcome: 'ignored' };
+  }
+
+  let resolucao: PspResolution;
+  try {
+    resolucao = await resolver.forPayment({ tenantId: rota.tenant_id, paymentAccountId: rota.payment_account_id });
+  } catch (error) {
+    if (error instanceof PaymentAccountUnavailableError || error instanceof PaymentsNotConfiguredError) {
+      // A conta caiu: nao ha como consultar. O pagamento ja foi sinalizado para acao manual.
+      log.warn('webhook: conta de recebimento indisponivel; nada aplicado', { tenant_id: rota.tenant_id });
+      return { outcome: 'ignored' };
+    }
+    throw error;
+  }
 
   let remoto: PspPayment;
   try {
-    remoto = await psp.getPayment(verificacao.paymentId);
+    remoto = await resolucao.gateway.getPayment(verificacao.paymentId);
   } catch (error) {
     if (error instanceof PspUnavailableError) throw new ApiError('PAYMENT_PROVIDER_UNAVAILABLE');
+    if (error instanceof PaymentAccountUnavailableError) return { outcome: 'ignored' };
     if (error instanceof PspRejectedError) return { outcome: 'ignored' };
     throw error;
   }
 
-  const outcome = await withTenant(deps.pool, { tenantId }, (client) =>
-    reconcilePayment(client, psp.provider, remoto),
+  const outcome = await withTenant(deps.pool, { tenantId: rota.tenant_id }, (client) =>
+    reconcilePayment(client, resolver.provider, remoto, resolucao.paymentAccountId),
   );
   return { outcome };
 }

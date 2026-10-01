@@ -16,6 +16,14 @@ import { ApiError } from '../../lib/apiError.js';
  *                             as divergencias de conciliacao.
  */
 
+interface PaymentHealthJson {
+  authorizationsError: number;
+  authorizationsRevoked: number;
+  accountsDisconnecting: number;
+  unavailableIssuesCount: number;
+  unavailableIssues: PlatformHealthResponse['paymentAccounts']['unavailableIssues']['items'];
+}
+
 /** Tempo maximo esperando o banco. Um banco lento e, para o Render, um banco fora. */
 export const HEALTH_DB_TIMEOUT_MS = 2_000;
 
@@ -119,6 +127,19 @@ export function buildHealthHandler(deps: AppDeps): Record<string, RequestHandler
              FROM payment_reconciliation_issues WHERE resolved_at IS NULL`,
         );
 
+        const { rows: stripe } = await client.query<{ failed: number; dead: number; pending: number; oldest: string | null }>(
+          `SELECT (count(*) FILTER (WHERE status = 'FAILED'))::int AS failed,
+                  (count(*) FILTER (WHERE status = 'DEAD'))::int AS dead,
+                  (count(*) FILTER (WHERE status = 'RECEIVED'))::int AS pending,
+                  min(received_at) FILTER (WHERE status IN ('FAILED', 'DEAD')) AS oldest
+             FROM stripe_webhook_events`,
+        );
+        // Agregado por funcao SECURITY DEFINER: o papel da API nao le credenciais.
+        const { rows: pagamentos } = await client.query<{ r: PaymentHealthJson | null }>(
+          'SELECT app.platform_payment_health(20) AS r',
+        );
+        const pay = pagamentos[0]?.r ?? null;
+
         const worker: PlatformHealthResponse['worker'] =
           jobs.length === 0 ? 'unknown' : jobs.some((j) => j.atrasado) ? 'stale' : 'ok';
 
@@ -142,6 +163,18 @@ export function buildHealthHandler(deps: AppDeps): Record<string, RequestHandler
           reconciliation: {
             openIssues: conciliacao[0]!.abertas,
             manualRefunds: conciliacao[0]!.estornos,
+          },
+          stripeEvents: {
+            failed: stripe[0]!.failed,
+            dead: stripe[0]!.dead,
+            pending: stripe[0]!.pending,
+            oldestProblemAt: stripe[0]!.oldest,
+          },
+          paymentAccounts: {
+            authorizationsError: pay?.authorizationsError ?? 0,
+            authorizationsRevoked: pay?.authorizationsRevoked ?? 0,
+            accountsDisconnecting: pay?.accountsDisconnecting ?? 0,
+            unavailableIssues: { count: pay?.unavailableIssuesCount ?? 0, items: pay?.unavailableIssues ?? [] },
           },
         } satisfies PlatformHealthResponse;
       });

@@ -124,11 +124,27 @@ export async function seedPendingOrder(
   let providerPaymentId: string | null = null;
   if (o.payment !== false) {
     providerPaymentId = String(900_000_000 + Math.floor(Math.random() * 90_000_000));
+    // Cobranca de provedor real exige uma conta de recebimento conectada da comunidade (0019).
+    let accountId: string | null = null;
+    if ((o.provider ?? 'FAKE') !== 'FAKE') {
+      const { rows: a } = await owner.query<{ id: string }>(
+        `INSERT INTO payment_provider_authorizations (provider, environment, provider_account_id, access_token_encrypted,
+                                                      refresh_token_encrypted, credentials_key_version, expires_at)
+         VALUES ('MERCADO_PAGO', 'SANDBOX', $1, '\x01', '\x02', 1, now() + interval '100 days') RETURNING id`,
+        [`seed-${orderId}`],
+      );
+      const { rows: t } = await owner.query<{ id: string }>(
+        `INSERT INTO tenant_payment_accounts (tenant_id, authorization_id, provider, environment)
+         VALUES ($1, $2, 'MERCADO_PAGO', 'SANDBOX') RETURNING id`,
+        [tenantId, a[0]!.id],
+      );
+      accountId = t[0]!.id;
+    }
     const { rows: p } = await owner.query<{ id: string }>(
       `INSERT INTO payments (tenant_id, order_id, provider, provider_payment_id, status, idempotency_key,
-                             amount_cents, expires_at)
-       VALUES ($1, $2, $3, $4, 'PENDENTE', $5, $6, now() - $7::interval) RETURNING id`,
-      [tenantId, orderId, o.provider ?? 'FAKE', providerPaymentId, orderId, numeros.length * 1000, o.paymentExpiresAgo ?? '10 minutes'],
+                             amount_cents, expires_at, payment_account_id)
+       VALUES ($1, $2, $3, $4, 'PENDENTE', $5, $6, now() - $7::interval, $8) RETURNING id`,
+      [tenantId, orderId, o.provider ?? 'FAKE', providerPaymentId, orderId, numeros.length * 1000, o.paymentExpiresAgo ?? '10 minutes', accountId],
     );
     paymentId = p[0]!.id;
   }

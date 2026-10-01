@@ -1,3 +1,4 @@
+import { translateEntitlementError } from '../billing/entitlementService.js';
 import { withTenant, withUser, type PoolClient } from '@clubedarifa/db';
 import type {
   AcceptInvitationResponse,
@@ -352,6 +353,9 @@ export async function acceptInvitation(
       const r = rows[0]!;
       return { tenantSlug: r.tenant_slug, tenantName: r.tenant_name, role: r.role };
     } catch (error) {
+      // A franquia da equipe (`ENTITLEMENT:*`) tambem usa P0001: traduz ANTES de olhar o codigo.
+      const traduzido = translateEntitlementError(error);
+      if (traduzido !== error) throw traduzido;
       const codigo = (error as { code?: string }).code;
       if (codigo === 'P0002') throw ApiError.notFound('Convite não encontrado.');
       if (codigo === 'P0001') throw ApiError.conflict('Este convite já foi usado, foi revogado ou expirou.');

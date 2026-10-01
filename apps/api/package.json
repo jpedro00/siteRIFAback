@@ -10,8 +10,10 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
+    "@clubedarifa/billing": "*",
     "@clubedarifa/db": "*",
     "@clubedarifa/logging": "*",
+    "@clubedarifa/payment-accounts": "*",
     "@clubedarifa/psp": "*",
     "@clubedarifa/shared": "*",
     "cookie-parser": "^1.4.7",

@@ -1,6 +1,7 @@
 import type { DbPool } from '@clubedarifa/db';
 import type { Logger } from '@clubedarifa/logging';
-import type { PspGateway } from '@clubedarifa/psp';
+import type { PaymentAccountsRuntime } from '@clubedarifa/payment-accounts';
+import type { BillingGateway } from '@clubedarifa/billing';
 
 /**
  * Um job agendado.
@@ -14,8 +15,16 @@ import type { PspGateway } from '@clubedarifa/psp';
 export interface JobContext {
   readonly pool: DbPool;
   readonly log: Logger;
-  /** Provedor de pagamento; `null` = nenhum ligado (staging por padrao). */
-  readonly psp: PspGateway | null;
+  /**
+   * Recebimentos por comunidade (resolvedor do PSP, renovacao de tokens, desconexoes). `null` =
+   * nenhum provedor ligado (staging por padrao). Nao existe credencial global.
+   */
+  readonly paymentAccounts: PaymentAccountsRuntime | null;
+  /**
+   * Cobranca da PLATAFORMA (Stripe); `null`/ausente = desligada. Nao tem relacao com o
+   * `paymentAccounts` acima: e o dinheiro da assinatura, nao o do participante.
+   */
+  readonly billing?: BillingGateway | null;
 }
 
 export interface JobDefinition {

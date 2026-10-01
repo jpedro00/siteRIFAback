@@ -9,7 +9,7 @@ import { OWNER_URL, WORKER_URL, hasDb, silentLog, skipReason, unique } from './h
 /**
  * Agendamento REAL no pg-boss, com o papel restrito do worker.
  *
- * O que se prova: os seis jobs ficam agendados com o cron certo e o fuso certo,
+ * O que se prova: os jobs ficam agendados com o cron certo e o fuso certo,
  * registrar de novo nao duplica, e um disparo de fato EXECUTA o job e deixa o
  * heartbeat. Se o modelo de privilegios do schema `pgboss` estivesse errado,
  * este teste falharia na subida.
@@ -48,8 +48,8 @@ describe.skipIf(!hasDb)(`Agendamento dos jobs no pg-boss ${hasDb ? '' : skipReas
     await worker?.end();
   });
 
-  it('agenda os seis jobs com o cron e o fuso certos', async () => {
-    await registerJobs(boss, { pool: worker, log: silentLog, psp: null });
+  it('agenda TODOS os jobs com o cron e o fuso certos', async () => {
+    await registerJobs(boss, { pool: worker, log: silentLog, paymentAccounts: null });
 
     const agendas = await boss.getSchedules();
     const porNome = new Map(agendas.map((a) => [a.name, a]));
@@ -63,8 +63,8 @@ describe.skipIf(!hasDb)(`Agendamento dos jobs no pg-boss ${hasDb ? '' : skipReas
   });
 
   it('registrar de novo (reinicio do worker) nao duplica o agendamento', async () => {
-    await registerJobs(boss, { pool: worker, log: silentLog, psp: null });
-    await registerJobs(boss, { pool: worker, log: silentLog, psp: null });
+    await registerJobs(boss, { pool: worker, log: silentLog, paymentAccounts: null });
+    await registerJobs(boss, { pool: worker, log: silentLog, paymentAccounts: null });
     const agendas = await boss.getSchedules();
     for (const job of JOBS) {
       expect(agendas.filter((a) => a.name === job.name)).toHaveLength(1);
@@ -73,7 +73,7 @@ describe.skipIf(!hasDb)(`Agendamento dos jobs no pg-boss ${hasDb ? '' : skipReas
 
   it('um disparo EXECUTA o job e grava o heartbeat', async () => {
     const job = JOBS.find((j) => j.name === 'expirar-reservas')!;
-    await registerJobs(boss, { pool: worker, log: silentLog, psp: null }, [job]);
+    await registerJobs(boss, { pool: worker, log: silentLog, paymentAccounts: null }, [job]);
 
     // Marca ANTES do disparo para provar que o heartbeat e deste ciclo.
     const antes = new Date().toISOString();

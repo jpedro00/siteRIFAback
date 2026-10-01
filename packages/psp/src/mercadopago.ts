@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import {
   PspRejectedError,
+  PspUnauthorizedError,
   PspUnavailableError,
   type CreatePixChargeInput,
   type PspGateway,
@@ -112,6 +113,10 @@ export class MercadoPagoGateway implements PspGateway {
     if (res.status >= 500 || res.status === 429) {
       throw new PspUnavailableError(`Mercado Pago respondeu ${res.status}.`);
     }
+    // 401: a credencial desta conta nao vale. Quem chama decide renovar ou marcar a conta.
+    if (res.status === 401) {
+      throw new PspUnauthorizedError();
+    }
     const texto = await res.text();
     let json: unknown = null;
     try {
@@ -174,6 +179,23 @@ export class MercadoPagoGateway implements PspGateway {
     query: Readonly<Record<string, string | undefined>>;
     body: unknown;
   }): WebhookVerification {
+    return verifyMercadoPagoWebhook(this.options.webhookSecret, input);
+  }
+}
+
+/**
+ * Verificacao da assinatura do webhook, SEM precisar de credencial de conta nenhuma: o segredo
+ * e o da APLICACAO da plataforma no Mercado Pago (um so, para todas as comunidades).
+ */
+export function verifyMercadoPagoWebhook(
+  webhookSecret: string,
+  input: {
+    headers: Readonly<Record<string, string | undefined>>;
+    query: Readonly<Record<string, string | undefined>>;
+    body: unknown;
+  },
+): WebhookVerification {
+  {
     const assinatura = input.headers['x-signature'];
     if (!assinatura) return { valid: false, reason: 'sem x-signature' };
 
@@ -197,7 +219,7 @@ export class MercadoPagoGateway implements PspGateway {
 
     const manifesto =
       (id ? `id:${id};` : '') + (requestId ? `request-id:${requestId};` : '') + `ts:${ts};`;
-    const esperado = createHmac('sha256', this.options.webhookSecret).update(manifesto).digest('hex');
+    const esperado = createHmac('sha256', webhookSecret).update(manifesto).digest('hex');
 
     const a = Buffer.from(esperado, 'utf8');
     const b = Buffer.from(v1, 'utf8');

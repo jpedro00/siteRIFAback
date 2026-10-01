@@ -49,12 +49,26 @@ const configSchema = z.object({
    * (padrao) = os jobs de PIX registram aviso e nao liberam nada.
    */
   PSP_PROVIDER: z.enum(['none', 'mercadopago']).default('none'),
-  MERCADOPAGO_ACCESS_TOKEN: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
   MERCADOPAGO_WEBHOOK_SECRET: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  /** Aplicativo OAuth e chave de cifragem das credenciais: as mesmas da API (ver la). Sem token global. */
+  MERCADOPAGO_OAUTH_CLIENT_ID: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  MERCADOPAGO_OAUTH_CLIENT_SECRET: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  PAYMENT_CREDENTIALS_KEY: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  PUBLIC_API_BASE_URL: z.string().optional().transform((v) => (v?.trim() ? v.trim().replace(/\/+$/, '') : undefined)),
   MERCADOPAGO_FALLBACK_PAYER_EMAIL: z
     .string()
     .optional()
     .transform((v) => (v?.trim() ? v.trim() : undefined)),
+
+  /**
+   * Cobranca da PLATAFORMA (assinaturas, Stripe). Mesmas variaveis da API e sem relacao
+   * com o PSP dos sorteios. `none` = o job `processar-stripe-eventos` nao processa nada:
+   * os eventos ficam gravados e sao processados quando a cobranca for ligada.
+   * Chave `sk_live_` so em producao.
+   */
+  BILLING_PROVIDER: z.enum(['none', 'stripe']).default('none'),
+  STRIPE_SECRET_KEY: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  STRIPE_WEBHOOK_SECRET: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
 });
 
 export type WorkerConfig = Readonly<z.infer<typeof configSchema>>;
@@ -64,12 +78,28 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerCo
     .refine(
       (v) =>
         v.PSP_PROVIDER !== 'mercadopago' ||
-        (v.MERCADOPAGO_ACCESS_TOKEN !== undefined && v.MERCADOPAGO_WEBHOOK_SECRET !== undefined),
+        (v.MERCADOPAGO_WEBHOOK_SECRET !== undefined &&
+          v.MERCADOPAGO_OAUTH_CLIENT_ID !== undefined &&
+          v.MERCADOPAGO_OAUTH_CLIENT_SECRET !== undefined &&
+          v.PAYMENT_CREDENTIALS_KEY !== undefined &&
+          v.PUBLIC_API_BASE_URL !== undefined),
       {
-        message: 'PSP_PROVIDER=mercadopago exige MERCADOPAGO_ACCESS_TOKEN e MERCADOPAGO_WEBHOOK_SECRET.',
+        message:
+          'PSP_PROVIDER=mercadopago exige MERCADOPAGO_WEBHOOK_SECRET, MERCADOPAGO_OAUTH_CLIENT_ID, MERCADOPAGO_OAUTH_CLIENT_SECRET, PAYMENT_CREDENTIALS_KEY e PUBLIC_API_BASE_URL. Nao existe token global.',
         path: ['PSP_PROVIDER'],
       },
     )
+    .refine(
+      (v) => v.BILLING_PROVIDER !== 'stripe' || (v.STRIPE_SECRET_KEY !== undefined && v.STRIPE_WEBHOOK_SECRET !== undefined),
+      {
+        message: 'BILLING_PROVIDER=stripe exige STRIPE_SECRET_KEY e STRIPE_WEBHOOK_SECRET.',
+        path: ['BILLING_PROVIDER'],
+      },
+    )
+    .refine((v) => !(v.STRIPE_SECRET_KEY?.startsWith('sk_live_') && v.NODE_ENV !== 'production'), {
+      message: 'Chave LIVE da Stripe (sk_live_...) so e aceita com NODE_ENV=production.',
+      path: ['STRIPE_SECRET_KEY'],
+    })
     .safeParse(env);
   if (!parsed.success) {
     const issues = parsed.error.issues

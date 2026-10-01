@@ -11,6 +11,8 @@ import { buildPaymentHandlers } from '../modules/payments/paymentRoutes.js';
 import { buildResultHandlers } from '../modules/results/resultRoutes.js';
 import { buildTeamHandlers } from '../modules/team/teamRoutes.js';
 import { buildPanelHandlers } from '../modules/panel/panelRoutes.js';
+import { buildBillingHandlers } from '../modules/billing/billingRoutes.js';
+import { buildPaymentAccountHandlers } from '../modules/paymentAccounts/paymentAccountRoutes.js';
 
 /**
  * Registro das rotas a partir do contrato compartilhado.
@@ -42,6 +44,8 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
     ...buildResultHandlers(deps),
     ...buildTeamHandlers(deps),
     ...buildPanelHandlers(deps),
+    ...buildBillingHandlers(deps),
+    ...buildPaymentAccountHandlers(deps),
   } as Partial<Record<RouteName, RequestHandler>>;
 
   const missing = ROUTE_NAMES.filter((name) => handlers[name] === undefined);

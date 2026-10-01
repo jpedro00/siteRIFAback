@@ -7,6 +7,9 @@ import { loadConfig, type AppConfig } from '../../src/config.js';
 import { LoginThrottle } from '../../src/lib/loginThrottle.js';
 import { SecretBox } from '../../src/lib/secretBox.js';
 import type { PspGateway } from '@clubedarifa/psp';
+import type { PaymentAccountsRuntime } from '@clubedarifa/payment-accounts';
+import { staticPaymentAccountsRuntime } from '@clubedarifa/payment-accounts/testing';
+import type { BillingDeps } from '../../src/deps.js';
 import { hashPassword } from '../../src/lib/password.js';
 
 const { Client } = pg;
@@ -101,6 +104,16 @@ export interface HarnessOptions {
    * o provedor FALSO — que so existe na bancada.
    */
   readonly psp?: PspGateway | null;
+  /**
+   * Runtime de recebimentos completo (OAuth, resolvedor por comunidade, renovacao). Tem
+   * precedencia sobre `psp`. Os testes de conexao passam um sobre o Mercado Pago em memoria.
+   */
+  readonly paymentAccounts?: PaymentAccountsRuntime | null;
+  /**
+   * Cobranca da PLATAFORMA (Stripe) injetada. PADRAO nenhuma (desligada). Os testes de
+   * assinatura passam o gateway real da Stripe sobre um cliente EM MEMORIA.
+   */
+  readonly billing?: BillingDeps | null;
 }
 
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -125,6 +138,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     LOGIN_ORIGIN_WINDOW_MINUTES: String(options.originLimits?.windowMinutes ?? 15),
     LOGIN_ORIGIN_MAX_FAILURES: String(options.originLimits?.maxFailures ?? 1_000_000),
     LOGIN_ORIGIN_MAX_ACCOUNTS: String(options.originLimits?.maxAccounts ?? 1_000_000),
+    ...(options.billing ? { BILLING_RETURN_URL: 'https://organizer.test' } : {}),
+    ...(options.paymentAccounts ? { ORGANIZER_PANEL_URL: 'https://organizer.test' } : {}),
   });
 
   const pool = createPool({ connectionString: TEST_APP_URL, applicationName: 'test-api', max: 5 });
@@ -145,7 +160,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     pool,
     secretBox: new SecretBox(TEST_MFA_KEY),
     loginThrottle,
-    psp: options.psp ?? null,
+    paymentAccounts: options.paymentAccounts ?? (options.psp ? staticPaymentAccountsRuntime(options.psp) : null),
+    billing: options.billing ?? null,
   });
 
   return {
@@ -339,6 +355,17 @@ export async function cleanup(owner: DbPool): Promise<void> {
   const client = new Client(pgConnectionConfig(TEST_OWNER_URL));
   await client.connect();
   try {
+    // Fase 7 · cobranca da plataforma e recebimentos (as FKs sao RESTRICT para a comunidade).
+    await client.query('DELETE FROM billing_adjustments');
+    await client.query('DELETE FROM billing_invoices');
+    await client.query('DELETE FROM tenant_subscriptions');
+    await client.query('DELETE FROM billing_checkout_sessions');
+    await client.query('DELETE FROM tenant_billing');
+    await client.query('DELETE FROM stripe_webhook_events');
+    await client.query('DELETE FROM plans');
+    await client.query(
+      'UPDATE billing_settings SET past_due_grace_days = 3, enforcement_enabled = false, updated_by = NULL',
+    );
     await client.query('DELETE FROM event_consumptions');
     // Heartbeats de outros arquivos de teste nao podem contaminar a leitura da saude.
     await client.query('DELETE FROM job_heartbeats');
@@ -374,6 +401,10 @@ export async function cleanup(owner: DbPool): Promise<void> {
       await client.query('DELETE FROM draw_numbers');
       // Cobrancas referenciam o pedido (RESTRICT): saem antes dele.
       await client.query('DELETE FROM payments');
+      // Recebimentos por comunidade: os pagamentos apontam para a conta (RESTRICT), entao saem antes.
+      await client.query('DELETE FROM payment_account_oauth_states');
+      await client.query('DELETE FROM tenant_payment_accounts');
+      await client.query('DELETE FROM payment_provider_authorizations');
       await client.query('DELETE FROM orders');
       await client.query('DELETE FROM reservations');
       await client.query('DELETE FROM buyers');

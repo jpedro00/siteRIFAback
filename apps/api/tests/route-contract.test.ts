@@ -37,7 +37,8 @@ function buildTestApp() {
     config,
     pool,
     secretBox: new SecretBox(config.MFA_ENCRYPTION_KEY),
-    psp: null,
+    paymentAccounts: null,
+    billing: null,
     loginThrottle: new LoginThrottle({
       windowMs: config.LOGIN_ORIGIN_WINDOW_MINUTES * 60_000,
       maxFailures: config.LOGIN_ORIGIN_MAX_FAILURES,
@@ -156,6 +157,10 @@ describe('coerencia do contrato', () => {
     const proibidos = ['/checkout', '/payments', '/prizes'];
     for (const name of ROUTE_NAMES) {
       const path = ROUTE_CONTRACTS[name].path;
+      // Fase 7: `/api/tenant/billing/*` e a assinatura da PLATAFORMA (Stripe Checkout de
+      // SaaS). A proibicao acima e sobre o fluxo de COMPRA de numeros, que continua
+      // terminando em `/api/public/orders`; as duas coisas nao se misturam.
+      if (path.startsWith('/api/tenant/billing/')) continue;
       for (const proibido of proibidos) {
         expect(path.includes(proibido), `${path} pertence a uma fase futura`).toBe(false);
       }

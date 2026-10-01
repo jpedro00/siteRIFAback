@@ -331,6 +331,33 @@ export const platformHealthResponseSchema = z.object({
     openIssues: z.number().int().nonnegative(),
     manualRefunds: z.number().int().nonnegative(),
   }),
+  /** Fase 7 · eventos da Stripe que nao concluiram (sem o payload cru). */
+  stripeEvents: z.object({
+    failed: z.number().int().nonnegative(),
+    dead: z.number().int().nonnegative(),
+    pending: z.number().int().nonnegative(),
+    oldestProblemAt: nullableDate,
+  }),
+  /** Fase 7 · contas de recebimento por comunidade. Nunca carrega credencial. */
+  paymentAccounts: z.object({
+    authorizationsError: z.number().int().nonnegative(),
+    authorizationsRevoked: z.number().int().nonnegative(),
+    accountsDisconnecting: z.number().int().nonnegative(),
+    /** Divergencias `PAYMENT_AUTHORIZATION_UNAVAILABLE` em aberto (as mais antigas primeiro). */
+    unavailableIssues: z.object({
+      count: z.number().int().nonnegative(),
+      items: z.array(
+        z.object({
+          id: z.string(),
+          tenantName: z.string(),
+          tenantSlug: z.string(),
+          /** Referencia curta e segura da operacao (prefixo do ID do pedido). */
+          reference: z.string(),
+          detectedAt: z.string(),
+        }),
+      ),
+    }),
+  }),
 });
 export type PlatformHealthResponse = z.infer<typeof platformHealthResponseSchema>;
 
@@ -474,6 +501,44 @@ export const ROUTE_CONTRACTS = {
     mfa: true,
     tenantScope: 'none',
     platformPermission: 'platform:health:read',
+  },
+  // Fase 7 · catalogo de planos e assinaturas (Super Admin / PLATFORM_FINANCE).
+  platformPlans: {
+    method: 'GET',
+    path: '/api/platform/plans',
+    summary: 'Catálogo de planos com os identificadores da Stripe (Super Admin).',
+    auth: true,
+    mfa: true,
+    tenantScope: 'none',
+    platformPermission: 'platform:billing:read',
+  },
+  platformCreatePlan: {
+    method: 'POST',
+    path: '/api/platform/plans',
+    summary:
+      'Cria um plano: o servidor cria o Product e o Price na Stripe e grava os IDs resultantes. Nasce como rascunho; repetir o pedido retoma a sincronização.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'none',
+    platformPermission: 'platform:billing:manage',
+  },
+  platformUpdatePlan: {
+    method: 'PATCH',
+    path: '/api/platform/plans/:id',
+    summary: 'Edita nome, descrição, limites, funcionalidades e status. Preço não muda: preço novo é plano novo.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'none',
+    platformPermission: 'platform:billing:manage',
+  },
+  platformSubscriptions: {
+    method: 'GET',
+    path: '/api/platform/subscriptions',
+    summary: 'Assinaturas de todas as comunidades (somente leitura), com filtro por estado e busca, paginadas.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'none',
+    platformPermission: 'platform:billing:read',
   },
   platformReviewQueue: {
     method: 'GET',
@@ -744,6 +809,104 @@ export const ROUTE_CONTRACTS = {
     mfa: false,
     tenantScope: 'resolved',
     tenantPermission: 'draw:lifecycle:write',
+  },
+
+  // -------------------------------------------------------------------------
+  // Fase 7 · assinatura da PLATAFORMA (Stripe Billing). Fluxo A: nada aqui toca
+  // pedidos, pagamentos de participantes nem o PSP dos sorteios.
+  // -------------------------------------------------------------------------
+  tenantBillingPlans: {
+    method: 'GET',
+    path: '/api/tenant/billing/plans',
+    summary: 'Planos à venda (nome, preço, periodicidade, limites e funcionalidades).',
+    auth: true,
+    mfa: false,
+    tenantScope: 'resolved',
+    tenantPermission: 'billing:read',
+  },
+  tenantBilling: {
+    method: 'GET',
+    path: '/api/tenant/billing',
+    summary: 'Minha assinatura: estado, plano, renovação e histórico de faturas (paginado).',
+    auth: true,
+    mfa: false,
+    tenantScope: 'resolved',
+    tenantPermission: 'billing:read',
+  },
+  tenantEntitlements: {
+    method: 'GET',
+    path: '/api/tenant/billing/entitlements',
+    summary: 'Limites do plano e consumo (sorteios ativos, equipe), com o veredito do envio para revisão.',
+    auth: true,
+    mfa: false,
+    tenantScope: 'resolved',
+    tenantPermission: 'billing:read',
+  },
+  tenantBillingCheckout: {
+    method: 'POST',
+    path: '/api/tenant/billing/checkout',
+    summary: 'Contrata um plano: recebe só o planId e devolve a URL do Stripe Checkout. Voltar dela não libera nada.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'resolved',
+    tenantPermission: 'billing:manage',
+  },
+  tenantBillingPortal: {
+    method: 'POST',
+    path: '/api/tenant/billing/portal',
+    summary: 'Abre o Stripe Customer Portal (forma de pagamento, faturas, cancelamento e troca de plano).',
+    auth: true,
+    mfa: true,
+    tenantScope: 'resolved',
+    tenantPermission: 'billing:manage',
+  },
+  // -------------------------------------------------------------------------
+  // Fase 7 · recebimentos por comunidade (FLUXO B). Mercado Pago por OAuth.
+  // -------------------------------------------------------------------------
+  tenantPaymentAccounts: {
+    method: 'GET',
+    path: '/api/tenant/payment-accounts',
+    summary: 'Contas de recebimento da comunidade: estado, autorizacao e pendencias. Nunca devolve credencial.',
+    auth: true,
+    mfa: false,
+    tenantScope: 'resolved',
+    tenantPermission: 'payment_account:read',
+  },
+  connectPaymentAccount: {
+    method: 'POST',
+    path: '/api/tenant/payment-accounts/connect',
+    summary: 'Inicia a conexao OAuth e devolve a URL de autorizacao do provedor (state + PKCE). Nao existe entrada manual de token.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'resolved',
+    tenantPermission: 'payment_account:manage',
+  },
+  paymentAccountOAuthCallback: {
+    method: 'GET',
+    path: '/api/payment-accounts/oauth/callback',
+    summary:
+      'Retorno do provedor apos a autorizacao. Confere a tentativa persistida (state, PKCE, usuario, comunidade) e devolve um redirect para o painel.',
+    auth: true,
+    mfa: false,
+    tenantScope: 'none',
+  },
+  disconnectPaymentAccount: {
+    method: 'POST',
+    path: '/api/tenant/payment-accounts/:id/disconnect',
+    summary: 'Desconecta a conta: bloqueia pagamentos novos na hora e conclui quando nada mais pende.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'resolved',
+    tenantPermission: 'payment_account:manage',
+  },
+  stripeWebhook: {
+    method: 'POST',
+    path: '/api/webhooks/stripe',
+    summary:
+      'Webhook da Stripe (separado do Mercado Pago). Assinatura validada sobre o corpo bruto; responde 2xx só depois de gravar o evento com durabilidade.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'none',
   },
 } as const satisfies Record<string, RouteContract>;
 

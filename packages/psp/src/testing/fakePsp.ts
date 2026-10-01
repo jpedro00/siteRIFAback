@@ -5,6 +5,8 @@ import {
   PspUnavailableError,
   type CreatePixChargeInput,
   type PspGateway,
+  type PspGatewayResolver,
+  type PspResolution,
   type PspPayment,
   type PspPaymentStatus,
   type WebhookVerification,
@@ -24,6 +26,26 @@ import {
  * isso que prova RN06: o teste decide o que o provedor diz, e a API so paga se
  * a consulta disser "aprovado".
  */
+/**
+ * Resolvedor de TESTE: devolve sempre o mesmo PSP, sem conta. So existe na bancada
+ * (`@clubedarifa/psp/testing`): nenhuma configuracao de ambiente o liga.
+ */
+export class StaticPspResolver implements PspGatewayResolver {
+  readonly provider: 'MERCADO_PAGO' | 'FAKE';
+  constructor(private readonly psp: PspGateway) {
+    this.provider = psp.provider;
+  }
+  async forTenant(): Promise<PspResolution> {
+    return { gateway: this.psp, paymentAccountId: null };
+  }
+  async forPayment(): Promise<PspResolution> {
+    return { gateway: this.psp, paymentAccountId: null };
+  }
+  verifyWebhook(input: Parameters<PspGateway['verifyWebhook']>[0]) {
+    return this.psp.verifyWebhook(input);
+  }
+}
+
 export const FAKE_WEBHOOK_SECRET = 'segredo-do-webhook-de-teste';
 
 interface Cobranca {

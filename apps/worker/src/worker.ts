@@ -1,7 +1,8 @@
 import { pathToFileURL } from 'node:url';
 import { createPool, loadRootEnv, type DbPool } from '@clubedarifa/db';
 import type PgBoss from 'pg-boss';
-import { createPspGateway } from '@clubedarifa/psp';
+import { createPaymentAccountsRuntime } from '@clubedarifa/payment-accounts';
+import { StripeBillingGateway } from '@clubedarifa/billing';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
 import { buildPublisher, FOUNDATION_QUEUE, startQueue, type QueueMessage } from './queue.js';
 import { startRelayLoop, type RelayLoop } from './outbox/relayLoop.js';
@@ -60,7 +61,30 @@ export async function startWorker(config: WorkerConfig): Promise<WorkerRuntime> 
 
   // Jobs agendados (expirar reservas e PIX, fechar sorteios, conciliar, limpar).
   // O PSP e opcional: sem ele, os jobs de PIX avisam e nao liberam nada.
-  await registerJobs(boss, { pool, log, psp: createPspGateway(config) });
+  const billing =
+    config.BILLING_PROVIDER === 'stripe'
+      ? new StripeBillingGateway({
+          secretKey: config.STRIPE_SECRET_KEY!,
+          webhookSecret: config.STRIPE_WEBHOOK_SECRET!,
+          allowLive: config.NODE_ENV === 'production',
+        })
+      : null;
+  // Recebimentos por comunidade: so ligado com PSP_PROVIDER=mercadopago e o aplicativo OAuth.
+  // Nao existe credencial global: sem runtime, os jobs de PIX avisam e nao liberam nada.
+  const paymentAccounts =
+    config.PSP_PROVIDER === 'mercadopago'
+      ? createPaymentAccountsRuntime(pool, {
+          clientId: config.MERCADOPAGO_OAUTH_CLIENT_ID!,
+          clientSecret: config.MERCADOPAGO_OAUTH_CLIENT_SECRET!,
+          credentialsKey: config.PAYMENT_CREDENTIALS_KEY!,
+          redirectUri: `${config.PUBLIC_API_BASE_URL!}/api/payment-accounts/oauth/callback`,
+          webhookSecret: config.MERCADOPAGO_WEBHOOK_SECRET!,
+          environment: config.NODE_ENV === 'production' ? 'PRODUCTION' : 'SANDBOX',
+          fallbackPayerEmail: config.MERCADOPAGO_FALLBACK_PAYER_EMAIL,
+          log,
+        })
+      : null;
+  await registerJobs(boss, { pool, log, paymentAccounts, billing });
 
   const relay = startRelayLoop(pool, buildPublisher(boss), {
     batchSize: config.OUTBOX_BATCH_SIZE,

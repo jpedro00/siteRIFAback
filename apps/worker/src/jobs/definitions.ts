@@ -1,5 +1,14 @@
-import { PspRejectedError, PspUnavailableError, type PspPayment } from '@clubedarifa/psp';
+import {
+  PaymentAccountUnavailableError,
+  PaymentsNotConfiguredError,
+  PspRejectedError,
+  PspUnavailableError,
+  type PspPayment,
+  type PspResolution,
+} from '@clubedarifa/psp';
 import type { DbPool } from '@clubedarifa/db';
+import { processDueStripeEvents } from '@clubedarifa/billing';
+import { STRIPE_EVENT_PAYLOAD_RETENTION_DAYS, STRIPE_EVENT_ROW_RETENTION_DAYS } from '@clubedarifa/shared';
 import type { JobContext, JobDefinition } from './types.js';
 
 /**
@@ -171,6 +180,7 @@ interface PixVencido {
   provider: string;
   provider_payment_id: string;
   tenant_id: string;
+  payment_account_id: string | null;
 }
 
 /** Aplica no banco o que o PSP respondeu. Mesma funcao que o webhook usa. */
@@ -178,9 +188,10 @@ export async function aplicarPagamentoDoPsp(
   pool: DbPool,
   provider: string,
   remoto: PspPayment,
+  paymentAccountId: string | null,
 ): Promise<string> {
   const { rows } = await pool.query<{ r: string }>(
-    'SELECT app.apply_psp_payment($1, $2, $3, $4, $5, $6::timestamptz, $7::jsonb) AS r',
+    'SELECT app.apply_psp_payment($1, $2, $3, $4, $5, $6::timestamptz, $7::jsonb, $8::uuid) AS r',
     [
       provider,
       remoto.providerPaymentId,
@@ -189,16 +200,58 @@ export async function aplicarPagamentoDoPsp(
       remoto.externalReference,
       remoto.paidAt,
       JSON.stringify(remoto.raw ?? null),
+      paymentAccountId,
     ],
   );
   return rows[0]!.r;
+}
+
+/**
+ * O PSP da conta ORIGINAL do pagamento (nunca o da conta atual da comunidade, nunca um global).
+ * Devolve `null` quando nao ha como consultar agora — e ai NADA e liberado nem alterado.
+ */
+async function resolverDoPagamento(
+  runtime: JobContext['paymentAccounts'],
+  log: JobContext['log'],
+  pagamento: { tenant_id: string; payment_account_id: string | null; provider: string },
+  campos: Record<string, unknown>,
+): Promise<PspResolution | null> {
+  if (!runtime) {
+    log.warn('nao ha provedor configurado para consultar; nada alterado', campos);
+    return null;
+  }
+  try {
+    const r = await runtime.resolver.forPayment({
+      tenantId: pagamento.tenant_id,
+      paymentAccountId: pagamento.payment_account_id,
+    });
+    if (r.gateway.provider !== pagamento.provider) {
+      log.warn('o provedor do pagamento e outro; nada alterado', campos);
+      return null;
+    }
+    return r;
+  } catch (error) {
+    if (
+      error instanceof PaymentAccountUnavailableError ||
+      error instanceof PaymentsNotConfiguredError ||
+      error instanceof PspUnavailableError ||
+      error instanceof PspRejectedError
+    ) {
+      log.warn('conta de recebimento do pagamento indisponivel; nada alterado', {
+        ...campos,
+        error: error.message,
+      });
+      return null;
+    }
+    throw error;
+  }
 }
 
 export const expirarPix: JobDefinition = {
   name: 'expirar-pix',
   cron: '*/5 * * * *',
   intervalSeconds: 300,
-  async run({ pool, psp, log }) {
+  async run({ pool, paymentAccounts, log }) {
     let liberados = 0;
 
     // 1) PIX vencido: CONSULTA o PSP antes de liberar. Se ele diz "pago", a venda
@@ -206,7 +259,8 @@ export const expirarPix: JobDefinition = {
     //    nao responde, nada e liberado — liberar no escuro venderia duas vezes um
     //    numero que alguem acabou de pagar.
     const { rows: vencidos } = await pool.query<PixVencido>(
-      `SELECT p.id AS payment_id, p.order_id, p.provider, p.provider_payment_id, p.tenant_id
+      `SELECT p.id AS payment_id, p.order_id, p.provider, p.provider_payment_id, p.tenant_id,
+              p.payment_account_id
          FROM payments p
          JOIN orders o ON o.id = p.order_id
         WHERE p.status = 'PENDENTE' AND o.status = 'PENDENTE'
@@ -222,16 +276,19 @@ export const expirarPix: JobDefinition = {
         tenant_id: pagamento.tenant_id,
       };
 
-      if (!psp || psp.provider !== pagamento.provider) {
-        log.warn('PIX vencido, mas nao ha provedor para consultar; nada liberado', campos);
-        continue;
-      }
+      const resolucao = await resolverDoPagamento(paymentAccounts, log, pagamento, campos);
+      if (!resolucao) continue;
+      const psp = resolucao.gateway;
 
       let remoto: PspPayment;
       try {
         remoto = await psp.getPayment(pagamento.provider_payment_id);
       } catch (error) {
-        if (error instanceof PspUnavailableError || error instanceof PspRejectedError) {
+        if (
+          error instanceof PspUnavailableError ||
+          error instanceof PspRejectedError ||
+          error instanceof PaymentAccountUnavailableError
+        ) {
           log.warn('PSP nao respondeu a consulta; nada liberado', {
             ...campos,
             error: error.message,
@@ -241,7 +298,7 @@ export const expirarPix: JobDefinition = {
         throw error;
       }
 
-      const resultado = await aplicarPagamentoDoPsp(pool, psp.provider, remoto);
+      const resultado = await aplicarPagamentoDoPsp(pool, psp.provider, remoto, resolucao.paymentAccountId);
       if (resultado === 'paid' || resultado === 'refund_required' || resultado === 'mismatch') {
         // Pago (venda concluida ou estorno manual marcado) ou dado divergente: nao se libera.
         log.info('PIX vencido, mas o PSP informou outra situacao', { ...campos, resultado });
@@ -288,27 +345,32 @@ export const conciliacao: JobDefinition = {
   name: 'conciliacao',
   cron: '0 3 * * *',
   intervalSeconds: 86_400,
-  async run({ pool, psp, log }) {
+  async run({ pool, paymentAccounts, log }) {
     // 1) Local: pagamentos x pedidos.
     const { rows } = await pool.query<{ n: number }>("SELECT app.worker_reconcile_local('7 days') AS n");
     let divergencias = rows[0]!.n;
 
-    // 2) PSP x banco: cobrancas que o PSP pode ter aprovado sem o webhook chegar.
-    if (!psp) return divergencias;
+    // 2) PSP x banco: cobrancas que o PSP pode ter aprovado sem o webhook chegar. Cada uma e
+    //    consultada com a conta ORIGINAL do pagamento — uma comunidade que trocou de conta nao
+    //    perde a conciliacao do que ja cobrou.
+    if (!paymentAccounts) return divergencias;
     const { rows: abertos } = await pool.query<{
       id: string;
+      tenant_id: string;
       provider: string;
       provider_payment_id: string;
+      payment_account_id: string | null;
     }>(
-      `SELECT id, provider, provider_payment_id FROM payments
+      `SELECT id, tenant_id, provider, provider_payment_id, payment_account_id FROM payments
         WHERE status IN ('PENDENTE', 'EXPIRADO', 'CANCELADO')
-          AND provider = $1 AND created_at >= now() - interval '3 days'
+          AND created_at >= now() - interval '3 days'
         ORDER BY created_at DESC LIMIT 200`,
-      [psp.provider],
     );
     for (const pagamento of abertos) {
       try {
-        const remoto = await psp.getPayment(pagamento.provider_payment_id);
+        const resolucao = await resolverDoPagamento(paymentAccounts, log, pagamento, { payment_id: pagamento.id });
+        if (!resolucao) continue;
+        const remoto = await resolucao.gateway.getPayment(pagamento.provider_payment_id);
         if (remoto.status !== 'APROVADO') continue;
 
         // O PSP recebeu e nos nao sabiamos: registra a divergencia E cura.
@@ -317,9 +379,13 @@ export const conciliacao: JobDefinition = {
           [pagamento.id, 'PSP_APPROVED_LOCAL_PENDING', JSON.stringify({ providerStatus: remoto.status })],
         );
         if (criada[0]!.r) divergencias += 1;
-        await aplicarPagamentoDoPsp(pool, psp.provider, remoto);
+        await aplicarPagamentoDoPsp(pool, resolucao.gateway.provider, remoto, resolucao.paymentAccountId);
       } catch (error) {
-        if (error instanceof PspUnavailableError || error instanceof PspRejectedError) {
+        if (
+          error instanceof PspUnavailableError ||
+          error instanceof PspRejectedError ||
+          error instanceof PaymentAccountUnavailableError
+        ) {
           log.warn('conciliacao: PSP nao respondeu para um pagamento', {
             payment_id: pagamento.id,
             error: error.message,
@@ -354,6 +420,79 @@ export const limpezaOutbox: JobDefinition = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// processar-stripe-eventos · 1 min · FLUXO A (assinaturas da plataforma)
+// ---------------------------------------------------------------------------
+export const processarStripeEventos: JobDefinition = {
+  name: 'processar-stripe-eventos',
+  cron: '* * * * *',
+  intervalSeconds: 60,
+  async run({ pool, log, billing }) {
+    if (!billing) {
+      // Cobranca desligada: os eventos (se houver) ficam gravados e serao processados
+      // quando ela for ligada. Nada e descartado.
+      return 0;
+    }
+    // Recolhe o que o processamento imediato do webhook nao concluiu: eventos novos, falhos
+    // ja liberados pelo recuo, e os de lease vencido (processo interrompido).
+    const totais = await processDueStripeEvents({ pool, gateway: billing, log });
+    if (totais.FAILED > 0 || totais.DEAD > 0) {
+      log.warn('eventos da Stripe com falha', { failed: totais.FAILED, dead: totais.DEAD });
+    }
+    return totais.PROCESSED + totais.IGNORED + totais.FAILED + totais.DEAD;
+  },
+};
+
+// ---------------------------------------------------------------------------
+// limpar-stripe-eventos · diario · retencao dos eventos da Stripe
+// ---------------------------------------------------------------------------
+export const limparStripeEventos: JobDefinition = {
+  name: 'limpar-stripe-eventos',
+  cron: '45 3 * * *',
+  intervalSeconds: 86_400,
+  async run({ pool }) {
+    // O payload (resumo minimo) de evento terminal e zerado; a linha (ids de idempotencia)
+    // sai depois da janela de reenvio da Stripe. Evento nao concluido nunca e apagado.
+    const { rows } = await pool.query<{ payloads_cleared: number; rows_deleted: number }>(
+      'SELECT * FROM app.purge_stripe_events($1, $2)',
+      [STRIPE_EVENT_PAYLOAD_RETENTION_DAYS, STRIPE_EVENT_ROW_RETENTION_DAYS],
+    );
+    return rows[0]!.payloads_cleared + rows[0]!.rows_deleted;
+  },
+};
+
+// ---------------------------------------------------------------------------
+// renovar-credenciais-pagamento · hora em hora · FLUXO B (recebimentos por comunidade)
+// ---------------------------------------------------------------------------
+export const renovarCredenciaisPagamento: JobDefinition = {
+  name: 'renovar-credenciais-pagamento',
+  cron: '17 * * * *',
+  intervalSeconds: 3_600,
+  async run({ paymentAccounts, log }) {
+    if (!paymentAccounts) return 0;
+    // Renova as autorizacoes que vencem dentro da margem, ANTES de vencer. A renovacao e
+    // serializada por autorizacao no banco: se a API ja renovou, este ciclo nao renova de novo.
+    const totais = await paymentAccounts.refreshDue();
+    if (totais.revoked > 0 || totais.failed > 0) {
+      log.warn('renovacao de credenciais de pagamento com problema', { ...totais });
+    }
+    return totais.refreshed + totais.revoked;
+  },
+};
+
+// ---------------------------------------------------------------------------
+// finalizar-desconexoes-pagamento · 10 min
+// ---------------------------------------------------------------------------
+export const finalizarDesconexoesPagamento: JobDefinition = {
+  name: 'finalizar-desconexoes-pagamento',
+  cron: '*/10 * * * *',
+  intervalSeconds: 600,
+  async run({ paymentAccounts }) {
+    // Conclui as desconexoes que esperavam pagamentos pendentes (e so entao apaga o segredo).
+    return paymentAccounts ? paymentAccounts.finalizeDisconnections() : 0;
+  },
+};
+
 export const JOBS: readonly JobDefinition[] = Object.freeze([
   expirarReservas,
   ativarAgendados,
@@ -361,4 +500,8 @@ export const JOBS: readonly JobDefinition[] = Object.freeze([
   expirarPix,
   conciliacao,
   limpezaOutbox,
+  processarStripeEventos,
+  limparStripeEventos,
+  renovarCredenciaisPagamento,
+  finalizarDesconexoesPagamento,
 ]);

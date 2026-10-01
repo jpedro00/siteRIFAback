@@ -56,6 +56,57 @@ export interface PspGateway {
 }
 
 /** O PSP nao respondeu ou respondeu com erro de servidor. E transitorio: tente de novo. */
+/** O provedor respondeu 401: a credencial usada nao vale (expirada ou revogada). */
+export class PspUnauthorizedError extends Error {
+  constructor(message = 'O provedor recusou a credencial.') {
+    super(message);
+    this.name = 'PspUnauthorizedError';
+  }
+}
+
+/** A comunidade nao tem conta de recebimento conectada. Nunca ha fallback para credencial global. */
+export class PaymentsNotConfiguredError extends Error {
+  constructor(message = 'A comunidade nao tem conta de recebimento conectada.') {
+    super(message);
+    this.name = 'PaymentsNotConfiguredError';
+  }
+}
+
+/** A conta existe, mas nao pode ser usada agora (autorizacao invalida/revogada, conta desconectando...). */
+export class PaymentAccountUnavailableError extends Error {
+  readonly reason: string;
+  constructor(reason: string) {
+    super(`Conta de recebimento indisponivel (${reason}).`);
+    this.name = 'PaymentAccountUnavailableError';
+    this.reason = reason;
+  }
+}
+
+/** Um gateway ja amarrado a UMA conta de recebimento, e qual conta e. */
+export interface PspResolution {
+  readonly gateway: PspGateway;
+  /** Nulo so para o PSP falso dos testes. */
+  readonly paymentAccountId: string | null;
+}
+
+/**
+ * Resolve o PSP PELA COMUNIDADE. E a unica forma de chegar a um gateway real: nao existe
+ * credencial Mercado Pago global, e quem nao tem conta recebe `PaymentsNotConfiguredError`.
+ */
+export interface PspGatewayResolver {
+  /** Provedor dos pagamentos que este resolvedor cria (`payments.provider`). */
+  readonly provider: 'MERCADO_PAGO' | 'FAKE';
+  /** Para criar cobranca NOVA: a conta que recebe hoje (CONNECTED). */
+  forTenant(tenantId: string): Promise<PspResolution>;
+  /**
+   * Para consultar, conciliar ou devolver o que JA existe: a conta ORIGINAL do pagamento,
+   * mesmo que a comunidade tenha trocado de conta (ou esteja desconectando).
+   */
+  forPayment(input: { tenantId: string; paymentAccountId: string | null }): Promise<PspResolution>;
+  /** A assinatura do webhook e da APLICACAO da plataforma, nao de cada comunidade. */
+  verifyWebhook(input: Parameters<PspGateway['verifyWebhook']>[0]): WebhookVerification;
+}
+
 export class PspUnavailableError extends Error {
   override readonly cause: unknown;
   constructor(message: string, cause?: unknown) {
