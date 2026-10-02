@@ -6,6 +6,7 @@ import {
   type CreatePixChargeInput,
   type PspGateway,
   type PspGatewayResolver,
+  type PspPaymentMethod,
   type PspResolution,
   type PspPayment,
   type PspPaymentStatus,
@@ -72,6 +73,20 @@ export class FakePsp implements PspGateway {
   }
 
   readonly calls = { create: 0, get: 0 };
+  /** O que a "conta" do vendedor oferece. O teste pode trocar. */
+  paymentMethods: PspPaymentMethod[] = [
+    { id: 'pix', paymentTypeId: 'bank_transfer', name: 'Pix', active: true },
+    { id: 'visa', paymentTypeId: 'credit_card', name: 'Visa', active: true },
+    { id: 'account_money', paymentTypeId: 'account_money', name: 'Dinheiro na conta', active: true },
+    { id: 'bolbradesco', paymentTypeId: 'ticket', name: 'Boleto', active: true },
+  ];
+  /** Faz a proxima descoberta de meios falhar como indisponivel. */
+  meiosIndisponiveis = false;
+
+  async listPaymentMethods(): Promise<readonly PspPaymentMethod[]> {
+    if (this.meiosIndisponiveis) throw new PspUnavailableError('PSP falso: meios indisponiveis.');
+    return this.paymentMethods;
+  }
   /** Faz a proxima criacao falhar, uma vez. */
   falharProximaCriacao: 'unavailable' | 'rejected' | null = null;
   /** Faz TODA consulta falhar como indisponivel, ate desligar. */

@@ -5,6 +5,7 @@ import { ApiError } from '../../lib/apiError.js';
 import {
   connectPaymentAccount,
   disconnectPaymentAccount,
+  getPaymentMethods,
   handleOAuthCallback,
   listPaymentAccounts,
 } from './paymentAccountService.js';
@@ -35,6 +36,11 @@ export function buildPaymentAccountHandlers(deps: AppDeps): Record<string, Reque
       const tenant = requireTenant(req);
       const session = requireSession(req);
       res.status(200).json(await listPaymentAccounts(deps, { tenantId: tenant.tenantId, userId: session.userId }));
+    }),
+
+    tenantPaymentMethods: asyncHandler(async (req, res) => {
+      const tenant = requireTenant(req);
+      res.status(200).set('Cache-Control', 'no-store').json(await getPaymentMethods(deps, { tenantId: tenant.tenantId }));
     }),
 
     connectPaymentAccount: asyncHandler(async (req, res) => {

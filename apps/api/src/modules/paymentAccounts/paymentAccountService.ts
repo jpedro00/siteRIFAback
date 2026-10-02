@@ -1,5 +1,17 @@
 import { withTenant } from '@clubedarifa/db';
-import type { PaymentAccount, PaymentAccountsResponse } from '@clubedarifa/shared';
+import {
+  PaymentAccountUnavailableError,
+  PaymentsNotConfiguredError,
+  PspUnavailableError,
+} from '@clubedarifa/psp';
+import {
+  mapProviderPaymentType,
+  resolvePaymentMethods,
+  type PaymentAccount,
+  type PaymentAccountsResponse,
+  type PaymentMethodKind,
+  type PaymentMethodsResponse,
+} from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
 
@@ -137,4 +149,62 @@ export async function handleOAuthCallback(
   if (resultado.ok) return `${painel}/recebimentos?conexao=ok`;
   const motivo = MOTIVOS_PUBLICOS.has(resultado.reason) ? resultado.reason : 'attempt_invalid';
   return `${painel}/recebimentos?conexao=erro&motivo=${motivo}`;
+}
+
+/**
+ * Meios de pagamento da conta conectada (M05, arquitetura por capacidades).
+ *
+ * Pergunta ao PROVEDOR o que a conta do vendedor aceita (somente leitura) e junta com a
+ * politica da plataforma: nenhum meio liga so porque o provedor o lista. Hoje, so PIX.
+ * Sem conta conectada ou com o provedor fora do ar, a resposta diz isso — nunca inventa
+ * uma lista.
+ */
+export async function getPaymentMethods(
+  deps: AppDeps,
+  input: { tenantId: string },
+): Promise<PaymentMethodsResponse> {
+  const checkedAt = new Date().toISOString();
+  const runtime = deps.paymentAccounts;
+  if (!runtime || !runtime.enabled) {
+    return { status: 'NO_ACCOUNT', provider: null, accountId: null, methods: resolvePaymentMethods(new Set()), checkedAt };
+  }
+
+  let resolucao;
+  try {
+    resolucao = await runtime.resolver.forTenant(input.tenantId);
+  } catch (error) {
+    if (error instanceof PaymentsNotConfiguredError) {
+      return { status: 'NO_ACCOUNT', provider: null, accountId: null, methods: resolvePaymentMethods(new Set()), checkedAt };
+    }
+    if (error instanceof PaymentAccountUnavailableError) {
+      return { status: 'UNAVAILABLE', provider: 'MERCADO_PAGO', accountId: null, methods: resolvePaymentMethods(new Set()), checkedAt };
+    }
+    throw error;
+  }
+
+  try {
+    const meios = await resolucao.gateway.listPaymentMethods();
+    const reportados = new Set<PaymentMethodKind>();
+    for (const m of meios) {
+      if (m.active) reportados.add(mapProviderPaymentType(m.paymentTypeId, m.id));
+    }
+    return {
+      status: 'OK',
+      provider: 'MERCADO_PAGO',
+      accountId: resolucao.paymentAccountId,
+      methods: resolvePaymentMethods(reportados),
+      checkedAt,
+    };
+  } catch (error) {
+    if (error instanceof PspUnavailableError || error instanceof PaymentAccountUnavailableError) {
+      return {
+        status: 'UNAVAILABLE',
+        provider: 'MERCADO_PAGO',
+        accountId: resolucao.paymentAccountId,
+        methods: resolvePaymentMethods(new Set()),
+        checkedAt,
+      };
+    }
+    throw error;
+  }
 }

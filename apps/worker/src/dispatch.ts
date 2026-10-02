@@ -79,6 +79,7 @@ export async function handleMessage(pool: DbPool, message: QueueMessage): Promis
     case 'draw.paused':
     case 'draw.resumed':
     case 'draw.apuration_started':
+    case 'draw.archived':
     case 'draw.result_corrected':
     case 'payment.refund_required':
       // Gravados na outbox, mas sem consumidor nesta fase. Um evento CONHECIDO sem

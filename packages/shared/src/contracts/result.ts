@@ -151,6 +151,43 @@ export const drawResultVersionSchema = z.object({
 });
 export type DrawResultVersion = z.infer<typeof drawResultVersionSchema>;
 
+// ---------------------------------------------------------------------------
+// Entrega do premio (DOC-01 §15)
+// ---------------------------------------------------------------------------
+
+export const DELIVERY_METHODS = ['RETIRADA', 'ENVIO', 'TRANSFERENCIA'] as const;
+export type DeliveryMethod = (typeof DELIVERY_METHODS)[number];
+
+export const recordDeliveryRequestSchema = z.object({
+  method: z.enum(DELIVERY_METHODS),
+  deliveredAt: z.string().datetime(),
+  /** Codigo de rastreio (ENVIO) ou comprovante da transferencia; opcional. */
+  trackingCode: z.string().trim().min(1).max(100).optional(),
+  notes: z.string().trim().min(1).max(1000).optional(),
+  /**
+   * RN30: a imagem do ganhador so seria publicada com autorizacao anexada. Nao ha
+   * armazenamento de fotos ainda; o registro guarda se a autorizacao existe.
+   */
+  winnerImageAuthorized: z.boolean(),
+});
+export type RecordDeliveryRequest = z.infer<typeof recordDeliveryRequestSchema>;
+
+/** O que o publico ve: SO que foi entregue, quando e como. Sem rastreio nem observacoes. */
+export const publicDeliverySchema = z.object({
+  method: z.enum(DELIVERY_METHODS),
+  deliveredAt: z.string(),
+});
+export type PublicDelivery = z.infer<typeof publicDeliverySchema>;
+
+/** O que o organizador ve. */
+export const drawDeliverySchema = publicDeliverySchema.extend({
+  trackingCode: z.string().nullable(),
+  notes: z.string().nullable(),
+  winnerImageAuthorized: z.boolean(),
+  recordedAt: z.string(),
+});
+export type DrawDelivery = z.infer<typeof drawDeliverySchema>;
+
 /**
  * Pagina publica do resultado. A versao retificada NAO some (RN09): fica visivel,
  * marcada, para quem viu a anterior entender o que mudou.
@@ -162,12 +199,15 @@ export const publicDrawResultSchema = z.object({
   drawDate: z.string().nullable(),
   current: drawResultVersionSchema,
   previous: z.array(drawResultVersionSchema),
+  /** Nulo ate o organizador registrar a entrega ("Premio entregue em DD/MM"). */
+  delivery: publicDeliverySchema.nullable(),
 });
 export type PublicDrawResult = z.infer<typeof publicDrawResultSchema>;
 
 /** Visao do organizador: o mesmo, mais o pedido contemplado. */
 export const organizerDrawResultSchema = publicDrawResultSchema.extend({
   winnerOrderId: z.string().uuid().nullable(),
+  delivery: drawDeliverySchema.nullable(),
 });
 export type OrganizerDrawResult = z.infer<typeof organizerDrawResultSchema>;
 

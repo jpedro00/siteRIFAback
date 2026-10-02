@@ -62,6 +62,7 @@ describe.skipIf(!hasTestDatabase)(`Ciclo de vida do sorteio ${hasTestDatabase ? 
       .set('x-tenant-slug', slug)
       .send({
         title: `Sorteio ${unique('t-')}`,
+        regulation: 'Regulamento do sorteio de teste: participam todos os números pagos e o resultado segue a Loteria Federal do dia indicado.',
         prizes: [{ name: 'Moto 0 km' }],
         ticketPriceCents: 1500,
         totalNumbers: 100,
@@ -168,6 +169,39 @@ describe.skipIf(!hasTestDatabase)(`Ciclo de vida do sorteio ${hasTestDatabase ? 
       expect(res.status).toBe(200);
       const item = (res.body.draws as { id: string; tenantSlug: string }[]).find((d) => d.id === id);
       expect(item?.tenantSlug).toBe(slug);
+    });
+
+    it('a fila traz tudo para decidir: regulamento, premios com valor, cronograma e personalizacao (DOC-01 §17)', async () => {
+      const id = await criarRascunho();
+      await request(harness.app)
+        .patch(`/api/tenant/draws/${id}`)
+        .set('Cookie', organizerCookie)
+        .set('x-tenant-slug', slug)
+        .send({
+          subtitle: 'Subtitulo da revisao',
+          category: 'Veículos',
+          prizes: [{ name: 'Moto 0 km', estimatedValueCents: 2_500_000 }, { name: 'Capacete' }],
+          customization: { headline: 'Chamada de teste' },
+        });
+      await submeter(id);
+
+      const res = await request(harness.app).get('/api/platform/draws/review').set('Cookie', platformCookie);
+      const item = (res.body.draws as Record<string, unknown>[]).find((d) => d['id'] === id)!;
+
+      expect(item).toMatchObject({
+        subtitle: 'Subtitulo da revisao',
+        category: 'Veículos',
+        closeMode: 'AO_ESGOTAR',
+        noWinnerPolicy: 'PROXIMO_VENDIDO_ACIMA',
+        thresholds: [25, 10],
+        customization: { progressMode: 'FALTAM', headline: 'Chamada de teste', ctaLabel: null },
+      });
+      expect(item['regulation']).toMatch(/^Regulamento do sorteio de teste/);
+      expect((item['prizes'] as { name: string; estimatedValueCents: number | null }[]).map((p) => [p.name, p.estimatedValueCents])).toEqual([
+        ['Moto 0 km', 2_500_000],
+        ['Capacete', null],
+      ]);
+      expect(typeof item['submittedAt']).toBe('string');
     });
 
     it('aprovar para ATIVA publica draw.approved e draw.activated', async () => {

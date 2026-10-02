@@ -9,6 +9,7 @@ import {
   type PspGateway,
   type PspGatewayResolver,
   type PspPayment,
+  type PspPaymentMethod,
   type PspResolution,
   type WebhookVerification,
 } from '@clubedarifa/psp';
@@ -204,6 +205,10 @@ class AccountBoundGateway implements PspGateway {
 
   createPixCharge(input: CreatePixChargeInput): Promise<PspPayment> {
     return this.#comRenovacao((g) => g.createPixCharge(input));
+  }
+
+  listPaymentMethods(): Promise<readonly PspPaymentMethod[]> {
+    return this.#comRenovacao((g) => g.listPaymentMethods());
   }
 
   getPayment(providerPaymentId: string): Promise<PspPayment> {

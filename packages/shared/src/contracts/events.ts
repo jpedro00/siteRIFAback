@@ -30,6 +30,7 @@ export const OUTBOX_EVENT_TYPES = [
   'draw.apuration_started',
   'draw.result_published',
   'draw.result_corrected',
+  'draw.archived',
 ] as const;
 
 export type OutboxEventType = (typeof OUTBOX_EVENT_TYPES)[number];
@@ -88,6 +89,7 @@ export const DRAW_EVENT_TYPES = [
   'draw.resumed',
   'draw.sales_closed',
   'draw.apuration_started',
+  'draw.archived',
 ] as const satisfies readonly OutboxEventType[];
 export type DrawEventType = (typeof DRAW_EVENT_TYPES)[number];
 
@@ -108,6 +110,7 @@ export function drawTransitionEvents(from: DrawStatus, to: DrawStatus): DrawEven
     return ['draw.sales_closed'];
   }
   if (from === 'VENDAS ENCERRADAS' && to === 'APURAÇÃO') return ['draw.apuration_started'];
+  if (from === 'RESULTADO PUBLICADO' && to === 'ARQUIVADA') return ['draw.archived'];
   return [];
 }
 
@@ -168,6 +171,7 @@ export const OUTBOX_PAYLOAD_SCHEMAS = {
   'draw.resumed': drawLifecyclePayloadSchema,
   'draw.sales_closed': drawLifecyclePayloadSchema,
   'draw.apuration_started': drawLifecyclePayloadSchema,
+  'draw.archived': drawLifecyclePayloadSchema,
   'draw.result_published': drawResultPayloadSchema,
   'draw.result_corrected': drawResultPayloadSchema,
   'order.paid': orderPaidPayloadSchema,

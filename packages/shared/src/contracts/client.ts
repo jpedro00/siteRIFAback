@@ -7,6 +7,7 @@ import {
   type CreateTenantResponse,
   type HealthResponse,
   type PlatformHealthResponse,
+  type PlatformReconciliationResponse,
   type LoginRequest,
   type LoginResponse,
   type MfaCodeRequest,
@@ -67,7 +68,9 @@ import type {
   OrganizerDrawResult,
   PublicDrawResult,
   PublishResultRequest,
+  RecordDeliveryRequest,
 } from './result.js';
+import type { PaymentMethodsResponse } from './paymentMethods.js';
 import { API_ERROR_MESSAGES, type ApiErrorBody, type ApiErrorCode } from './errors.js';
 
 /**
@@ -96,6 +99,7 @@ export interface RouteResponses {
   platformCreateTenant: CreateTenantResponse;
   platformReviewQueue: ReviewQueueResponse;
   platformHealth: PlatformHealthResponse;
+  platformReconciliation: PlatformReconciliationResponse;
   platformReviewDecide: OrganizerDraw;
   accountOrders: AccountOrdersResponse;
   publicDraws: PublicDrawListResponse;
@@ -119,6 +123,7 @@ export interface RouteResponses {
   invitationPreview: InvitationPreview;
   acceptInvitation: AcceptInvitationResponse;
   correctDrawResult: OrganizerDrawResult;
+  recordDrawDelivery: OrganizerDrawResult;
   mercadopagoWebhook: { received: true };
   devConfirmPayment: OrderResponse;
   organizerDraws: OrganizerDrawListResponse;
@@ -137,6 +142,7 @@ export interface RouteResponses {
   tenantBillingPortal: RedirectResponse;
   stripeWebhook: { received: true };
   tenantPaymentAccounts: PaymentAccountsResponse;
+  tenantPaymentMethods: PaymentMethodsResponse;
   connectPaymentAccount: RedirectResponse;
   paymentAccountOAuthCallback: undefined;
   disconnectPaymentAccount: PaymentAccount;
@@ -157,6 +163,7 @@ export interface RouteBodies {
   inviteTeamMember: InviteMemberRequest;
   changeTeamMemberRole: ChangeMemberRoleRequest;
   correctDrawResult: CorrectResultRequest;
+  recordDrawDelivery: RecordDeliveryRequest;
   updateDrawStatus: UpdateDrawStatusRequest;
   platformReviewDecide: ReviewDrawRequest;
   tenantBillingCheckout: CreateCheckoutSessionRequest;

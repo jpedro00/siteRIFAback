@@ -58,6 +58,15 @@ export class FakeMercadoPago {
     this.redirectUri = options.redirectUri ?? 'https://api.clubedarifa.test/api/payment-accounts/oauth/callback';
   }
 
+  /** O que o "provedor" diz que a conta do vendedor aceita. O teste pode trocar. */
+  paymentMethods: { id: string; name: string; payment_type_id: string; status: string }[] = [
+    { id: 'pix', name: 'Pix', payment_type_id: 'bank_transfer', status: 'active' },
+    { id: 'visa', name: 'Visa', payment_type_id: 'credit_card', status: 'active' },
+    { id: 'account_money', name: 'Dinheiro na conta', payment_type_id: 'account_money', status: 'active' },
+    { id: 'bolbradesco', name: 'Boleto Bradesco', payment_type_id: 'ticket', status: 'active' },
+    { id: 'maestro', name: 'Maestro', payment_type_id: 'debit_card', status: 'deactive' },
+  ];
+
   /** Espera artificial (ms) na renovacao, para sobrepor chamadas concorrentes. */
   refreshDelayMs = 0;
 
@@ -153,6 +162,12 @@ export class FakeMercadoPago {
       return seller ? json(200, { id: Number(seller.id) || seller.id }) : json(401, { message: 'invalid access token' });
     }
     if (method === 'POST' && path === '/v1/payments') return this.#createPayment(headers, body);
+    if (method === 'GET' && path === '/v1/payment_methods') {
+      // Como a API real: exige token valido; lista o que a conta do vendedor aceita.
+      return this.#sellerOfToken(headers['Authorization'])
+        ? json(200, this.paymentMethods)
+        : json(401, { message: 'invalid access token' });
+    }
     const m = /^\/v1\/payments\/(\d+)$/.exec(path);
     if (method === 'GET' && m) return this.#getPayment(headers, m[1]!);
     return json(404, { message: 'rota desconhecida' });

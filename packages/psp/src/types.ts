@@ -43,8 +43,24 @@ export type WebhookVerification =
   | { readonly valid: true; readonly isPaymentEvent: boolean; readonly paymentId: string | null }
   | { readonly valid: false; readonly reason: string };
 
+/**
+ * Um meio de pagamento que a CONTA do vendedor oferece, como o provedor o descreve.
+ * Vocabulario do provedor (`paymentTypeId`); quem traduz para o da plataforma e a API.
+ */
+export interface PspPaymentMethod {
+  readonly id: string;
+  readonly paymentTypeId: string;
+  readonly name: string;
+  readonly active: boolean;
+}
+
 export interface PspGateway {
   readonly provider: 'MERCADO_PAGO' | 'FAKE';
+  /**
+   * Descobre, na API oficial do provedor, o que a conta conectada aceita. Somente
+   * leitura: nao cria cobranca. Habilitar um meio e decisao da plataforma, nao disto.
+   */
+  listPaymentMethods(): Promise<readonly PspPaymentMethod[]>;
   createPixCharge(input: CreatePixChargeInput): Promise<PspPayment>;
   getPayment(providerPaymentId: string): Promise<PspPayment>;
   /** Confere a ASSINATURA do aviso e extrai o identificador do pagamento. */

@@ -15,6 +15,7 @@ const EVENTOS_RECONHECIDOS = [
   'draw.paused',
   'draw.resumed',
   'draw.apuration_started',
+  'draw.archived',
   'draw.result_corrected',
   'payment.refund_required',
   'membership.granted',

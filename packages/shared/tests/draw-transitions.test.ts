@@ -142,6 +142,7 @@ describe('validateDrawRules', () => {
 describe('drawReadinessProblems (checklist de envio)', () => {
   const completo = {
     title: 'Sorteio de Natal',
+    regulation: 'Regulamento do sorteio: participam todos os números pagos; o resultado segue a Loteria Federal do dia indicado.',
     prizes: [{ name: 'Moto' }],
     ticketPriceCents: 1500,
     drawDate: '2030-01-10T00:00:00Z',
@@ -157,6 +158,16 @@ describe('drawReadinessProblems (checklist de envio)', () => {
     expect(problemas.join(' ')).toMatch(/prêmio/);
     expect(problemas.join(' ')).toMatch(/preço/);
     expect(problemas.join(' ')).toMatch(/data do sorteio/);
+    expect(problemas.join(' ')).toMatch(/regulamento/);
+  });
+
+  it('regulamento curto demais nao basta (RN02)', () => {
+    expect(drawReadinessProblems({ ...completo, regulation: 'ok' })).toContainEqual(
+      expect.stringContaining('regulamento'),
+    );
+    expect(drawReadinessProblems({ ...completo, regulation: '   ' })).toContainEqual(
+      expect.stringContaining('regulamento'),
+    );
   });
 
   it('fechamento que nao e AO_ESGOTAR exige a data de fechamento', () => {

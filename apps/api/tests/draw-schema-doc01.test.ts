@@ -56,6 +56,7 @@ describe.skipIf(!hasTestDatabase)(`Sorteio DOC-01 · API ${hasTestDatabase ? '' 
 
   const base = () => ({
     title: `Sorteio ${unique('t-')}`,
+    regulation: 'Regulamento do sorteio de teste: participam todos os números pagos e o resultado segue a Loteria Federal do dia indicado.',
     prizes: [{ name: 'Moto 0 km' }],
     ticketPriceCents: 1500,
     totalNumbers: 100,
@@ -108,8 +109,14 @@ describe.skipIf(!hasTestDatabase)(`Sorteio DOC-01 · API ${hasTestDatabase ? '' 
       });
       expect(res.status, JSON.stringify(res.body)).toBe(201);
       expect(res.body.prizes).toEqual([
-        { position: 1, name: 'Moto', description: 'Zero km', imageUrl: 'https://cdn.exemplo/moto.jpg' },
-        { position: 2, name: 'Capacete', description: null, imageUrl: null },
+        {
+          position: 1,
+          name: 'Moto',
+          description: 'Zero km',
+          imageUrl: 'https://cdn.exemplo/moto.jpg',
+          estimatedValueCents: null,
+        },
+        { position: 2, name: 'Capacete', description: null, imageUrl: null, estimatedValueCents: null },
       ]);
       // O premio principal continua nas colunas de resumo da listagem.
       expect(res.body.prizeName).toBe('Moto');

@@ -176,7 +176,15 @@ describe.skipIf(!hasTestDatabase)(`Fase 7 · fundacao de assinaturas e recebimen
        VALUES ($1, $2, 'T', 'P', 1000, 100) RETURNING id`,
       [tenantId, unique('d-')],
     );
-    if (status !== 'RASCUNHO') {
+    if (status === 'ARQUIVADA') {
+      // Arquivar exige a entrega registrada (0021): o caminho legitimo passa por RESULTADO PUBLICADO.
+      await owner.query(`UPDATE draws SET status = 'RESULTADO PUBLICADO' WHERE id = $1`, [rows[0]!.id]);
+      await owner.query(
+        `INSERT INTO draw_deliveries (tenant_id, draw_id, method, delivered_at) VALUES ($1, $2, 'RETIRADA', now())`,
+        [tenantId, rows[0]!.id],
+      );
+      await owner.query(`UPDATE draws SET status = 'ARQUIVADA' WHERE id = $1`, [rows[0]!.id]);
+    } else if (status !== 'RASCUNHO') {
       await owner.query('UPDATE draws SET status = $2::draw_status WHERE id = $1', [rows[0]!.id, status]);
     }
     return rows[0]!.id;

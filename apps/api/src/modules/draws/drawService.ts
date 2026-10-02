@@ -1,5 +1,6 @@
 import { withContext, withPlatform, withTenant, type PoolClient } from '@clubedarifa/db';
 import {
+  DEFAULT_PROGRESS_MODE,
   DRAW_STATUSES_BLOCKED_UNTIL_REFUND,
   DRAW_STATUS_TRANSITIONS,
   ORGANIZER_DRAW_TRANSITIONS,
@@ -11,6 +12,7 @@ import {
   labelDigitsForGridSize,
   validateDrawRules,
   type CreateDrawRequest,
+  type DrawCustomization,
   type DrawNumbersResponse,
   type OrderResponse,
   type OrganizerDraw,
@@ -58,6 +60,11 @@ interface DrawRow {
   id: string;
   slug: string;
   title: string;
+  subtitle: string | null;
+  category: string | null;
+  regulation: string | null;
+  /** Ajustes do organizador; `{}` = tudo no padrao. A forma exata e validada na entrada. */
+  customization: { progressMode?: string; headline?: string; ctaLabel?: string };
   description: string | null;
   prize_name: string;
   prize_description: string | null;
@@ -108,8 +115,9 @@ async function carregarPremios(client: PoolClient, drawId: string): Promise<Priz
     name: string;
     description: string | null;
     image_url: string | null;
+    estimated_value_cents: number | null;
   }>(
-    `SELECT position, name, description, image_url
+    `SELECT position, name, description, image_url, estimated_value_cents
        FROM prizes WHERE draw_id = $1 ORDER BY position`,
     [drawId],
   );
@@ -118,7 +126,25 @@ async function carregarPremios(client: PoolClient, drawId: string): Promise<Priz
     name: r.name,
     description: r.description,
     imageUrl: r.image_url,
+    estimatedValueCents: r.estimated_value_cents,
   }));
+}
+
+/** Texto so de espacos vira nulo: o banco recusa texto vazio, e o organizador nao precisa ver um 500. */
+function semBrancos(texto: string | null | undefined): string | null {
+  const limpo = texto?.trim();
+  return limpo ? limpo : null;
+}
+
+/** O que a vitrine aplica: o ajuste do organizador onde houve, o padrao onde nao. */
+function personalizacaoResolvida(row: DrawRow): DrawCustomization {
+  const c = row.customization ?? {};
+  const modo = c.progressMode;
+  return {
+    progressMode: modo === 'FALTAM' || modo === 'PERCENTUAL' || modo === 'OCULTAR' ? modo : DEFAULT_PROGRESS_MODE,
+    headline: typeof c.headline === 'string' ? c.headline : null,
+    ctaLabel: typeof c.ctaLabel === 'string' ? c.ctaLabel : null,
+  };
 }
 
 /** Estados em que a vitrine mostra o sorteio. RASCUNHO nao aparece ao publico. */
@@ -140,6 +166,7 @@ function toSummary(row: DrawRow, paidCount: number): PublicDrawSummary {
     id: row.id,
     slug: row.slug,
     title: row.title,
+    subtitle: row.subtitle,
     description: row.description,
     prizeName: row.prize_name,
     prizeImageUrl: row.prize_image_url,
@@ -242,6 +269,9 @@ export async function getPublicDraw(
     return {
       ...toSummary(row, contagem.paid),
       prizeDescription: row.prize_description,
+      category: row.category,
+      regulation: row.regulation,
+      customization: personalizacaoResolvida(row),
       prizes: await carregarPremios(client, row.id),
       closeMode: row.close_mode,
       closeAt: row.close_at,
@@ -657,6 +687,9 @@ async function montarOrganizerDraw(client: PoolClient, row: DrawRow): Promise<Or
   return {
     ...toSummary(row, contagem.paid),
     prizeDescription: row.prize_description,
+    category: row.category,
+    regulation: row.regulation,
+    customization: personalizacaoResolvida(row),
     prizes: await carregarPremios(client, row.id),
     closeMode: row.close_mode,
     closeAt: row.close_at,
@@ -735,6 +768,10 @@ const CAMPOS_EDITAVEIS: readonly {
   cast?: string;
 }[] = [
   { chave: 'title', coluna: 'title' },
+  { chave: 'subtitle', coluna: 'subtitle' },
+  { chave: 'category', coluna: 'category' },
+  { chave: 'regulation', coluna: 'regulation' },
+  { chave: 'customization', coluna: 'customization', cast: 'jsonb' },
   { chave: 'description', coluna: 'description' },
   { chave: 'ticketPriceCents', coluna: 'ticket_price_cents' },
   { chave: 'promotionalPriceCents', coluna: 'promotional_price_cents' },
@@ -763,10 +800,10 @@ async function gravarPremios(
 ): Promise<void> {
   await client.query('DELETE FROM prizes WHERE draw_id = $1', [drawId]);
   await client.query(
-    `INSERT INTO prizes (tenant_id, draw_id, position, name, description, image_url)
-     SELECT $1, $2, p.pos, p.name, p.description, p.image_url
-       FROM unnest($3::int[], $4::text[], $5::text[], $6::text[])
-            AS p(pos, name, description, image_url)`,
+    `INSERT INTO prizes (tenant_id, draw_id, position, name, description, image_url, estimated_value_cents)
+     SELECT $1, $2, p.pos, p.name, p.description, p.image_url, p.estimated
+       FROM unnest($3::int[], $4::text[], $5::text[], $6::text[], $7::int[])
+            AS p(pos, name, description, image_url, estimated)`,
     [
       tenantId,
       drawId,
@@ -774,6 +811,7 @@ async function gravarPremios(
       prizes.map((p) => p.name.trim()),
       prizes.map((p) => p.description ?? null),
       prizes.map((p) => p.imageUrl ?? null),
+      prizes.map((p) => p.estimatedValueCents ?? null),
     ],
   );
   const principal = prizes[0]!;
@@ -802,12 +840,13 @@ export async function createDraw(
            (tenant_id, slug, title, description, prize_name, prize_description,
             prize_image_url, ticket_price_cents, promotional_price_cents, promo_until,
             total_numbers, draw_date, sales_start_at, close_mode, close_at, thresholds,
-            no_winner_policy)
+            no_winner_policy, subtitle, category, regulation, customization)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11,
                  $12::timestamptz, $13::timestamptz,
                  COALESCE($14::draw_close_mode, 'AO_ESGOTAR'), $15::timestamptz,
                  COALESCE($16::int[], '{25,10}'),
-                 COALESCE($17, 'PROXIMO_VENDIDO_ACIMA'))
+                 COALESCE($17, 'PROXIMO_VENDIDO_ACIMA'),
+                 $18, $19, $20, $21::jsonb)
          RETURNING ${DRAW_COLUMNS}`,
         [
           input.tenantId,
@@ -827,6 +866,10 @@ export async function createDraw(
           data.closeAt ?? null,
           data.thresholds ?? null,
           data.noWinnerPolicy ?? null,
+          data.subtitle ?? null,
+          data.category ?? null,
+          semBrancos(data.regulation),
+          JSON.stringify(data.customization ?? {}),
         ],
       );
       const criado = rows[0]!;
@@ -915,7 +958,14 @@ export async function updateDraw(
     for (const campo of CAMPOS_EDITAVEIS) {
       if (!tem(campo.chave)) continue;
       const valor = data[campo.chave];
-      valores.push(campo.chave === 'title' && typeof valor === 'string' ? valor.trim() : (valor ?? null));
+      if (campo.chave === 'regulation') {
+        valores.push(semBrancos(valor as string | null | undefined));
+      } else if (campo.chave === 'customization') {
+        // `null` volta tudo ao padrao; o objeto SUBSTITUI o anterior (nao ha mescla em silencio).
+        valores.push(JSON.stringify(valor ?? {}));
+      } else {
+        valores.push(campo.chave === 'title' && typeof valor === 'string' ? valor.trim() : (valor ?? null));
+      }
       sets.push(`${campo.coluna} = $${valores.length}${campo.cast ? `::${campo.cast}` : ''}`);
     }
     if (sets.length > 0) {
@@ -1014,6 +1064,17 @@ export async function transitionDrawStatus(
     throw ApiError.badRequest('Informe o motivo da reprovação.');
   }
 
+  // DOC-01 §15: so arquiva com a entrega registrada. O banco tambem recusa (gatilho);
+  // aqui o motivo chega ao organizador como orientacao, nao como erro generico.
+  if (para === 'ARQUIVADA') {
+    const { rows: entrega } = await client.query('SELECT 1 FROM draw_deliveries WHERE draw_id = $1', [
+      input.drawId,
+    ]);
+    if (entrega.length === 0) {
+      throw ApiError.conflict('Registre a entrega do prêmio antes de arquivar o sorteio.');
+    }
+  }
+
   // Checklist do envio (DOC-01 §4, ultimo passo): so vai para revisao o sorteio
   // COMPLETO. O rascunho e salvo a cada passo do assistente, entao o banco nao
   // pode exigir tudo de uma vez — a exigencia mora aqui.
@@ -1021,6 +1082,7 @@ export async function transitionDrawStatus(
     const premios = await carregarPremios(client, input.drawId);
     const problemas = drawReadinessProblems({
       title: atual.title,
+      regulation: atual.regulation,
       prizes: premios,
       ticketPriceCents: atual.ticket_price_cents,
       promotionalPriceCents: atual.promotional_price_cents,
@@ -1175,22 +1237,16 @@ export async function listReviewQueue(
   page: { cursor: Keyset | null; limit: number },
 ): Promise<ReviewQueueResponse> {
   return withPlatform(deps.pool, { userId }, async (client) => {
-    const { rows } = await client.query<{
-      id: string;
-      title: string;
-      prize_name: string;
-      unit_price_cents: number;
-      total_numbers: number;
-      draw_date: string | null;
-      created_at: string;
-      tenant_id: string;
-      tenant_slug: string;
-      tenant_name: string;
-      cursor_t: string;
-    }>(
-      `SELECT d.id, d.title, d.prize_name, d.ticket_price_cents AS unit_price_cents, d.total_numbers,
-              d.draw_date, d.created_at, d.tenant_id,
-              t.slug AS tenant_slug, t.name AS tenant_name,
+    const { rows } = await client.query<
+      DrawRow & {
+        tenant_slug: string;
+        tenant_name: string;
+        cursor_t: string;
+        tenant_id: string;
+        updated_at: string;
+      }
+    >(
+      `SELECT d.*, t.slug AS tenant_slug, t.name AS tenant_name,
               d.updated_at::text AS cursor_t
          FROM draws d
          JOIN tenants t ON t.id = d.tenant_id
@@ -1201,20 +1257,33 @@ export async function listReviewQueue(
       [page.cursor?.t ?? null, page.cursor?.id ?? null, page.limit + 1],
     );
     const { pagina, nextCursor } = paginate(rows, page.limit, (r) => ({ t: r.cursor_t, id: r.id }));
-    return {
-      nextCursor,
-      draws: pagina.map((r) => ({
+    const draws = [];
+    for (const r of pagina) {
+      draws.push({
         id: r.id,
         title: r.title,
         prizeName: r.prize_name,
-        unitPriceCents: r.unit_price_cents,
+        unitPriceCents: r.ticket_price_cents,
         totalNumbers: r.total_numbers,
         drawDate: r.draw_date,
         createdAt: r.created_at,
         tenantId: r.tenant_id,
         tenantSlug: r.tenant_slug,
         tenantName: r.tenant_name,
-      })),
-    };
+        subtitle: r.subtitle,
+        category: r.category,
+        description: r.description,
+        regulation: r.regulation,
+        prizes: await carregarPremios(client, r.id),
+        salesStartAt: r.sales_start_at,
+        closeMode: r.close_mode,
+        closeAt: r.close_at,
+        noWinnerPolicy: r.no_winner_policy,
+        thresholds: r.thresholds,
+        customization: personalizacaoResolvida(r),
+        submittedAt: r.updated_at,
+      });
+    }
+    return { nextCursor, draws };
   });
 }

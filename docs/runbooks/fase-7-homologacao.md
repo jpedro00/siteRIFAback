@@ -14,7 +14,7 @@ não há credencial global. Depois da migration eles continuam atualizáveis (ap
 devolver), mas **o sistema não consegue consultá-los no Mercado Pago**: ficam como pendência
 manual (`PAYMENT_AUTHORIZATION_UNAVAILABLE` / conciliação).
 
-Antes de aplicar 0017–0020 em staging:
+Antes de aplicar 0017–0021 em staging:
 
 ```sql
 SELECT status, count(*) FROM payments WHERE provider <> 'FAKE' AND payment_account_id IS NULL GROUP BY 1;
@@ -79,7 +79,7 @@ Limitações conhecidas do sandbox do Mercado Pago (confirmar na hora): PIX de t
 2. Garantir que **não** existem API/worker duplicados (dois workers processando a mesma fila).
 3. **Backup** do PostgreSQL de staging (Supabase) e registrar o procedimento de restauração testado.
 4. Configurar secrets/vars de **sandbox** (`sync: false` no Render); frontends: `VITE_API_BASE_URL`, `VITE_STOREFRONT_BASE_URL`.
-5. Aplicar 0017–0020 pelo processo autorizado (`npm run db:migrate` com a conexão do dono; checksums de 0001–0016 já conferidos no teste de upgrade).
+5. Aplicar 0017–0021 pelo processo autorizado (`npm run db:migrate` com a conexão do dono; checksums de 0001–0016 já conferidos no teste de upgrade).
 6. Subir a **API**; `GET /api/health`.
 7. Subir o **worker**; heartbeat e jobs (`processar-stripe-eventos`, `limpar-stripe-eventos`, `renovar-credenciais-pagamento`, `finalizar-desconexoes-pagamento`, `expirar-pix`, `conciliacao`).
 8. Organizer, Admin, Storefront: smoke test **sem enforcement**.

@@ -96,6 +96,7 @@ describe.skipIf(!hasTestDatabase)(`Entitlements e limites dos planos ${hasTestDa
   async function rascunho(com = c): Promise<string> {
     const res = await dono(com).post('/api/tenant/draws', {
       title: `Sorteio ${unique('t-')}`,
+      regulation: 'Regulamento do sorteio de teste: participam todos os números pagos e o resultado segue a Loteria Federal do dia indicado.',
       prizes: [{ name: 'Moto 0 km' }],
       ticketPriceCents: 1500,
       totalNumbers: 100,

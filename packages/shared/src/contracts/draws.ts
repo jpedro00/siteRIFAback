@@ -42,10 +42,40 @@ export type PublicNumberStatus = (typeof PUBLIC_NUMBER_STATUSES)[number];
 // Vitrine
 // ---------------------------------------------------------------------------
 
+/**
+ * Personalizacao do sorteio (DOC-01 §6). Somente o que a vitrine HONRA hoje:
+ * como a barra de progresso fala, a chamada principal e o texto do botao.
+ * Banner, cor de destaque, modelo de pagina e contador dependem de midia ou de
+ * novos layouts e ainda nao existem — por isso nao ha campo para eles.
+ *
+ * `.strict()`: campo desconhecido e recusado, nunca ignorado em silencio.
+ */
+export const PROGRESS_MODES = ['FALTAM', 'PERCENTUAL', 'OCULTAR'] as const;
+export type ProgressMode = (typeof PROGRESS_MODES)[number];
+export const DEFAULT_PROGRESS_MODE: ProgressMode = 'FALTAM';
+
+export const drawCustomizationInputSchema = z
+  .object({
+    progressMode: z.enum(PROGRESS_MODES).optional(),
+    headline: z.string().trim().min(1).max(120).optional(),
+    ctaLabel: z.string().trim().min(1).max(30).optional(),
+  })
+  .strict();
+export type DrawCustomizationInput = z.infer<typeof drawCustomizationInputSchema>;
+
+/** Personalizacao RESOLVIDA: o que a vitrine aplica (padrao onde nao houve ajuste). */
+export const drawCustomizationSchema = z.object({
+  progressMode: z.enum(PROGRESS_MODES),
+  headline: z.string().nullable(),
+  ctaLabel: z.string().nullable(),
+});
+export type DrawCustomization = z.infer<typeof drawCustomizationSchema>;
+
 export const publicDrawSummarySchema = z.object({
   id: z.string().uuid(),
   slug: z.string(),
   title: z.string(),
+  subtitle: z.string().nullable(),
   description: z.string().nullable(),
   prizeName: z.string(),
   prizeImageUrl: z.string().nullable(),
@@ -84,11 +114,17 @@ export const prizeSchema = z.object({
   name: z.string(),
   description: z.string().nullable(),
   imageUrl: z.string().nullable(),
+  /** Valor estimado, em centavos; opcional. */
+  estimatedValueCents: z.number().int().nonnegative().nullable(),
 });
 export type Prize = z.infer<typeof prizeSchema>;
 
 export const publicDrawDetailSchema = publicDrawSummarySchema.extend({
   prizeDescription: z.string().nullable(),
+  category: z.string().nullable(),
+  /** Regulamento proprio do sorteio (RN29: sempre visivel). Nulo em sorteios antigos. */
+  regulation: z.string().nullable(),
+  customization: drawCustomizationSchema,
   /** Todos os premios, em ordem de posicao. O primeiro e o "premio principal". */
   prizes: z.array(prizeSchema),
   closeMode: z.enum(DRAW_CLOSE_MODES),
@@ -253,6 +289,7 @@ export const prizeInputSchema = z.object({
   name: z.string().trim().min(2).max(160),
   description: z.string().max(4000).optional(),
   imageUrl: httpsUrlSchema.optional(),
+  estimatedValueCents: z.number().int().min(0).max(2_000_000_000).optional(),
 });
 export type PrizeInput = z.infer<typeof prizeInputSchema>;
 
@@ -304,8 +341,12 @@ export function validateDrawRules(d: DrawRulesInput): string[] {
  * isso NAO e CHECK do banco — o rascunho e salvo a cada passo — e por isso e
  * conferido AQUI, no envio.
  */
+/** Tamanho minimo do regulamento para ir a revisao: um texto de verdade, nao um espaco. */
+export const MIN_REGULATION_LENGTH = 50;
+
 export interface DrawReadinessInput extends DrawRulesInput {
   readonly title?: string | null | undefined;
+  readonly regulation?: string | null | undefined;
   readonly prizes?: readonly { readonly name: string }[] | undefined;
   readonly closeMode?: (typeof DRAW_CLOSE_MODES)[number] | null | undefined;
 }
@@ -317,6 +358,9 @@ export function drawReadinessProblems(d: DrawReadinessInput): string[] {
     problemas.push('Cadastre ao menos um prêmio, com nome.');
   }
   if (!d.ticketPriceCents || d.ticketPriceCents <= 0) problemas.push('Defina o preço por número.');
+  if (!d.regulation || d.regulation.trim().length < MIN_REGULATION_LENGTH) {
+    problemas.push(`Cadastre o regulamento do sorteio (mínimo de ${MIN_REGULATION_LENGTH} caracteres).`);
+  }
   if (!d.drawDate) problemas.push('Defina a data do sorteio.');
   if (d.closeMode && d.closeMode !== 'AO_ESGOTAR' && !d.closeAt) {
     problemas.push('O modo de fechamento escolhido exige a data de fechamento das vendas.');
@@ -328,7 +372,12 @@ const dateTimeSchema = z.string().datetime();
 
 const drawEditableFields = {
   title: z.string().min(3).max(160),
+  subtitle: z.string().trim().min(1).max(160).optional(),
+  category: z.string().trim().min(1).max(40).optional(),
   description: z.string().max(4000).optional(),
+  /** Regulamento proprio do sorteio (RN02, RN29). */
+  regulation: z.string().max(20000).optional(),
+  customization: drawCustomizationInputSchema.optional(),
   /** Um ou mais premios; a ordem define a posicao (1 = principal). */
   prizes: z.array(prizeInputSchema).min(1).max(20),
   /** Preco cheio por numero, em centavos. */
@@ -378,6 +427,10 @@ export const updateDrawRequestSchema = z
   .extend({
     // `null` LIMPA o campo (tirar a promocao, o fechamento por data, a descricao).
     description: z.string().max(4000).nullable().optional(),
+    subtitle: z.string().trim().min(1).max(160).nullable().optional(),
+    category: z.string().trim().min(1).max(40).nullable().optional(),
+    regulation: z.string().max(20000).nullable().optional(),
+    customization: drawCustomizationInputSchema.nullable().optional(),
     promotionalPriceCents: z.number().int().positive().max(100_000_000).nullable().optional(),
     promoUntil: dateTimeSchema.nullable().optional(),
     drawDate: dateTimeSchema.nullable().optional(),
@@ -424,6 +477,23 @@ export const reviewQueueItemSchema = z.object({
   tenantId: z.string().uuid(),
   tenantSlug: z.string(),
   tenantName: z.string(),
+  /**
+   * Tudo o que o revisor precisa para decidir SEM abrir o painel da comunidade (DOC-01 §17):
+   * conteudo, regulamento, premios e cronograma exatamente como o organizador enviou.
+   */
+  subtitle: z.string().nullable(),
+  category: z.string().nullable(),
+  description: z.string().nullable(),
+  regulation: z.string().nullable(),
+  prizes: z.array(prizeSchema),
+  salesStartAt: z.string().nullable(),
+  closeMode: z.enum(DRAW_CLOSE_MODES),
+  closeAt: z.string().nullable(),
+  noWinnerPolicy: z.enum(NO_WINNER_POLICIES),
+  thresholds: z.array(z.number().int()),
+  customization: drawCustomizationSchema,
+  /** Quando o organizador enviou para revisao. */
+  submittedAt: z.string(),
 });
 export type ReviewQueueItem = z.infer<typeof reviewQueueItemSchema>;
 

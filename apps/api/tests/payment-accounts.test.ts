@@ -848,4 +848,77 @@ describe.skipIf(!hasTestDatabase || WORKER_URL === '')(`Recebimentos por comunid
       expect(respostas).not.toMatch(/APP_USR-|TG-|secret|verifier|code/i);
     });
   });
+  // -------------------------------------------------------------------------
+  describe('meios de pagamento (arquitetura por capacidades)', () => {
+    const padrao = () => mp.paymentMethods.map((m) => ({ ...m }));
+    const porTipo = (body: { methods: Array<{ kind: string }> }, kind: string) =>
+      body.methods.find((m) => m.kind === kind) as
+        | { kind: string; providerReported: boolean; enabled: boolean; reason: string }
+        | undefined;
+
+    it('sem conta conectada: diz NO_ACCOUNT e nao liga nenhum meio', async () => {
+      const C = await novaComunidade('pm-sem-');
+      const res = await donoDe(C).get('/api/tenant/payment-methods');
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: 'NO_ACCOUNT', accountId: null });
+      expect(res.body.methods.every((m: { enabled: boolean }) => m.enabled === false)).toBe(true);
+    });
+
+    it('conta conectada: so o PIX liga; cartao, saldo e boleto aparecem desligados com o motivo', async () => {
+      const C = await novaComunidade('pm-ok-');
+      await conectar(C, '8101');
+      const res = await donoDe(C).get('/api/tenant/payment-methods');
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.status).toBe('OK');
+      expect(res.body.provider).toBe('MERCADO_PAGO');
+      expect(res.body.accountId).toBeTruthy();
+
+      expect(porTipo(res.body, 'PIX')).toMatchObject({ providerReported: true, enabled: true, reason: 'ENABLED' });
+      // O provedor LISTA, a plataforma NAO liga (nao ha fluxo nem tokenizacao ainda).
+      expect(porTipo(res.body, 'CREDIT_CARD')).toMatchObject({ providerReported: true, enabled: false, reason: 'NOT_SUPPORTED_YET' });
+      expect(porTipo(res.body, 'ACCOUNT_MONEY')).toMatchObject({ providerReported: true, enabled: false, reason: 'NOT_SUPPORTED_YET' });
+      // Boleto: prazo de dias x reserva de 30 min. Sem politica, desligado.
+      expect(porTipo(res.body, 'BOLETO')).toMatchObject({ providerReported: true, enabled: false, reason: 'RESERVATION_WINDOW_UNDEFINED' });
+      // Meio inativo na conta nao conta como oferecido.
+      expect(porTipo(res.body, 'DEBIT_CARD')).toMatchObject({ providerReported: false, enabled: false });
+    });
+
+    it('se a conta do vendedor NAO oferece PIX, ele nao liga (a politica sozinha nao basta)', async () => {
+      const C = await novaComunidade('pm-nopix-');
+      await conectar(C, '8102');
+      const original = padrao();
+      mp.paymentMethods = original.filter((m) => m.id !== 'pix');
+      try {
+        const res = await donoDe(C).get('/api/tenant/payment-methods');
+        expect(porTipo(res.body, 'PIX')).toMatchObject({ providerReported: false, enabled: false, reason: 'NOT_REPORTED_BY_PROVIDER' });
+      } finally {
+        mp.paymentMethods = original;
+      }
+    });
+
+    it('provedor fora do ar: UNAVAILABLE, sem inventar lista', async () => {
+      const C = await novaComunidade('pm-down-');
+      await conectar(C, '8103');
+      mp.failNext('/v1/payment_methods', 503, 1);
+      const res = await donoDe(C).get('/api/tenant/payment-methods');
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('UNAVAILABLE');
+      expect(res.body.methods.every((m: { enabled: boolean; providerReported: boolean }) => !m.enabled && !m.providerReported)).toBe(true);
+    });
+
+    it('so a comunidade dona enxerga; quem nao tem a permissao recebe 403; nada de segredo na resposta', async () => {
+      const C = await novaComunidade('pm-perm-');
+      await conectar(C, '8104');
+      const suporte = await membro(C, 'SUPPORT');
+      expect((await como(suporte.cookie, C.slug).get('/api/tenant/payment-methods')).status).toBe(403);
+      const financeiro = await membro(C, 'FINANCE');
+      const res = await como(financeiro.cookie, C.slug).get('/api/tenant/payment-methods');
+      expect(res.status).toBe(200);
+      expect(JSON.stringify(res.body)).not.toMatch(/APP_USR-|TG-|secret|token|verifier/i);
+      // A comunidade B nao ve a conta da A: a resposta e a da PROPRIA comunidade.
+      expect((await donoDe(B).get('/api/tenant/payment-methods')).body.accountId).not.toBe(
+        (await donoDe(C).get('/api/tenant/payment-methods')).body.accountId,
+      );
+    });
+  });
 });

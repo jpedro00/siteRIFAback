@@ -5,12 +5,14 @@ import {
   computeDrawResult,
   formatNumberLabel,
   type CorrectResultRequest,
+  type DrawDelivery,
   type DrawResultVersion,
   type GridSize,
   type NoWinnerPolicy,
   type OrganizerDrawResult,
   type PublicDrawResult,
   type PublishResultRequest,
+  type RecordDeliveryRequest,
   type ResultAttempt,
 } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
@@ -201,6 +203,31 @@ function toVersion(r: ResultRow): DrawResultVersion {
   };
 }
 
+async function carregarEntrega(client: PoolClient, drawId: string): Promise<DrawDelivery | null> {
+  const { rows } = await client.query<{
+    method: DrawDelivery['method'];
+    delivered_at: string;
+    tracking_code: string | null;
+    notes: string | null;
+    winner_image_authorized: boolean;
+    created_at: string;
+  }>(
+    `SELECT method, delivered_at, tracking_code, notes, winner_image_authorized, created_at
+       FROM draw_deliveries WHERE draw_id = $1`,
+    [drawId],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    method: r.method,
+    deliveredAt: r.delivered_at,
+    trackingCode: r.tracking_code,
+    notes: r.notes,
+    winnerImageAuthorized: r.winner_image_authorized,
+    recordedAt: r.created_at,
+  };
+}
+
 async function montarResultado(
   client: PoolClient,
   draw: Pick<DrawForResult, 'id' | 'slug' | 'title' | 'label_digits' | 'draw_date'>,
@@ -221,6 +248,7 @@ async function montarResultado(
     // A versao retificada NAO some: fica visivel, marcada (RN09).
     previous: rows.filter((r) => r.status === 'RETIFICADA').map(toVersion),
     winnerOrderId: atual.winner_order_id,
+    delivery: await carregarEntrega(client, draw.id),
   };
 }
 
@@ -249,7 +277,87 @@ export async function getPublicResult(
       drawDate: completo.drawDate,
       current: completo.current,
       previous: completo.previous,
+      // Ao publico: SO que foi entregue, quando e como. Rastreio e observacoes ficam com o organizador.
+      delivery: completo.delivery ? { method: completo.delivery.method, deliveredAt: completo.delivery.deliveredAt } : null,
     };
+  });
+}
+
+/**
+ * Registra (ou corrige) a entrega do premio. DOC-01 §15 · RN30.
+ *
+ * So com o resultado PUBLICADO: antes nao ha ganhador a quem entregar, e depois de
+ * ARQUIVADA tudo e somente leitura (o gatilho do banco tambem recusa). A foto do
+ * ganhador nao existe nesta versao; o registro guarda se ha autorizacao de imagem.
+ */
+export async function recordDelivery(
+  deps: AppDeps,
+  input: {
+    tenantId: string;
+    userId: string;
+    drawId: string;
+    data: RecordDeliveryRequest;
+    origin?: ActionOrigin | undefined;
+  },
+): Promise<OrganizerDrawResult> {
+  return withTenant(deps.pool, { tenantId: input.tenantId, userId: input.userId }, async (client) => {
+    const { rows } = await client.query<{ status: string }>(
+      'SELECT status::text AS status FROM draws WHERE id = $1 FOR UPDATE',
+      [input.drawId],
+    );
+    const draw = rows[0];
+    if (!draw) throw ApiError.notFound('Sorteio não encontrado.');
+    if (draw.status !== 'RESULTADO PUBLICADO') {
+      throw ApiError.conflict(
+        draw.status === 'ARQUIVADA'
+          ? 'O sorteio está arquivado: a entrega não pode mais ser alterada.'
+          : 'A entrega só pode ser registrada depois que o resultado for publicado.',
+      );
+    }
+
+    const d = input.data;
+    const { rows: antes } = await client.query('SELECT 1 FROM draw_deliveries WHERE draw_id = $1', [input.drawId]);
+    await client.query(
+      `INSERT INTO draw_deliveries
+         (tenant_id, draw_id, method, tracking_code, delivered_at, notes, winner_image_authorized, recorded_by)
+       VALUES ($1, $2, $3, $4, $5::timestamptz, $6, $7, $8)
+       ON CONFLICT (draw_id) DO UPDATE SET
+         method = EXCLUDED.method,
+         tracking_code = EXCLUDED.tracking_code,
+         delivered_at = EXCLUDED.delivered_at,
+         notes = EXCLUDED.notes,
+         winner_image_authorized = EXCLUDED.winner_image_authorized,
+         recorded_by = EXCLUDED.recorded_by`,
+      [
+        input.tenantId,
+        input.drawId,
+        d.method,
+        d.trackingCode ?? null,
+        d.deliveredAt,
+        d.notes ?? null,
+        d.winnerImageAuthorized,
+        input.userId,
+      ],
+    );
+
+    await recordAuditEvent(client, {
+      tenantId: input.tenantId,
+      actorUserId: input.userId,
+      action: antes.length > 0 ? 'draw.delivery_updated' : 'draw.delivery_recorded',
+      targetType: 'draw',
+      targetId: input.drawId,
+      // Sem rastreio nem observacao na trilha: sao dados do organizador, nao da auditoria.
+      after: { method: d.method, deliveredAt: d.deliveredAt, winnerImageAuthorized: d.winnerImageAuthorized },
+      ip: input.origin?.ip ?? null,
+      userAgent: input.origin?.userAgent ?? null,
+    });
+
+    const { rows: sorteio } = await client.query<DrawForResult>(
+      `SELECT id, tenant_id, slug, title, status::text AS status, total_numbers, label_digits,
+              no_winner_policy, draw_date FROM draws WHERE id = $1`,
+      [input.drawId],
+    );
+    return montarResultado(client, sorteio[0]!);
   });
 }
 

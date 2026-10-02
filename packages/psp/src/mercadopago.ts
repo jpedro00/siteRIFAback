@@ -6,6 +6,7 @@ import {
   type CreatePixChargeInput,
   type PspGateway,
   type PspPayment,
+  type PspPaymentMethod,
   type PspPaymentStatus,
   type WebhookVerification,
 } from './types.js';
@@ -153,6 +154,29 @@ export class MercadoPagoGateway implements PspGateway {
       }),
     });
     return toPayment(body);
+  }
+
+  async listPaymentMethods(): Promise<readonly PspPaymentMethod[]> {
+    const corpo = (await this.call('/v1/payment_methods', { method: 'GET' })) as unknown;
+    if (!Array.isArray(corpo)) {
+      throw new PspUnavailableError('Mercado Pago devolveu uma lista de meios de pagamento inesperada.');
+    }
+    const meios: PspPaymentMethod[] = [];
+    for (const item of corpo as {
+      id?: unknown;
+      payment_type_id?: unknown;
+      name?: unknown;
+      status?: unknown;
+    }[]) {
+      if (typeof item?.id !== 'string' || typeof item.payment_type_id !== 'string') continue;
+      meios.push({
+        id: item.id,
+        paymentTypeId: item.payment_type_id,
+        name: typeof item.name === 'string' ? item.name : item.id,
+        active: item.status === 'active',
+      });
+    }
+    return meios;
   }
 
   async getPayment(providerPaymentId: string): Promise<PspPayment> {

@@ -6,3 +6,4 @@ export * from './draws.js';
 export * from './result.js';
 export * from './panel.js';
 export * from './billing.js';
+export * from './paymentMethods.js';

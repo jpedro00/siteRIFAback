@@ -1,5 +1,9 @@
 import type { Request, RequestHandler, Response } from 'express';
-import { correctResultRequestSchema, publishResultRequestSchema } from '@clubedarifa/shared';
+import {
+  correctResultRequestSchema,
+  publishResultRequestSchema,
+  recordDeliveryRequestSchema,
+} from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
 import {
@@ -7,6 +11,7 @@ import {
   getOrganizerResult,
   getPublicResult,
   publishResult,
+  recordDelivery,
 } from './resultService.js';
 
 /** M06 · rotas de resultado. RN09 · RN20. */
@@ -64,6 +69,21 @@ export function buildResultHandlers(deps: AppDeps): Record<string, RequestHandle
       const body = publishResultRequestSchema.parse(req.body);
       res.status(201).json(
         await publishResult(deps, {
+          tenantId: tenant.tenantId,
+          userId: session.userId,
+          drawId: pathParam(req, 'id'),
+          data: body,
+          origin: originOf(req),
+        }),
+      );
+    }),
+
+    recordDrawDelivery: asyncHandler(async (req, res) => {
+      const tenant = requireTenant(req);
+      const session = requireSession(req);
+      const body = recordDeliveryRequestSchema.parse(req.body);
+      res.status(200).json(
+        await recordDelivery(deps, {
           tenantId: tenant.tenantId,
           userId: session.userId,
           drawId: pathParam(req, 'id'),

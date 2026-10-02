@@ -361,6 +361,42 @@ export const platformHealthResponseSchema = z.object({
 });
 export type PlatformHealthResponse = z.infer<typeof platformHealthResponseSchema>;
 
+/**
+ * Console Super Admin · Financeiro: divergencias da conciliacao (PSP x pedidos) ABERTAS.
+ * Somente leitura. Como na Saude, nenhum identificador completo de pagamento ou pedido sai
+ * daqui: `reference` sao os 8 primeiros caracteres do pedido, o suficiente para o suporte
+ * localizar o caso sem expor a chave.
+ */
+export const RECONCILIATION_KINDS = [
+  'APPROVED_ORDER_NOT_PAID',
+  'ORDER_PAID_PAYMENT_NOT_APPROVED',
+  'PSP_APPROVED_LOCAL_PENDING',
+  'MANUAL_REFUND_OPEN',
+  'PAYMENT_AUTHORIZATION_UNAVAILABLE',
+] as const;
+export type ReconciliationKind = (typeof RECONCILIATION_KINDS)[number];
+
+export const reconciliationIssueSchema = z.object({
+  kind: z.enum(RECONCILIATION_KINDS),
+  tenantSlug: z.string(),
+  tenantName: z.string(),
+  reference: z.string(),
+  amountCents: z.number().int().nonnegative(),
+  paymentStatus: z.string(),
+  needsManualRefund: z.boolean(),
+  detectedAt: z.string(),
+});
+export type ReconciliationIssue = z.infer<typeof reconciliationIssueSchema>;
+
+export const platformReconciliationResponseSchema = z.object({
+  generatedAt: z.string(),
+  openCount: z.number().int().nonnegative(),
+  byKind: z.array(z.object({ kind: z.enum(RECONCILIATION_KINDS), count: z.number().int().nonnegative() })),
+  /** As mais recentes (ate 100). */
+  issues: z.array(reconciliationIssueSchema),
+});
+export type PlatformReconciliationResponse = z.infer<typeof platformReconciliationResponseSchema>;
+
 // ---------------------------------------------------------------------------
 // Registro de rotas
 // ---------------------------------------------------------------------------
@@ -501,6 +537,15 @@ export const ROUTE_CONTRACTS = {
     mfa: true,
     tenantScope: 'none',
     platformPermission: 'platform:health:read',
+  },
+  platformReconciliation: {
+    method: 'GET',
+    path: '/api/platform/reconciliation',
+    summary: 'Divergências abertas da conciliação (PSP x pedidos), por comunidade. Somente leitura.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'none',
+    platformPermission: 'platform:billing:read',
   },
   // Fase 7 · catalogo de planos e assinaturas (Super Admin / PLATFORM_FINANCE).
   platformPlans: {
@@ -792,6 +837,15 @@ export const ROUTE_CONTRACTS = {
     tenantScope: 'resolved',
     tenantPermission: 'draw:lifecycle:write',
   },
+  recordDrawDelivery: {
+    method: 'POST',
+    path: '/api/tenant/draws/:id/delivery',
+    summary: 'Registra (ou corrige) a entrega do prêmio, com o resultado publicado. DOC-01 §15 · RN30.',
+    auth: true,
+    mfa: false,
+    tenantScope: 'resolved',
+    tenantPermission: 'draw:lifecycle:write',
+  },
   updateDraw: {
     method: 'PATCH',
     path: '/api/tenant/draws/:id',
@@ -867,6 +921,16 @@ export const ROUTE_CONTRACTS = {
     method: 'GET',
     path: '/api/tenant/payment-accounts',
     summary: 'Contas de recebimento da comunidade: estado, autorizacao e pendencias. Nunca devolve credencial.',
+    auth: true,
+    mfa: false,
+    tenantScope: 'resolved',
+    tenantPermission: 'payment_account:read',
+  },
+  tenantPaymentMethods: {
+    method: 'GET',
+    path: '/api/tenant/payment-methods',
+    summary:
+      'Meios de pagamento da conta conectada: o que o provedor oferece e o que a plataforma liga (hoje, só PIX). Boleto fica desligado.',
     auth: true,
     mfa: false,
     tenantScope: 'resolved',

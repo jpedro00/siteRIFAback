@@ -1,6 +1,11 @@
 import type { Request, RequestHandler, Response } from 'express';
 import { withPlatform } from '@clubedarifa/db';
-import type { HealthResponse, PlatformHealthResponse } from '@clubedarifa/shared';
+import type {
+  HealthResponse,
+  PlatformHealthResponse,
+  PlatformReconciliationResponse,
+  ReconciliationKind,
+} from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
 
@@ -88,6 +93,54 @@ export function buildHealthHandler(deps: AppDeps): Record<string, RequestHandler
       // tirar a instancia da rotacao. Worker atrasado e "degraded" com 200 — reiniciar
       // a API nao conserta o worker.
       res.status(status === 'down' ? 503 : 200).json({ status, database, worker } satisfies HealthResponse);
+    }),
+
+    platformReconciliation: asyncHandler(async (req, res) => {
+      const session = req.session;
+      if (!session) throw ApiError.unauthenticated();
+      const resposta = await withPlatform(deps.pool, { userId: session.userId }, async (client) => {
+        const { rows: porTipo } = await client.query<{ kind: PlatformReconciliationResponse['byKind'][number]['kind']; n: number }>(
+          `SELECT kind, count(*)::int AS n FROM payment_reconciliation_issues
+            WHERE resolved_at IS NULL GROUP BY kind ORDER BY kind`,
+        );
+        const { rows } = await client.query<{
+          kind: ReconciliationKind;
+          tenant_slug: string;
+          tenant_name: string;
+          reference: string;
+          amount_cents: number;
+          payment_status: string;
+          needs_manual_refund: boolean;
+          detected_at: string;
+        }>(
+          `SELECT i.kind, t.slug AS tenant_slug, t.name AS tenant_name,
+                  left(coalesce(i.order_id, p.order_id)::text, 8) AS reference,
+                  p.amount_cents, p.status::text AS payment_status,
+                  p.needs_manual_refund, i.detected_at
+             FROM payment_reconciliation_issues i
+             JOIN payments p ON p.id = i.payment_id
+             JOIN tenants t ON t.id = i.tenant_id
+            WHERE i.resolved_at IS NULL
+            ORDER BY i.detected_at DESC
+            LIMIT 100`,
+        );
+        return {
+          generatedAt: new Date().toISOString(),
+          openCount: porTipo.reduce((soma, r) => soma + r.n, 0),
+          byKind: porTipo.map((r) => ({ kind: r.kind, count: r.n })),
+          issues: rows.map((r) => ({
+            kind: r.kind,
+            tenantSlug: r.tenant_slug,
+            tenantName: r.tenant_name,
+            reference: r.reference,
+            amountCents: r.amount_cents,
+            paymentStatus: r.payment_status,
+            needsManualRefund: r.needs_manual_refund,
+            detectedAt: new Date(r.detected_at).toISOString(),
+          })),
+        } satisfies PlatformReconciliationResponse;
+      });
+      res.status(200).set('Cache-Control', 'no-store').json(resposta);
     }),
 
     platformHealth: asyncHandler(async (req, res) => {

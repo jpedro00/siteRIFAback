@@ -74,6 +74,8 @@ export const ORGANIZER_DRAW_TRANSITIONS: Readonly<
   RASCUNHO: ['REVISÃO COMPLIANCE'],
   ATIVA: ['PAUSADA', 'VENDAS ENCERRADAS'],
   PAUSADA: ['ATIVA', 'VENDAS ENCERRADAS'],
+  // DOC-01 §15: o organizador arquiva depois de registrar a entrega do premio.
+  'RESULTADO PUBLICADO': ['ARQUIVADA'],
 });
 
 /** Decisoes possiveis do Super Admin sobre um sorteio em REVISAO COMPLIANCE. */

@@ -497,4 +497,73 @@ describe.skipIf(!hasTestDatabase)(`Console · planos e assinaturas ${hasTestData
       expect(rows[0].r).toBeNull();
     });
   });
+  // -------------------------------------------------------------------------
+  describe('Financeiro · divergencias da conciliacao', () => {
+    async function pagamentoComDivergencia(nome: string, kind: string, extra: { manual?: boolean } = {}) {
+      const slug = unique('rc-');
+      const tenantId = await seedTenantWithSlug(harness.owner, slug, nome);
+      const { rows: d } = await harness.owner.query<{ id: string }>(
+        `INSERT INTO draws (tenant_id, slug, title, prize_name, ticket_price_cents, total_numbers, status)
+         VALUES ($1, $2, 'S', 'P', 1000, 100, 'ATIVA') RETURNING id`,
+        [tenantId, unique('d-')],
+      );
+      const { rows: b } = await harness.owner.query<{ id: string }>(
+        `INSERT INTO buyers (tenant_id, name, phone) VALUES ($1, 'Maria', '+5511912345678') RETURNING id`,
+        [tenantId],
+      );
+      const { rows: o } = await harness.owner.query<{ id: string }>(
+        `INSERT INTO orders (tenant_id, draw_id, buyer_id, status, unit_price_cents, quantity, total_cents, accepted_terms_at)
+         VALUES ($1, $2, $3, 'PENDENTE', 1000, 1, 1000, now()) RETURNING id`,
+        [tenantId, d[0]!.id, b[0]!.id],
+      );
+      const { rows: p } = await harness.owner.query<{ id: string }>(
+        `INSERT INTO payments (tenant_id, order_id, provider, provider_payment_id, status, idempotency_key, amount_cents,
+                               expires_at, paid_at, needs_manual_refund, refund_reason)
+         VALUES ($1, $2::uuid, 'FAKE', $3, 'APROVADO', $5, 1000, now() + interval '20 minutes', now(), $4, CASE WHEN $4 THEN 'teste' END)
+         RETURNING id`,
+        [tenantId, o[0]!.id, unique('pp-'), extra.manual ?? false, o[0]!.id],
+      );
+      await harness.owner.query(
+        `INSERT INTO payment_reconciliation_issues (tenant_id, payment_id, order_id, kind) VALUES ($1, $2, $3, $4)`,
+        [tenantId, p[0]!.id, o[0]!.id, kind],
+      );
+      return { orderId: o[0]!.id, paymentId: p[0]!.id, slug };
+    }
+
+    it('lista as divergencias ABERTAS com a comunidade, o tipo e uma referencia curta (sem IDs completos)', async () => {
+      const a = await pagamentoComDivergencia('Comunidade Divergente A', 'MANUAL_REFUND_OPEN', { manual: true });
+      await pagamentoComDivergencia('Comunidade Divergente B', 'APPROVED_ORDER_NOT_PAID');
+
+      const res = await como(financeCookie).get('/api/platform/reconciliation');
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.openCount).toBeGreaterThanOrEqual(2);
+      expect(res.body.byKind.map((k: { kind: string }) => k.kind)).toEqual(expect.arrayContaining(['MANUAL_REFUND_OPEN', 'APPROVED_ORDER_NOT_PAID']));
+
+      const meu = res.body.issues.find((i: { tenantName: string }) => i.tenantName === 'Comunidade Divergente A');
+      expect(meu).toMatchObject({
+        kind: 'MANUAL_REFUND_OPEN',
+        reference: a.orderId.slice(0, 8),
+        amountCents: 1000,
+        paymentStatus: 'APROVADO',
+        needsManualRefund: true,
+      });
+      const texto = JSON.stringify(res.body);
+      expect(texto).not.toContain(a.orderId);
+      expect(texto).not.toContain(a.paymentId);
+    });
+
+    it('divergencia resolvida nao aparece', async () => {
+      const r = await pagamentoComDivergencia('Comunidade Resolvida', 'PSP_APPROVED_LOCAL_PENDING');
+      await harness.owner.query('UPDATE payment_reconciliation_issues SET resolved_at = now() WHERE payment_id = $1', [r.paymentId]);
+      const res = await como(financeCookie).get('/api/platform/reconciliation');
+      expect(res.body.issues.some((i: { tenantName: string }) => i.tenantName === 'Comunidade Resolvida')).toBe(false);
+    });
+
+    it('so a plataforma com a permissao financeira le; comunidade e suporte nao; sem MFA tambem nao', async () => {
+      expect((await como(ownerCookie).get('/api/platform/reconciliation')).status).toBe(403);
+      expect((await como(supportCookie).get('/api/platform/reconciliation')).status).toBe(403);
+      expect((await como(noMfaCookie).get('/api/platform/reconciliation')).status).toBe(403);
+      expect((await request(harness.app).get('/api/platform/reconciliation')).status).toBe(401);
+    });
+  });
 });
