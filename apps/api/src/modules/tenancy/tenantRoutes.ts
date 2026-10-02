@@ -57,8 +57,13 @@ export function buildTenantHandlers(deps: AppDeps): Record<string, RequestHandle
             colors: Record<string, string>;
             fonts: Record<string, string>;
             contact: Record<string, string>;
+            description: string | null;
+            footer_text: string | null;
+            banner_url: string | null;
+            pages: Record<string, string>;
           }>(
-            `SELECT public_name, logo_light_url, logo_dark_url, favicon_url, colors, fonts, contact
+            `SELECT public_name, logo_light_url, logo_dark_url, favicon_url, colors, fonts, contact,
+                    description, footer_text, banner_url, pages
                FROM tenant_branding
               WHERE tenant_id = $1`,
             [tenant.tenantId],
@@ -78,6 +83,10 @@ export function buildTenantHandlers(deps: AppDeps): Record<string, RequestHandle
         colors: branding?.colors ?? {},
         fonts: branding?.fonts ?? {},
         contact: branding?.contact ?? {},
+        description: branding?.description ?? null,
+        footerText: branding?.footer_text ?? null,
+        bannerUrl: branding?.banner_url ?? null,
+        pages: branding?.pages ?? {},
       };
       res.status(200).json(response);
     }),

@@ -11,13 +11,13 @@ Um contrato ou uma tabela **sem jornada utilizável não conta como implementado
 
 | Módulo | Estado | O que existe / o que falta |
 |---|---|---|
-| M01 Identidade, comunidade, permissões | 🟡 | ✅ login, MFA (TOTP), papéis e matriz de permissões, RLS, equipe e convites, Super Admin. ❌ editor de marca da comunidade (logo, cores, fontes, banner), domínio próprio com validação de DNS, páginas institucionais, dados cadastrais/documentos. |
-| M02 Campanhas e catálogo | 🟡 | ✅ assistente de **9 passos** com salvamento automático, vários prêmios (ordem, valor estimado, foto por https), duplicar, edição de rascunho, regulamento próprio, subtítulo/categoria. ❌ upload de imagens (galeria, capa recortada, ponto focal, EXIF), vídeo, `draw_versions`, banner/cor/modelo de página. |
+| M01 Identidade, comunidade, permissões | 🟡 | ✅ login, MFA (TOTP), papéis e matriz de permissões, RLS, equipe e convites, Super Admin, **editor da comunidade (nome, logo, banner, cor, contatos, WhatsApp/Instagram, rodapé) e páginas Sobre / Como funciona / Termos / Privacidade / Contato** refletidos na vitrine. ❌ domínio próprio com validação de DNS, fontes, dados cadastrais/documentos. |
+| M02 Campanhas e catálogo | 🟡 | ✅ assistente de **9 passos** com salvamento automático, vários prêmios (ordem, valor estimado, **foto enviada com pré-visualização**), duplicar, edição de rascunho, regulamento próprio, subtítulo/categoria, **banner, cor de destaque, contador, compradores mascarados e mínimo/máximo por pedido**. ❌ galeria com várias fotos por prêmio, recorte/ponto focal, vídeo, `draw_versions`, modelos de página. Imagens ficam no banco (limite de 2 MB) até haver armazenamento de objetos. |
 | M03 Reservas e inventário | ✅ | Reserva atômica de 30 min (constante protegida por teste), contador, expiração por job, grade 100/500/1000 com rótulos. |
 | M04 Checkout e pedidos | 🟡 | ✅ identificação, aceite do regulamento, consentimento separado, pedido, "Meus bilhetes". ❌ cupons, pacotes, compra mínima/máxima. |
 | M05 Pagamentos | 🟡 ⚠️ | ✅ PIX com Mercado Pago por **OAuth por comunidade**, conta de origem imutável, troca/desconexão seguras, **descoberta de meios por capacidades** (hoje só PIX liga). ❌ cartão, saldo, outros (exigem tokenização do PSP no navegador); boleto desligado até existir política de prazo × reserva. ⚠️ Mercado Pago real não homologado; estorno automático inexistente (devolução manual sinalizada). |
 | M06 Sorteio e resultados | 🟡 | ✅ fechamento, snapshot com hash, apuração por função pura com cada tentativa, publicação, correção versionada (retificada visível), prova pública, **entrega do prêmio e arquivamento**. ❌ vários contemplados (um por prêmio), busca automática da fonte, relatório D+1. |
-| M07 CRM, comunidade, fidelidade | ❌ | Só a lista de compradores por sorteio e o CSV. |
+| M07 CRM, comunidade, fidelidade | 🟡 | ✅ área **Clientes** (busca por nome/telefone/e-mail, pedidos, números, total pago, sorteios), lista de compradores por sorteio e CSV. ❌ CRM avançado, fidelidade, segmentação. |
 | M08 Automações, IA, mensagens | 🟡 ⚠️ | ✅ registro idempotente de "faltam 25/10", esgotou, ativação e resultado publicado (outbox + `notifications_sent`). ❌ lembrete de reserva expirando e de PIX pendente, relatório D+1, assistente de IA. ⚠️ nenhum provedor de WhatsApp/e-mail/SMS conectado. |
 | M09 Afiliados, cupons, gamificação | ❌ | Nada além da lista de dependências. |
 | M10 Compliance, KYB/KYC, antifraude | 🟡 | ✅ fila de revisão com o sorteio completo (regulamento, prêmios com valor, cronograma, personalização), aprovar/agendar/reprovar com motivo obrigatório. ❌ documentos, KYB/KYC, área de risco (reservas por IP/aparelho não são gravadas). |
@@ -69,7 +69,8 @@ Um contrato ou uma tabela **sem jornada utilizável não conta como implementado
 | Assinatura, limites | §2 | Stripe | Minha assinatura | ✅ | ✅ ⚠️ |
 | Recebimentos (OAuth) + **meios de pagamento** | §2 | `/payment-accounts`, `/payment-methods` | Recebimentos | ✅ | ✅ ⚠️ |
 | Auditoria | §3 | `/audit-events` | `AuditPage` | ✅ | ✅ |
-| Marca, domínio, documentos, contato, políticas | §2 | — | — | — | ❌ |
+| Marca, contato, rodapé, páginas | §2 | `/tenant/community` | `CommunityPage` | ✅ | ✅ |
+| Domínio próprio, documentos | §2 | — | — | — | ❌ |
 
 ## Super Admin
 
@@ -78,7 +79,7 @@ Um contrato ou uma tabela **sem jornada utilizável não conta como implementado
 | Comunidades | §17 | `/platform/tenants` | `TenantsPage` | ✅ | ✅ |
 | Compliance: fila + detalhe completo + decisão com motivo | §17 | `/platform/draws/review` | `ReviewQueuePage` | ✅ | ✅ (sem histórico de decisões) |
 | Risco | §17 | — | — | — | ❌ (sem dados: IP/aparelho não são gravados) |
-| Financeiro: divergências da conciliação | §17 | `/platform/reconciliation` | `FinancePage` | ✅ | 🟡 (leitura; sem resolver/estornar) |
+| Financeiro: divergências da conciliação | §17 | `/platform/reconciliation` + `/review` | `FinancePage` | ✅ | 🟡 (status e observação de revisão; sem estornar) |
 | Planos e assinaturas | §2 | Stripe | Planos/Assinaturas | ✅ | ✅ ⚠️ |
 | Saúde: jobs, heartbeat, outbox, dead-letter, Stripe, MP | §17 | `/platform/health` | `HealthPage` | ✅ | ✅ |
 | 2ª aprovação de estornos acima de um valor | §17 | — | — | — | ❌ |

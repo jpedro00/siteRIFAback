@@ -12,6 +12,7 @@ import { buildResultHandlers } from '../modules/results/resultRoutes.js';
 import { buildTeamHandlers } from '../modules/team/teamRoutes.js';
 import { buildPanelHandlers } from '../modules/panel/panelRoutes.js';
 import { buildBillingHandlers } from '../modules/billing/billingRoutes.js';
+import { buildCommunityHandlers } from '../modules/community/communityRoutes.js';
 import { buildPaymentAccountHandlers } from '../modules/paymentAccounts/paymentAccountRoutes.js';
 
 /**
@@ -46,6 +47,7 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
     ...buildPanelHandlers(deps),
     ...buildBillingHandlers(deps),
     ...buildPaymentAccountHandlers(deps),
+    ...buildCommunityHandlers(deps),
   } as Partial<Record<RouteName, RequestHandler>>;
 
   const missing = ROUTE_NAMES.filter((name) => handlers[name] === undefined);

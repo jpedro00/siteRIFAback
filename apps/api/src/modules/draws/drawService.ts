@@ -64,7 +64,17 @@ interface DrawRow {
   category: string | null;
   regulation: string | null;
   /** Ajustes do organizador; `{}` = tudo no padrao. A forma exata e validada na entrada. */
-  customization: { progressMode?: string; headline?: string; ctaLabel?: string };
+  customization: {
+    progressMode?: string;
+    headline?: string;
+    ctaLabel?: string;
+    bannerUrl?: string;
+    accentColor?: string;
+    showCountdown?: boolean;
+    showBuyers?: boolean;
+    minPerOrder?: number;
+    maxPerOrder?: number;
+  };
   description: string | null;
   prize_name: string;
   prize_description: string | null;
@@ -144,6 +154,12 @@ function personalizacaoResolvida(row: DrawRow): DrawCustomization {
     progressMode: modo === 'FALTAM' || modo === 'PERCENTUAL' || modo === 'OCULTAR' ? modo : DEFAULT_PROGRESS_MODE,
     headline: typeof c.headline === 'string' ? c.headline : null,
     ctaLabel: typeof c.ctaLabel === 'string' ? c.ctaLabel : null,
+    bannerUrl: typeof c.bannerUrl === 'string' ? c.bannerUrl : null,
+    accentColor: typeof c.accentColor === 'string' ? c.accentColor : null,
+    showCountdown: c.showCountdown === true,
+    showBuyers: c.showBuyers === true,
+    minPerOrder: Number.isInteger(c.minPerOrder) && c.minPerOrder! >= 1 ? c.minPerOrder! : 1,
+    maxPerOrder: Number.isInteger(c.maxPerOrder) && c.maxPerOrder! >= 1 ? c.maxPerOrder! : null,
   };
 }
 
@@ -368,10 +384,11 @@ export async function createReservation(
       total_numbers: number;
       unit_price_cents: number;
       status: string;
+      customization: DrawRow['customization'] | null;
     }>(
       // `FOR SHARE`: impede que o sorteio seja pausado no meio desta reserva.
       // O preco EFETIVO e decidido aqui, no servidor, e gravado na reserva.
-      `SELECT id, total_numbers, status,
+      `SELECT id, total_numbers, status, customization,
               ${EFFECTIVE_PRICE_SQL} AS unit_price_cents
          FROM draws WHERE id = $1 FOR SHARE`,
       [input.drawId],
@@ -389,6 +406,15 @@ export async function createReservation(
       throw ApiError.badRequest(
         `Número fora da grade deste sorteio: ${foraDaFaixa.join(', ')}.`,
       );
+    }
+
+    // Minimo/maximo de numeros por pedido: regra do organizador, conferida aqui.
+    const limites = personalizacaoResolvida({ customization: draw.customization ?? {} } as DrawRow);
+    if (pedidos.length < limites.minPerOrder) {
+      throw ApiError.badRequest(`Escolha ao menos ${limites.minPerOrder} número(s) neste sorteio.`);
+    }
+    if (limites.maxPerOrder !== null && pedidos.length > limites.maxPerOrder) {
+      throw ApiError.badRequest(`Cada pedido aceita no máximo ${limites.maxPerOrder} número(s) neste sorteio.`);
     }
 
     const expiresAt = new Date(Date.now() + RESERVATION_TTL_MINUTES * 60_000);

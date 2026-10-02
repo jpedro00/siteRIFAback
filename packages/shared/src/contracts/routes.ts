@@ -141,6 +141,11 @@ export const publicTenantBrandingSchema = z.object({
   colors: z.record(z.string()),
   fonts: z.record(z.string()),
   contact: z.record(z.string()),
+  description: z.string().nullable(),
+  footerText: z.string().nullable(),
+  bannerUrl: z.string().nullable(),
+  /** Paginas institucionais (Sobre, Como funciona, Termos, Privacidade, Contato). */
+  pages: z.record(z.string()),
 });
 export type PublicTenantBranding = z.infer<typeof publicTenantBrandingSchema>;
 
@@ -377,6 +382,9 @@ export const RECONCILIATION_KINDS = [
 export type ReconciliationKind = (typeof RECONCILIATION_KINDS)[number];
 
 export const reconciliationIssueSchema = z.object({
+  id: z.string().uuid(),
+  reviewStatus: z.enum(['ABERTA', 'EM_ANALISE', 'RESOLVIDA_MANUALMENTE']),
+  reviewNote: z.string().nullable(),
   kind: z.enum(RECONCILIATION_KINDS),
   tenantSlug: z.string(),
   tenantName: z.string(),
@@ -501,6 +509,67 @@ export const ROUTE_CONTRACTS = {
     mfa: false,
     tenantScope: 'resolved',
     tenantPermission: 'tenant:read',
+  },
+  tenantCommunity: {
+    method: 'GET',
+    path: '/api/tenant/community',
+    summary: 'Marca, contatos e páginas da comunidade, para edição.',
+    auth: true,
+    mfa: false,
+    tenantScope: 'resolved',
+    tenantPermission: 'tenant:read',
+  },
+  updateTenantCommunity: {
+    method: 'PUT',
+    path: '/api/tenant/community',
+    summary: 'Atualiza marca, contatos e páginas da comunidade.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'resolved',
+    tenantPermission: 'branding:write',
+  },
+  uploadMedia: {
+    method: 'POST',
+    path: '/api/tenant/media',
+    summary: 'Envia uma imagem (JPEG, PNG ou WebP, até 2 MB) e devolve o endereço público.',
+    auth: true,
+    mfa: false,
+    tenantScope: 'resolved',
+    tenantPermission: 'draw:media:write',
+  },
+  publicMedia: {
+    method: 'GET',
+    path: '/api/public/media/:id',
+    summary: 'Imagem enviada por uma comunidade, pelo identificador.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'none',
+  },
+  publicDrawBuyers: {
+    method: 'GET',
+    path: '/api/public/draws/:slug/buyers',
+    summary: 'Compradores (nomes mascarados) quando o organizador permite mostrar.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'resolved',
+  },
+  tenantBuyers: {
+    method: 'GET',
+    path: '/api/tenant/buyers',
+    summary: 'Compradores da comunidade com busca e resumo de pedidos.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'resolved',
+    tenantPermission: 'buyer:read:full',
+  },
+  platformReviewReconciliation: {
+    method: 'POST',
+    path: '/api/platform/reconciliation/:id/review',
+    summary: 'Registra observação e status de revisão de uma divergência da conciliação.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'none',
+    platformPermission: 'platform:billing:read',
   },
   tenantAudit: {
     method: 'GET',

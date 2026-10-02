@@ -100,3 +100,15 @@ Comum: `PUBLIC_API_BASE_URL`; frontends `VITE_API_BASE_URL`, `VITE_STOREFRONT_BA
 Permanece `false`. Antes de ligar, validar em sandbox real: assinatura, renovação, atraso, cancelamento, limite de sorteios e limite de equipe. A ativação é uma operação deliberada de Super Admin Financeiro; nenhuma migration, seed, variável de ambiente ou código a liga automaticamente.
 
 `PLAN_FEATURES` segue vazio: os limites de sorteios e de equipe bastam para os primeiros planos.
+
+## 6. Migration 0022 (pronta no repositório, NÃO aplicada em nenhum banco)
+
+`0022_community_content_and_media.sql` — aditiva, não altera 0001–0021:
+
+- `tenant_branding`: `description`, `footer_text`, `banner_url`, `pages` (páginas institucionais).
+- `media_files` + `app.public_media(uuid)`: imagens enviadas pelo organizador, guardadas no banco (até 2 MB, JPEG/PNG/WebP, conferidas por assinatura do arquivo). É a solução provisória até haver armazenamento de objetos.
+- `payment_reconciliation_issues`: `review_status`, `review_note` e a função `app.platform_review_reconciliation` (só com acesso de plataforma).
+- Relaxa as constraints de imagem de prêmio (`https://` **ou** `/api/public/media/<uuid>`).
+
+Ela entra no corte final, junto com 0017–0021, **depois** do backup do banco e com o legado parado para escrita.
+Atenção: o `RIFAS` (legado) continua sem as 0017–0022; nada foi aplicado nele.

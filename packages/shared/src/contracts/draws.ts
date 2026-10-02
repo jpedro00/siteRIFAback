@@ -45,8 +45,9 @@ export type PublicNumberStatus = (typeof PUBLIC_NUMBER_STATUSES)[number];
 /**
  * Personalizacao do sorteio (DOC-01 §6). Somente o que a vitrine HONRA hoje:
  * como a barra de progresso fala, a chamada principal e o texto do botao.
- * Banner, cor de destaque, modelo de pagina e contador dependem de midia ou de
- * novos layouts e ainda nao existem — por isso nao ha campo para eles.
+ * Alem disso: banner (imagem enviada), cor de destaque, contador, lista de
+ * compradores (nomes mascarados) e minimo/maximo de numeros por pedido.
+ * Modelo de pagina continua fora.
  *
  * `.strict()`: campo desconhecido e recusado, nunca ignorado em silencio.
  */
@@ -54,13 +55,34 @@ export const PROGRESS_MODES = ['FALTAM', 'PERCENTUAL', 'OCULTAR'] as const;
 export type ProgressMode = (typeof PROGRESS_MODES)[number];
 export const DEFAULT_PROGRESS_MODE: ProgressMode = 'FALTAM';
 
+/** Imagem: link https ou imagem enviada pelo organizador (`/api/public/media/<uuid>`). */
+export const MEDIA_PATH_PREFIX = '/api/public/media/';
+const MEDIA_PATH_RE = /^\/api\/public\/media\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const imageRefSchema = z
+  .string()
+  .max(2000)
+  .refine((v) => MEDIA_PATH_RE.test(v) || (/^https:\/\//i.test(v) && URL.canParse(v)), {
+    message: 'Use uma imagem enviada ou um link que comece com https://',
+  });
+export const hexColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use uma cor no formato #RRGGBB');
+
 export const drawCustomizationInputSchema = z
   .object({
     progressMode: z.enum(PROGRESS_MODES).optional(),
     headline: z.string().trim().min(1).max(120).optional(),
     ctaLabel: z.string().trim().min(1).max(30).optional(),
+    bannerUrl: imageRefSchema.optional(),
+    accentColor: hexColorSchema.optional(),
+    showCountdown: z.boolean().optional(),
+    showBuyers: z.boolean().optional(),
+    minPerOrder: z.number().int().min(1).max(100).optional(),
+    maxPerOrder: z.number().int().min(1).max(100).optional(),
   })
-  .strict();
+  .strict()
+  .refine((c) => c.minPerOrder === undefined || c.maxPerOrder === undefined || c.minPerOrder <= c.maxPerOrder, {
+    message: 'O mínimo por pedido não pode passar do máximo.',
+    path: ['minPerOrder'],
+  });
 export type DrawCustomizationInput = z.infer<typeof drawCustomizationInputSchema>;
 
 /** Personalizacao RESOLVIDA: o que a vitrine aplica (padrao onde nao houve ajuste). */
@@ -68,8 +90,14 @@ export const drawCustomizationSchema = z.object({
   progressMode: z.enum(PROGRESS_MODES),
   headline: z.string().nullable(),
   ctaLabel: z.string().nullable(),
+  bannerUrl: z.string().nullable(),
+  accentColor: z.string().nullable(),
+  showCountdown: z.boolean(),
+  showBuyers: z.boolean(),
+  minPerOrder: z.number().int().positive(),
+  maxPerOrder: z.number().int().positive().nullable(),
 });
-export type DrawCustomization = z.infer<typeof drawCustomizationSchema>;
+export type DrawCustomization= z.infer<typeof drawCustomizationSchema>;
 
 export const publicDrawSummarySchema = z.object({
   id: z.string().uuid(),
@@ -276,19 +304,10 @@ export const organizerDrawListResponseSchema = z.object({
 });
 export type OrganizerDrawListResponse = z.infer<typeof organizerDrawListResponseSchema>;
 
-/** Link de imagem: so https (Suposicao temporaria S-IMG1, ate haver armazenamento). */
-const httpsUrlSchema = z
-  .string()
-  .url()
-  .max(2000)
-  .refine((v) => v.toLowerCase().startsWith('https://'), {
-    message: 'O link da imagem precisa começar com https://',
-  });
-
 export const prizeInputSchema = z.object({
   name: z.string().trim().min(2).max(160),
   description: z.string().max(4000).optional(),
-  imageUrl: httpsUrlSchema.optional(),
+  imageUrl: imageRefSchema.optional(),
   estimatedValueCents: z.number().int().min(0).max(2_000_000_000).optional(),
 });
 export type PrizeInput = z.infer<typeof prizeInputSchema>;

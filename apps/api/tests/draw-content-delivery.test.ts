@@ -215,7 +215,7 @@ describe.skipIf(!hasTestDatabase)(`Conteudo do sorteio e entrega ${hasTestDataba
       const troca = await como().patch(`/api/tenant/draws/${id}`, { customization: { ctaLabel: 'Comprar' } });
       expect(troca.status, JSON.stringify(troca.body)).toBe(200);
       // Substituiu: a chamada e o modo anteriores nao sobrevivem.
-      expect(troca.body.customization).toEqual({ progressMode: 'FALTAM', headline: null, ctaLabel: 'Comprar' });
+      expect(troca.body.customization).toMatchObject({ progressMode: 'FALTAM', headline: null, ctaLabel: 'Comprar' });
 
       const limpa = await como().patch(`/api/tenant/draws/${id}`, { subtitle: null, customization: null, category: 'Casa' });
       expect(limpa.status, JSON.stringify(limpa.body)).toBe(200);

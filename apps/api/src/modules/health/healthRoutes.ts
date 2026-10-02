@@ -104,6 +104,9 @@ export function buildHealthHandler(deps: AppDeps): Record<string, RequestHandler
             WHERE resolved_at IS NULL GROUP BY kind ORDER BY kind`,
         );
         const { rows } = await client.query<{
+          id: string;
+          review_status: 'ABERTA' | 'EM_ANALISE' | 'RESOLVIDA_MANUALMENTE';
+          review_note: string | null;
           kind: ReconciliationKind;
           tenant_slug: string;
           tenant_name: string;
@@ -113,7 +116,7 @@ export function buildHealthHandler(deps: AppDeps): Record<string, RequestHandler
           needs_manual_refund: boolean;
           detected_at: string;
         }>(
-          `SELECT i.kind, t.slug AS tenant_slug, t.name AS tenant_name,
+          `SELECT i.id, i.review_status, i.review_note, i.kind, t.slug AS tenant_slug, t.name AS tenant_name,
                   left(coalesce(i.order_id, p.order_id)::text, 8) AS reference,
                   p.amount_cents, p.status::text AS payment_status,
                   p.needs_manual_refund, i.detected_at
@@ -129,6 +132,9 @@ export function buildHealthHandler(deps: AppDeps): Record<string, RequestHandler
           openCount: porTipo.reduce((soma, r) => soma + r.n, 0),
           byKind: porTipo.map((r) => ({ kind: r.kind, count: r.n })),
           issues: rows.map((r) => ({
+            id: r.id,
+            reviewStatus: r.review_status,
+            reviewNote: r.review_note,
             kind: r.kind,
             tenantSlug: r.tenant_slug,
             tenantName: r.tenant_name,

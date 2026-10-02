@@ -71,6 +71,15 @@ import type {
   RecordDeliveryRequest,
 } from './result.js';
 import type { PaymentMethodsResponse } from './paymentMethods.js';
+import type {
+  CommunityContent,
+  PublicDrawBuyersResponse,
+  ReviewReconciliationRequest,
+  TenantBuyersResponse,
+  UpdateCommunityRequest,
+  UploadMediaRequest,
+  UploadMediaResponse,
+} from './community.js';
 import { API_ERROR_MESSAGES, type ApiErrorBody, type ApiErrorCode } from './errors.js';
 
 /**
@@ -95,6 +104,13 @@ export interface RouteResponses {
   mfaVerify: MfaVerifyResponse;
   tenantContext: TenantContextResponse;
   tenantAudit: AuditListResponse;
+  tenantCommunity: CommunityContent;
+  updateTenantCommunity: CommunityContent;
+  uploadMedia: UploadMediaResponse;
+  publicMedia: unknown;
+  publicDrawBuyers: PublicDrawBuyersResponse;
+  tenantBuyers: TenantBuyersResponse;
+  platformReviewReconciliation: { updated: boolean };
   platformTenants: TenantListResponse;
   platformCreateTenant: CreateTenantResponse;
   platformReviewQueue: ReviewQueueResponse;
@@ -170,6 +186,9 @@ export interface RouteBodies {
   platformCreatePlan: CreatePlanRequest;
   platformUpdatePlan: UpdatePlanRequest;
   connectPaymentAccount: ConnectPaymentAccountRequest;
+  updateTenantCommunity: UpdateCommunityRequest;
+  uploadMedia: UploadMediaRequest;
+  platformReviewReconciliation: ReviewReconciliationRequest;
 }
 
 export type RouteBody<N extends RouteName> = N extends keyof RouteBodies

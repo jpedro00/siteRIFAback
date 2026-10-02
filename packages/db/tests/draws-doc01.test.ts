@@ -263,9 +263,9 @@ describe.skipIf(!hasTestDatabase)(`0012 · sorteio DOC-01 ${
       await expect(novo(", close_mode|, 'QUALQUER'")).rejects.toThrow(/draw_close_mode/);
     });
 
-    it('link da imagem so aceita https em sorteio novo', async () => {
+    it('link da imagem so aceita https ou imagem enviada em sorteio novo', async () => {
       await expect(novo(', prize_image_url|, \'http://x.exemplo/a.jpg\'')).rejects.toThrow(
-        /draws_prize_image_https/,
+        /draws_prize_image_ref/,
       );
       await expect(novo(', prize_image_url|, \'https://x.exemplo/a.jpg\'')).resolves.toBeDefined();
     });
@@ -422,13 +422,19 @@ describe.skipIf(!hasTestDatabase)(`0012 · sorteio DOC-01 ${
       ).rejects.toThrow(/prizes_draw_fk/);
     });
 
-    it('imagem so em https e nome nao vazio', async () => {
+    it('imagem so em https (ou enviada) e nome nao vazio', async () => {
       await expect(
         owner.query(
           "INSERT INTO prizes (tenant_id, draw_id, position, name, image_url) VALUES ($1, $2, 10, 'X', 'http://a/b')",
           [a.tenantId, drawA],
         ),
-      ).rejects.toThrow(/prizes_image_https/);
+      ).rejects.toThrow(/prizes_image_ref/);
+      await expect(
+        owner.query(
+          "INSERT INTO prizes (tenant_id, draw_id, position, name, image_url) VALUES ($1, $2, 12, 'Y', '/api/public/media/11111111-1111-4111-8111-111111111111')",
+          [a.tenantId, drawA],
+        ),
+      ).resolves.toBeDefined();
       await expect(
         owner.query("INSERT INTO prizes (tenant_id, draw_id, position, name) VALUES ($1, $2, 11, '  ')", [a.tenantId, drawA]),
       ).rejects.toThrow(/prizes_name_not_blank/);
