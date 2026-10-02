@@ -274,19 +274,38 @@ autorizada. Sem curinga: `*` é incompatível com `credentials: include`.
 registrável, mas cada um é uma origem distinta — CORS continua obrigatório em
 toda chamada.
 
-### Cookies
+### Cookie de sessão
+
+O valor certo depende da topologia. Não há um único "correto":
+
+| Topologia | Exemplo | `SameSite` | `Secure` | `Domain` |
+|---|---|---|---|---|
+| **Staging hoje** (sites diferentes) | vitrines em `*.vercel.app`, API em `*.onrender.com` | `none` | `true` | nenhum (host-only) |
+| **Domínio próprio** (mesmo site) | API em `api.<dominio>`, vitrines em `*.<dominio>` | `lax` | `true` | nenhum (host-only) |
+
+`vercel.app` e `onrender.com` estão na Public Suffix List, então cada um é um
+site à parte: a chamada do navegador é **cross-site** e um cookie `Lax` não é
+enviado no `fetch`. Sem `SameSite=None` + `Secure` o login "funciona" e a sessão
+some na requisição seguinte. O `render.yaml` e o `.env.staging.example` usam
+`none`; a configuração recusa `none` sem `Secure`.
+
+Com domínio próprio, `Lax` mantém a proteção contra POST vindo de um site
+externo, e não há motivo para abrir mão dela. Ao migrar de `*.vercel.app` para
+o domínio próprio, troque para `lax` **junto** com `CORS_ORIGINS`.
 
 ```text
+# staging atual (cross-site)
+SESSION_COOKIE_SECURE   = true
+SESSION_COOKIE_SAMESITE = none
+
+# domínio próprio (same-site)
 SESSION_COOKIE_SECURE   = true
 SESSION_COOKIE_SAMESITE = lax
 ```
 
-`api.staging.<BASE_DOMAIN>` e `painel.staging.<BASE_DOMAIN>` têm o mesmo
-domínio registrável, logo são **same-site** — e um cookie `Lax` **é** enviado
-no `fetch` entre eles. `None` só seria necessário com domínios registráveis
-diferentes (`*.vercel.app` × `*.onrender.com`, porque `vercel.app` está na
-Public Suffix List). Com domínio próprio, `Lax` mantém a proteção contra POST
-vindo de um site externo, e não há motivo para abrir mão dela.
+**Por que não `Domain=.<dominio>`, mesmo em produção.** O cookie pertence à API
+e é enviado em toda chamada same-site vinda de qualquer subdomínio: `Domain` não
+acrescenta nada.
 
 O cookie é **host-only**: nenhum atributo `Domain` é definido, então ele
 pertence exclusivamente a `api.staging.<BASE_DOMAIN>`. Um
@@ -375,6 +394,84 @@ escape**.
       `auth.mfa.*`, `auth.account_locked` presentes
 - [ ] nenhum segredo em `before`/`after`
 - [ ] eventos de identidade **não** aparecem em `/api/tenant/audit-events`
+
+---
+
+## 8. Automação, saúde, PIX e migrações
+
+### Jobs do worker
+
+Agendados com `pg-boss.schedule` (fuso `America/Sao_Paulo`). Todos são
+idempotentes: rodar duas vezes seguidas não muda o resultado da primeira.
+
+| Job | Frequência | O que faz |
+|---|---|---|
+| `expirar-reservas` | 1 min | reserva `ATIVA` vencida → `EXPIRADA`. Nunca toca em número (nem `PAGO`) |
+| `ativar-agendados` | 1 min | `AGENDADA` → `ATIVA` quando `sales_start_at` chega |
+| `fechar-sorteios` | 1 min | fecha vendas (data vencida ou grade esgotada); com as vendas encerradas e **sem pendência**, congela o retrato (RN20) e abre a apuração |
+| `expirar-pix` | 5 min | PIX vencido: **consulta o PSP antes de liberar**. Aprovado → conclui a venda; senão devolve os números. PSP fora ou ausente → não libera nada |
+| `conciliacao` | diário 03:00 | pagamentos × pedidos; cobranças que o PSP aprovou e o webhook perdeu são curadas e registradas |
+| `limpeza-outbox` | diário 03:30 | arquiva eventos publicados há mais de 30 dias. **Nunca** apaga `audit_events` nem dead-letter |
+
+Cada ciclo grava um *heartbeat* (`job_heartbeats`) com início, fim, duração,
+contagem e último erro — inclusive quando falha.
+
+### Saúde
+
+- `GET /api/health` (usado pelo Render): `503` **só** se o banco não responde em 2 s.
+  Worker atrasado (algum job sem terminar um ciclo em mais de 3× o seu intervalo) é
+  `degraded` com `200`: reiniciar a API não conserta o worker.
+- `GET /api/platform/health` (Super Admin com `platform:health:read` e MFA): último
+  ciclo de cada job, tamanho da dead-letter, backlog da outbox e divergências de
+  conciliação em aberto (incluindo estornos manuais pendentes).
+
+### PIX (Mercado Pago) — desligado em staging por padrão
+
+`PSP_PROVIDER=none`: o pedido nasce, mas gerar o PIX responde 503 e o webhook 404.
+
+Não existe access token global: cada comunidade conecta a **sua** conta por OAuth
+(Recebimentos → conectar Mercado Pago; nada é digitado à mão). No Render só entram os
+segredos do **aplicativo** da plataforma. Para ligar em **sandbox**, na API **e** no worker:
+
+```text
+PSP_PROVIDER                       = mercadopago
+MERCADOPAGO_OAUTH_CLIENT_ID        = <id do aplicativo sandbox>
+MERCADOPAGO_OAUTH_CLIENT_SECRET    = <segredo do aplicativo>      (nunca no repositório)
+MERCADOPAGO_WEBHOOK_SECRET         = <segredo de assinatura do webhook do aplicativo>
+PAYMENT_CREDENTIALS_KEY            = <openssl rand -base64 32>    (≠ MFA_ENCRYPTION_KEY)
+PUBLIC_API_BASE_URL                = https://<api>.onrender.com
+ORGANIZER_PANEL_URL                = https://<painel>.onrender.com   (só na API)
+MERCADOPAGO_FALLBACK_PAYER_EMAIL   = <e-mail usado quando o comprador não informa o dele>
+```
+
+No painel do aplicativo no Mercado Pago: Redirect URI
+`{PUBLIC_API_BASE_URL}/api/payment-accounts/oauth/callback` e webhook
+`{PUBLIC_API_BASE_URL}/api/webhooks/mercadopago/{slug}`. O aviso **não paga**: a API valida a
+assinatura do aplicativo, descobre a conta do pagamento e **consulta** o pagamento no Mercado
+Pago com a conta original antes de concluir a venda. Trocar `PAYMENT_CREDENTIALS_KEY` invalida
+as credenciais guardadas (as comunidades precisam reconectar).
+
+### Logs
+
+Uma linha JSON por evento (`service`, `level`, `msg`, `ts`), com `request_id` (o mesmo
+do cabeçalho `x-request-id`), `tenant_id` e `event_id`. O logger mascara e-mail,
+telefone e nome e omite senha, token, cookie e assinatura. Corpo e *query string* de
+requisição nunca entram no log.
+
+### Migrações
+
+Ficam **fora** do deploy automático. Use o workflow **Migrar staging**
+(*Actions → Migrar staging → Run workflow*):
+
+1. crie o *environment* `staging` (Settings → Environments) e marque **Required
+   reviewers** — sem isso o workflow rodaria sem aprovação;
+2. cadastre o *secret* `MIGRATION_DATABASE_URL` (papel dono) e a *variable*
+   `DATABASE_CA_CERT` nesse environment;
+3. dispare o workflow, digite `MIGRAR`, e o revisor aprova.
+
+### Dependências
+
+O Dependabot abre um PR por semana (npm e GitHub Actions), agrupado.
 
 ---
 

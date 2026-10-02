@@ -59,22 +59,20 @@ describe.skipIf(!hasTestDatabase)(`Fase 2 · sorteios ${hasTestDatabase ? '' : s
       .set('x-tenant-slug', slug)
       .send({
         title: `Sorteio ${unique('t-')}`,
-        prizeName: 'Moto 0 km',
-        unitPriceCents: 1500,
+        prizes: [{ name: 'Moto 0 km' }],
+        ticketPriceCents: 1500,
         totalNumbers: 100,
         ...overrides,
       });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
 
     if (ativar) {
-      const ativacao = await request(harness.app)
-        .post(`/api/tenant/draws/${res.body.id}/status`)
-        .set('Cookie', cookie)
-        .set('x-tenant-slug', slug)
-        .send({ status: 'ATIVA' });
-      expect(ativacao.status).toBe(200);
+      // Preparacao de cenario, nao caminho de produto: RASCUNHO nao vai direto a
+      // ATIVA pela API (RN02 — ver draw-lifecycle.test.ts). Aqui o interesse e a
+      // venda, entao o sorteio ja nasce aprovado.
+      await harness.owner.query("UPDATE draws SET status = 'ATIVA' WHERE id = $1", [res.body.id]);
     }
-    return { id: res.body.id, slug: res.body.slug, unitPriceCents: res.body.unitPriceCents };
+    return { id: res.body.id, slug: res.body.slug, unitPriceCents: res.body.unitPriceCents as number };
   }
 
   function reservar(drawId: string, numbers: number[]) {
@@ -134,14 +132,14 @@ describe.skipIf(!hasTestDatabase)(`Fase 2 · sorteios ${hasTestDatabase ? '' : s
           .post('/api/tenant/draws')
           .set('Cookie', cookie)
           .set('x-tenant-slug', slug)
-          .send({ title: `Grade ${total}`, prizeName: 'Premio', unitPriceCents: 100, totalNumbers: total });
+          .send({ title: `Grade ${total}`, prizes: [{ name: 'Premio' }], ticketPriceCents: 100, totalNumbers: total });
         expect(ok.status, `grade ${total} deveria ser aceita`).toBe(201);
       }
       const ruim = await request(harness.app)
         .post('/api/tenant/draws')
         .set('Cookie', cookie)
         .set('x-tenant-slug', slug)
-        .send({ title: 'Grade 250', prizeName: 'Premio', unitPriceCents: 100, totalNumbers: 250 });
+        .send({ title: 'Grade 250', prizes: [{ name: 'Premio' }], ticketPriceCents: 100, totalNumbers: 250 });
       expect(ruim.status).toBe(400);
     });
 

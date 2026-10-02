@@ -10,7 +10,10 @@ import type { NextFunction, Request, Response } from 'express';
  */
 export function requestContext() {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const requestId = randomUUID();
+    // Um id que o cliente (ou o proxy) mandou so vale se tiver o formato esperado:
+    // curto e sem caracteres que bagunçariam uma linha de log.
+    const recebido = req.get('x-request-id');
+    const requestId = recebido && /^[A-Za-z0-9._-]{8,64}$/.test(recebido) ? recebido : randomUUID();
     req.context = {
       requestId,
       ip: req.ip ?? null,

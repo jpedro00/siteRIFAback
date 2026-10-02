@@ -11,7 +11,11 @@
     "queue:install": "tsx src/cli/installQueue.ts"
   },
   "dependencies": {
+    "@clubedarifa/billing": "*",
     "@clubedarifa/db": "*",
+    "@clubedarifa/logging": "*",
+    "@clubedarifa/payment-accounts": "*",
+    "@clubedarifa/psp": "*",
     "@clubedarifa/shared": "*",
     "pg": "^8.13.1",
     "pg-boss": "^10.3.2"

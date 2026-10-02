@@ -7,6 +7,13 @@ import { buildAuthHandlers } from '../modules/identity/authRoutes.js';
 import { buildTenantHandlers } from '../modules/tenancy/tenantRoutes.js';
 import { buildHealthHandler } from '../modules/health/healthRoutes.js';
 import { buildDrawHandlers } from '../modules/draws/drawRoutes.js';
+import { buildPaymentHandlers } from '../modules/payments/paymentRoutes.js';
+import { buildResultHandlers } from '../modules/results/resultRoutes.js';
+import { buildTeamHandlers } from '../modules/team/teamRoutes.js';
+import { buildPanelHandlers } from '../modules/panel/panelRoutes.js';
+import { buildBillingHandlers } from '../modules/billing/billingRoutes.js';
+import { buildCommunityHandlers } from '../modules/community/communityRoutes.js';
+import { buildPaymentAccountHandlers } from '../modules/paymentAccounts/paymentAccountRoutes.js';
 
 /**
  * Registro das rotas a partir do contrato compartilhado.
@@ -21,7 +28,12 @@ import { buildDrawHandlers } from '../modules/draws/drawRoutes.js';
  * publica. Sem essa isencao, um dono sem MFA ficaria sem nenhum caminho para
  * cadastrar o fator.
  */
-const MFA_GATE_EXEMPT_PREFIXES = ['/api/auth', '/api/health', '/api/public'] as const;
+const MFA_GATE_EXEMPT_PREFIXES = [
+  '/api/auth',
+  '/api/health',
+  '/api/public',
+  '/api/webhooks',
+] as const;
 
 export function registerRoutes(app: Express, deps: AppDeps): void {
   const handlers: Partial<Record<RouteName, RequestHandler>> = {
@@ -29,6 +41,13 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
     ...buildAuthHandlers(deps),
     ...buildTenantHandlers(deps),
     ...buildDrawHandlers(deps),
+    ...buildPaymentHandlers(deps),
+    ...buildResultHandlers(deps),
+    ...buildTeamHandlers(deps),
+    ...buildPanelHandlers(deps),
+    ...buildBillingHandlers(deps),
+    ...buildPaymentAccountHandlers(deps),
+    ...buildCommunityHandlers(deps),
   } as Partial<Record<RouteName, RequestHandler>>;
 
   const missing = ROUTE_NAMES.filter((name) => handlers[name] === undefined);

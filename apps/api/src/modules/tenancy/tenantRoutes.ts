@@ -12,6 +12,8 @@ import { ApiError } from '../../lib/apiError.js';
 import { isUniqueViolation } from '../../lib/pgError.js';
 import { listTenantAuditEvents, recordAuditEvent } from '../audit/auditService.js';
 import { enqueueOutboxEvent } from '../outbox/outboxService.js';
+import { decodeCursor, paginate, parseLimit } from '../../lib/cursor.js';
+import { generateInviteToken, maskEmail } from '../../lib/inviteToken.js';
 
 /** M01 · comunidade e contexto. M11 · criacao da comunidade pelo Super Admin. */
 
@@ -55,8 +57,13 @@ export function buildTenantHandlers(deps: AppDeps): Record<string, RequestHandle
             colors: Record<string, string>;
             fonts: Record<string, string>;
             contact: Record<string, string>;
+            description: string | null;
+            footer_text: string | null;
+            banner_url: string | null;
+            pages: Record<string, string>;
           }>(
-            `SELECT public_name, logo_light_url, logo_dark_url, favicon_url, colors, fonts, contact
+            `SELECT public_name, logo_light_url, logo_dark_url, favicon_url, colors, fonts, contact,
+                    description, footer_text, banner_url, pages
                FROM tenant_branding
               WHERE tenant_id = $1`,
             [tenant.tenantId],
@@ -76,6 +83,10 @@ export function buildTenantHandlers(deps: AppDeps): Record<string, RequestHandle
         colors: branding?.colors ?? {},
         fonts: branding?.fonts ?? {},
         contact: branding?.contact ?? {},
+        description: branding?.description ?? null,
+        footerText: branding?.footer_text ?? null,
+        bannerUrl: branding?.banner_url ?? null,
+        pages: branding?.pages ?? {},
       };
       res.status(200).json(response);
     }),
@@ -100,15 +111,18 @@ export function buildTenantHandlers(deps: AppDeps): Record<string, RequestHandle
     tenantAudit: asyncHandler(async (req, res) => {
       const tenant = requireTenant(req);
       const session = requireSession(req);
-      const limit = Number(req.query['limit'] ?? 50);
+      const limit = parseLimit(req.query['limit'], 50, 100);
+      const cursor = decodeCursor(req.query['cursor']);
 
-      const events = await withTenant(
+      const linhas = await withTenant(
         deps.pool,
         { tenantId: tenant.tenantId, userId: session.userId },
-        async (client) => listTenantAuditEvents(client, { limit: Number.isFinite(limit) ? limit : 50 }),
+        async (client) => listTenantAuditEvents(client, { limit: limit + 1, cursor }),
       );
+      const { pagina: events, nextCursor } = paginate(linhas, limit, (e) => ({ t: e.cursor_t, id: e.id }));
 
       const response: AuditListResponse = {
+        nextCursor,
         events: events.map((event) => ({
           id: event.id,
           occurredAt: event.occurred_at,
@@ -125,18 +139,31 @@ export function buildTenantHandlers(deps: AppDeps): Record<string, RequestHandle
     platformTenants: asyncHandler(async (req, res) => {
       const session = requireSession(req);
 
-      const tenants = await withPlatform(deps.pool, { userId: session.userId }, async (client) => {
+      const limit = parseLimit(req.query['limit'], 30, 100);
+      const cursor = decodeCursor(req.query['cursor']);
+
+      const linhas = await withPlatform(deps.pool, { userId: session.userId }, async (client) => {
         const { rows } = await client.query<{
           id: string;
           slug: string;
           name: string;
           status: string;
           created_at: string;
-        }>('SELECT id, slug, name, status::text AS status, created_at FROM tenants ORDER BY created_at DESC LIMIT 200');
+          cursor_t: string;
+        }>(
+          `SELECT id, slug, name, status::text AS status, created_at, created_at::text AS cursor_t
+             FROM tenants
+            WHERE ($1::timestamptz IS NULL OR (created_at, id) < ($1::timestamptz, $2::uuid))
+            ORDER BY created_at DESC, id DESC
+            LIMIT $3`,
+          [cursor?.t ?? null, cursor?.id ?? null, limit + 1],
+        );
         return rows;
       });
+      const { pagina: tenants, nextCursor } = paginate(linhas, limit, (t) => ({ t: t.cursor_t, id: t.id }));
 
       const response: TenantListResponse = {
+        nextCursor,
         tenants: tenants.map((tenant) => ({
           id: tenant.id,
           slug: tenant.slug,
@@ -222,20 +249,60 @@ export function buildTenantHandlers(deps: AppDeps): Record<string, RequestHandle
           [body.ownerEmail],
         );
         const dono = donos[0];
-        if (!dono) {
-          throw ApiError.badRequest(
-            'Não existe conta com esse e-mail. O dono precisa ter cadastro antes de a comunidade ser criada.',
-          );
-        }
-        if (dono.status !== 'ACTIVE') {
+        if (dono && dono.status !== 'ACTIVE') {
           throw ApiError.badRequest('A conta indicada como dona não está ativa.');
         }
 
-        await client.query(
-          `INSERT INTO memberships (tenant_id, user_id, role, accepted_at, created_by)
-           VALUES ($1, $2, 'OWNER', now(), $3)`,
-          [tenant.id, dono.user_id, session.userId],
-        );
+        let convite: { id: string; email: string; expiresAt: string; token: string } | null = null;
+
+        if (dono) {
+          await client.query(
+            `INSERT INTO memberships (tenant_id, user_id, role, accepted_at, created_by)
+             VALUES ($1, $2, 'OWNER', now(), $3)`,
+            [tenant.id, dono.user_id, session.userId],
+          );
+
+          await recordAuditEvent(client, {
+            tenantId: null,
+            actorUserId: session.userId,
+            actorType: 'PLATFORM',
+            action: 'membership.owner_provisioned',
+            targetType: 'user',
+            targetId: dono.user_id,
+            after: { role: 'OWNER', email: dono.email, tenantId: tenant.id, tenantSlug: tenant.slug },
+            ip: req.context?.ip ?? null,
+            userAgent: req.context?.userAgent ?? null,
+          });
+        } else {
+          // Sem conta ainda: nasce um CONVITE DE DONO, valido por 7 dias, na mesma
+          // transacao. Sem ele a comunidade nasceria orfa — e nao ha por que recusar
+          // criar so porque a pessoa ainda nao se cadastrou.
+          const { token, hash } = generateInviteToken();
+          const { rows: novoConvite } = await client.query<{ id: string; expires_at: string }>(
+            `INSERT INTO invitations (tenant_id, email, role, token_hash, invited_by)
+             VALUES ($1, $2, 'OWNER', $3, $4)
+             RETURNING id, expires_at`,
+            [tenant.id, body.ownerEmail, hash, session.userId],
+          );
+          convite = {
+            id: novoConvite[0]!.id,
+            email: body.ownerEmail,
+            expiresAt: novoConvite[0]!.expires_at,
+            token,
+          };
+
+          await recordAuditEvent(client, {
+            tenantId: null,
+            actorUserId: session.userId,
+            actorType: 'PLATFORM',
+            action: 'tenant.owner_invited',
+            targetType: 'invitation',
+            targetId: convite.id,
+            after: { role: 'OWNER', email: maskEmail(body.ownerEmail), tenantId: tenant.id, tenantSlug: tenant.slug },
+            ip: req.context?.ip ?? null,
+            userAgent: req.context?.userAgent ?? null,
+          });
+        }
 
         await recordAuditEvent(client, {
           tenantId: null,
@@ -245,27 +312,6 @@ export function buildTenantHandlers(deps: AppDeps): Record<string, RequestHandle
           targetType: 'tenant',
           targetId: tenant.id,
           after: { slug: tenant.slug, name: tenant.name },
-          ip: req.context?.ip ?? null,
-          userAgent: req.context?.userAgent ?? null,
-        });
-
-        // Evento proprio: "comunidade criada" e "fulano virou dono" respondem
-        // perguntas diferentes na trilha, e quem audita concessao de poder nao
-        // deveria ter de inferi-la de um evento de criacao.
-        //
-        // `tenantId: null` — escopo de PLATAFORMA, e nao da comunidade nova.
-        // `audit_events_insert` exige exatamente isso de um ator de
-        // plataforma, porque nesse contexto `app.current_tenant_id()` e nulo:
-        // o Super Admin nao "esta dentro" da comunidade que acabou de criar.
-        // A comunidade nao se perde — vai em `after`, junto do papel concedido.
-        await recordAuditEvent(client, {
-          tenantId: null,
-          actorUserId: session.userId,
-          actorType: 'PLATFORM',
-          action: 'membership.owner_provisioned',
-          targetType: 'user',
-          targetId: dono.user_id,
-          after: { role: 'OWNER', email: dono.email, tenantId: tenant.id, tenantSlug: tenant.slug },
           ip: req.context?.ip ?? null,
           userAgent: req.context?.userAgent ?? null,
         });
@@ -281,7 +327,7 @@ export function buildTenantHandlers(deps: AppDeps): Record<string, RequestHandle
           },
         });
 
-        return { tenant, dono };
+        return { tenant, dono: dono ?? null, convite };
       });
 
       res.status(201).json({
@@ -290,11 +336,14 @@ export function buildTenantHandlers(deps: AppDeps): Record<string, RequestHandle
         name: created.tenant.name,
         status: created.tenant.status,
         createdAt: created.tenant.created_at,
-        owner: {
-          userId: created.dono.user_id,
-          email: created.dono.email,
-          displayName: created.dono.display_name,
-        },
+        owner: created.dono
+          ? {
+              userId: created.dono.user_id,
+              email: created.dono.email,
+              displayName: created.dono.display_name,
+            }
+          : null,
+        ownerInvitation: created.convite,
       });
     }),
   };

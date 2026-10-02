@@ -64,6 +64,7 @@ export async function recordAuditEvent(client: PoolClient, input: AuditInput): P
 export interface AuditEventRow {
   id: string;
   occurred_at: string;
+  cursor_t: string;
   action: string;
   actor_user_id: string | null;
   target_type: string | null;
@@ -72,7 +73,8 @@ export interface AuditEventRow {
 }
 
 /**
- * Lista a trilha da comunidade do contexto.
+ * Lista a trilha da comunidade do contexto, da mais recente para a mais antiga,
+ * por cursor (instante + id). Devolve `limit + 1` linhas quando ha proxima pagina.
  *
  * `before` e `after` NAO sao devolvidos nesta listagem: podem conter dado
  * pessoal do comprador, e ler a trilha nao e o mesmo direito que ler dado
@@ -80,14 +82,16 @@ export interface AuditEventRow {
  */
 export async function listTenantAuditEvents(
   client: PoolClient,
-  options: { limit: number },
+  options: { limit: number; cursor: { t: string; id: string } | null },
 ): Promise<AuditEventRow[]> {
   const { rows } = await client.query<AuditEventRow>(
-    `SELECT id, occurred_at, action, actor_user_id, target_type, target_id, host(ip) AS ip
+    `SELECT id, occurred_at, occurred_at::text AS cursor_t, action, actor_user_id,
+            target_type, target_id, host(ip) AS ip
        FROM audit_events
-      ORDER BY occurred_at DESC
-      LIMIT $1`,
-    [Math.min(Math.max(options.limit, 1), 200)],
+      WHERE ($1::timestamptz IS NULL OR (occurred_at, id) < ($1::timestamptz, $2::uuid))
+      ORDER BY occurred_at DESC, id DESC
+      LIMIT $3`,
+    [options.cursor?.t ?? null, options.cursor?.id ?? null, Math.min(Math.max(options.limit, 1), 101)],
   );
   return rows;
 }

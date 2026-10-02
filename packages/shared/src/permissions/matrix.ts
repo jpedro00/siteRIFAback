@@ -34,6 +34,11 @@ export const TENANT_ROLE_PERMISSIONS: Readonly<
     'support:act',
     'team:manage',
     'branding:write',
+    // Fase 7: assinatura e recebimentos sao decisao do DONO.
+    'billing:read',
+    'billing:manage',
+    'payment_account:read',
+    'payment_account:manage',
   ] as const),
   FINANCE: Object.freeze([
     'tenant:read',
@@ -42,6 +47,9 @@ export const TENANT_ROLE_PERMISSIONS: Readonly<
     'payment:refund',
     'captive:manage',
     'buyer:read:full',
+    // Fase 7: o financeiro ENXERGA a assinatura e a conta de recebimento; nao as altera.
+    'billing:read',
+    'payment_account:read',
   ] as const),
   MARKETING: Object.freeze([
     'tenant:read',
@@ -111,6 +119,7 @@ export const PLATFORM_ROLE_PERMISSIONS: Readonly<
   PLATFORM_FINANCE: Object.freeze([
     'platform:tenant:read',
     'platform:billing:read',
+    'platform:billing:manage',
     'platform:refund:second_approval',
     'platform:health:read',
     'platform:audit:read',

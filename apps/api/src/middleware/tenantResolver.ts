@@ -15,7 +15,13 @@ import { ApiError } from '../lib/apiError.js';
  *   1. Host exato em `tenant_domains`, com `verified_at` preenchido.
  *      Dominio registrado e ainda nao verificado NAO resolve.
  *   2. Host no formato {slug}.{APP_BASE_DOMAIN}.
- *   3. Cabecalho `x-tenant-slug` — SOMENTE se `TENANT_HEADER_ENABLED` estiver
+ *   3. ORIGIN, pelos mesmos dois criterios acima. E o caminho da vitrine em
+ *      dominio proprio: o navegador chama `api.<plataforma>` a partir de
+ *      `rifa.cliente.com`, entao o Host e o da API e quem identifica a comunidade
+ *      e a origem. `Origin` e posto pelo navegador e o script da pagina nao o
+ *      forja; de qualquer forma ele so SELECIONA a comunidade — vinculo e permissao
+ *      continuam sendo conferidos no banco — e ja passou pelo `originGuard`.
+ *   4. Cabecalho `x-tenant-slug` — SOMENTE se `TENANT_HEADER_ENABLED` estiver
  *      ligado, o que nao acontece em producao.
  *
  * Por que o cabecalho e gated: ele e um seletor de comunidade controlado pelo
@@ -60,33 +66,66 @@ function slugFromHost(host: string, baseDomain: string): string | null {
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 
-export async function resolveTenant(
+/** Resolve pelo nome de host: dominio verificado primeiro, depois {slug}.{APP_BASE_DOMAIN}. */
+async function resolveByHostName(
   deps: AppDeps,
-  req: Request,
-): Promise<{ row: ResolveRow; resolvedBy: 'domain' | 'slug' | 'header' } | null> {
-  const host = hostWithoutPort(req.headers.host);
+  host: string,
+  by: { domain: 'domain'; slug: 'slug' } | { domain: 'origin'; slug: 'origin' },
+): Promise<{ row: ResolveRow; resolvedBy: ResolvedBy } | null> {
+  const byDomain = await withoutContext(deps.pool, async (client) => {
+    const { rows } = await client.query<ResolveRow>(
+      'SELECT tenant_id, slug, name, status FROM app.resolve_tenant_by_domain($1)',
+      [host],
+    );
+    return rows[0] ?? null;
+  });
+  if (byDomain) return { row: byDomain, resolvedBy: by.domain };
 
-  if (host) {
-    const byDomain = await withoutContext(deps.pool, async (client) => {
+  const slug = slugFromHost(host, deps.config.APP_BASE_DOMAIN);
+  if (slug && SLUG_RE.test(slug)) {
+    const bySlug = await withoutContext(deps.pool, async (client) => {
       const { rows } = await client.query<ResolveRow>(
-        'SELECT tenant_id, slug, name, status FROM app.resolve_tenant_by_domain($1)',
-        [host],
+        'SELECT tenant_id, slug, name, status FROM app.resolve_tenant_by_slug($1)',
+        [slug],
       );
       return rows[0] ?? null;
     });
-    if (byDomain) return { row: byDomain, resolvedBy: 'domain' };
+    if (bySlug) return { row: bySlug, resolvedBy: by.slug };
+  }
+  return null;
+}
 
-    const slug = slugFromHost(host, deps.config.APP_BASE_DOMAIN);
-    if (slug && SLUG_RE.test(slug)) {
-      const bySlug = await withoutContext(deps.pool, async (client) => {
-        const { rows } = await client.query<ResolveRow>(
-          'SELECT tenant_id, slug, name, status FROM app.resolve_tenant_by_slug($1)',
-          [slug],
-        );
-        return rows[0] ?? null;
-      });
-      if (bySlug) return { row: bySlug, resolvedBy: 'slug' };
-    }
+/** Nome de host de uma `Origin`, so para http(s). */
+function hostOfOrigin(origin: string | undefined): string | null {
+  if (!origin) return null;
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    return url.hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+type ResolvedBy = 'domain' | 'slug' | 'origin' | 'header';
+
+export async function resolveTenant(
+  deps: AppDeps,
+  req: Request,
+): Promise<{ row: ResolveRow; resolvedBy: ResolvedBy } | null> {
+  const host = hostWithoutPort(req.headers.host);
+
+  // 1 e 2: o Host da requisicao.
+  if (host) {
+    const porHost = await resolveByHostName(deps, host, { domain: 'domain', slug: 'slug' });
+    if (porHost) return porHost;
+  }
+
+  // 3: a Origin. Host desconhecido + Origin desconhecida = 404, sem comunidade padrao.
+  const originHost = hostOfOrigin(req.get('origin'));
+  if (originHost && originHost !== host) {
+    const porOrigem = await resolveByHostName(deps, originHost, { domain: 'origin', slug: 'origin' });
+    if (porOrigem) return porOrigem;
   }
 
   // Sem a chave ligada, o cabecalho e simplesmente ignorado: nao ha caminho

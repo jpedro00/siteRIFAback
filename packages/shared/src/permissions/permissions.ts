@@ -34,6 +34,14 @@ export const TENANT_PERMISSIONS = [
   'branding:write',
   // Leitura basica do painel: quem tem vinculo ativo enxerga a comunidade.
   'tenant:read',
+  // Fase 7 · assinatura da PLATAFORMA (Stripe): ver plano, faturas e limites.
+  'billing:read',
+  // Fase 7 · contratar, trocar e cancelar o plano (Checkout e Customer Portal).
+  'billing:manage',
+  // Fase 7 · recebimentos da comunidade: ver o estado da conta conectada.
+  'payment_account:read',
+  // Fase 7 · conectar, renovar e desconectar a conta de recebimento.
+  'payment_account:manage',
 ] as const;
 
 export type TenantPermission = (typeof TENANT_PERMISSIONS)[number];
@@ -65,6 +73,8 @@ export const PLATFORM_PERMISSIONS = [
   'platform:support:act',
   // Leitura da trilha de auditoria de qualquer comunidade. M12.
   'platform:audit:read',
+  // Fase 7 · administrar o catalogo de planos e a politica de cobranca.
+  'platform:billing:manage',
 ] as const;
 
 export type PlatformPermission = (typeof PLATFORM_PERMISSIONS)[number];

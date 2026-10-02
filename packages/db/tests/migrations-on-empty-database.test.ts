@@ -124,8 +124,22 @@ describe.skipIf(!hasTestDatabase)(`migrations em banco vazio ${
       const globalIdentity = ['users', 'user_credentials', 'user_mfa_factors', 'sessions', 'platform_admins'];
       // Tabelas de infraestrutura com tenant_id NULO permitido (evento e
       // trilha de plataforma).
-      const nullableTenant = ['audit_events', 'outbox'];
-      const internal = ['schema_migrations', 'event_consumptions'];
+      const nullableTenant = ['audit_events', 'outbox', 'outbox_archive', 'stripe_webhook_events'];
+      // Catalogos GLOBAIS da plataforma (Fase 7): planos e politica de cobranca nao
+      // pertencem a comunidade nenhuma. Continuam com RLS — a exigencia de
+      // `tenant_id` e que nao se aplica.
+      // `payment_provider_authorizations` (0019) e da CONTA DO VENDEDOR: uma mesma conta
+      // serve varias comunidades, entao ela nao pertence a uma so (o vinculo, sim, tem tenant_id).
+      // Nenhum papel de runtime le essa tabela: so funcoes SECURITY DEFINER.
+      const platformCatalogs = ['plans', 'billing_settings', 'payment_provider_authorizations'];
+      // `job_heartbeats` descreve o PROCESSO do worker, nao uma comunidade.
+      // `draw_status_transitions` e o catalogo global da maquina de estados (0017).
+      const internal = [
+        'schema_migrations',
+        'event_consumptions',
+        'job_heartbeats',
+        'draw_status_transitions',
+      ];
 
       const { rows: tableRows } = await client.query<{ tablename: string; rowsecurity: boolean }>(
         `SELECT c.relname AS tablename, c.relrowsecurity AS rowsecurity
@@ -144,7 +158,8 @@ describe.skipIf(!hasTestDatabase)(`migrations em banco vazio ${
         if (
           tenantRoot.includes(table.tablename) ||
           globalIdentity.includes(table.tablename) ||
-          nullableTenant.includes(table.tablename)
+          nullableTenant.includes(table.tablename) ||
+          platformCatalogs.includes(table.tablename)
         ) {
           continue;
         }

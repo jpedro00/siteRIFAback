@@ -38,18 +38,21 @@ services:
     region: oregon
     branch: main
 
-    # O build acontece na raiz do monorepo: a API importa @clubedarifa/shared e
-    # @clubedarifa/db, que precisam estar compilados antes do typecheck dela.
+    # O build acontece na raiz do monorepo: a API importa @clubedarifa/shared,
+    # @clubedarifa/db, @clubedarifa/logging e @clubedarifa/psp, que precisam estar
+    # compilados antes dela (`prepare:internal` os compila na ordem certa).
     buildCommand: >-
       npm ci &&
-      npm run build -w @clubedarifa/shared &&
-      npm run build -w @clubedarifa/db &&
+      npm run prepare:internal &&
       npm run build -w @clubedarifa/api
     startCommand: npm start -w @clubedarifa/api
 
-    # Healthcheck REAL: a rota consulta o banco e informa `database: up|down`.
-    # Ela responde 200 mesmo com o banco fora, de proposito — quem observa
-    # precisa distinguir "API fora" de "API no ar, banco fora".
+    # Healthcheck REAL: a rota consulta o banco (SELECT 1, prazo de 2s) e o
+    # heartbeat do worker.
+    #   banco fora ............ 503  -> o Render tira a instancia da rotacao
+    #   worker atrasado ....... 200 "degraded" -> reiniciar a API nao conserta o worker
+    #   tudo em dia ........... 200 "ok"
+    # O detalhe de cada job vive em GET /api/platform/health (Super Admin).
     healthCheckPath: /api/health
 
     envVars:
@@ -177,6 +180,48 @@ services:
       - key: LOGIN_ORIGIN_MAX_ACCOUNTS
         value: '5'
 
+      # PAGAMENTO PIX (Mercado Pago) — DESLIGADO em staging por padrao.
+      #
+      # `none` = o pedido nasce, mas nao ha como gerar a cobranca; o webhook
+      # responde 404. Para ligar com credenciais SANDBOX: troque para
+      # `mercadopago` e preencha os tres segredos abaixo no painel do Render
+      # (`sync: false` = o valor nunca entra no repositorio).
+      #
+      # O provedor falso dos testes nao e uma opcao: nenhuma variavel o liga.
+      - key: PSP_PROVIDER
+        value: none
+      # Recebimentos por comunidade (OAuth): nao ha token global. Tokens dos vendedores
+      # ficam cifrados no banco com PAYMENT_CREDENTIALS_KEY (32 bytes, base64, != chave do MFA).
+      - key: MERCADOPAGO_OAUTH_CLIENT_ID
+        sync: false
+      - key: MERCADOPAGO_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: MERCADOPAGO_WEBHOOK_SECRET
+        sync: false
+      - key: PAYMENT_CREDENTIALS_KEY
+        sync: false
+      - key: ORGANIZER_PANEL_URL
+        sync: false
+      - key: MERCADOPAGO_FALLBACK_PAYER_EMAIL
+        sync: false
+      # URL publica da API (https), de onde sai o endereco do webhook.
+      - key: PUBLIC_API_BASE_URL
+        sync: false
+
+      # ASSINATURAS DA PLATAFORMA (Stripe Billing) — DESLIGADO em staging por padrao.
+      # Independente do PSP acima. Para ligar com o modo de TESTE da Stripe: troque para
+      # `stripe` e preencha os segredos no painel (`sync: false`). Chave `sk_live_` e
+      # recusada fora de producao.
+      - key: BILLING_PROVIDER
+        value: none
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      # URL https do painel do organizador (retorno do Checkout e do Customer Portal).
+      - key: BILLING_RETURN_URL
+        sync: false
+
   # ---------------------------------------------------------------------------
   # Worker — relay da outbox e consumidores
   #
@@ -193,8 +238,7 @@ services:
 
     buildCommand: >-
       npm ci &&
-      npm run build -w @clubedarifa/shared &&
-      npm run build -w @clubedarifa/db &&
+      npm run prepare:internal &&
       npm run build -w @clubedarifa/worker
     startCommand: npm start -w @clubedarifa/worker
 
@@ -217,6 +261,32 @@ services:
         sync: false
       - key: QUEUE_SCHEMA
         value: pgboss
+
+      # PSP — o worker CONSULTA o provedor antes de liberar um PIX vencido e na
+      # conciliacao diaria. Mesmas variaveis da API. `none` = os jobs de PIX avisam
+      # e nao liberam nada (staging ate as credenciais sandbox existirem).
+      - key: PSP_PROVIDER
+        value: none
+      # Sem token global: o worker resolve a conta ORIGINAL de cada pagamento e renova os tokens.
+      - key: MERCADOPAGO_OAUTH_CLIENT_ID
+        sync: false
+      - key: MERCADOPAGO_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: MERCADOPAGO_WEBHOOK_SECRET
+        sync: false
+      - key: PAYMENT_CREDENTIALS_KEY
+        sync: false
+      - key: PUBLIC_API_BASE_URL
+        sync: false
+
+      # Assinaturas da plataforma (Stripe): o worker processa e reprocessa os eventos.
+      # Mesmas variaveis da API; `none` = os eventos ficam gravados e nada e descartado.
+      - key: BILLING_PROVIDER
+        value: none
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
       - key: DATABASE_SSL
         value: 'true'
       # Mesma CA publica da API. Ver o comentario no servico web acima.

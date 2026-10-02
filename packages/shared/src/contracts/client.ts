@@ -6,6 +6,8 @@ import {
   type CreateTenantRequest,
   type CreateTenantResponse,
   type HealthResponse,
+  type PlatformHealthResponse,
+  type PlatformReconciliationResponse,
   type LoginRequest,
   type LoginResponse,
   type MfaCodeRequest,
@@ -25,12 +27,59 @@ import type {
   DrawNumbersResponse,
   OrderResponse,
   OrganizerDraw,
+  ReviewDrawRequest,
+  ReviewQueueResponse,
   OrganizerDrawListResponse,
   PublicDrawDetail,
   PublicDrawListResponse,
   ReservationResponse,
+  UpdateDrawRequest,
   UpdateDrawStatusRequest,
 } from './draws.js';
+import type {
+  AcceptInvitationResponse,
+  ChangeMemberRoleRequest,
+  DashboardResponse,
+  DrawOrdersResponse,
+  ExportOrdersResponse,
+  InvitationPreview,
+  InviteMemberRequest,
+  InviteMemberResponse,
+  TeamMember,
+  TeamResponse,
+} from './panel.js';
+import type {
+  ConnectPaymentAccountRequest,
+  CreateCheckoutSessionRequest,
+  EntitlementsResponse,
+  MySubscriptionResponse,
+  PaymentAccount,
+  PaymentAccountsResponse,
+  CreatePlanRequest,
+  PlanListResponse,
+  PlatformPlan,
+  PlatformPlanListResponse,
+  PlatformSubscriptionListResponse,
+  RedirectResponse,
+  UpdatePlanRequest,
+} from './billing.js';
+import type {
+  CorrectResultRequest,
+  OrganizerDrawResult,
+  PublicDrawResult,
+  PublishResultRequest,
+  RecordDeliveryRequest,
+} from './result.js';
+import type { PaymentMethodsResponse } from './paymentMethods.js';
+import type {
+  CommunityContent,
+  PublicDrawBuyersResponse,
+  ReviewReconciliationRequest,
+  TenantBuyersResponse,
+  UpdateCommunityRequest,
+  UploadMediaRequest,
+  UploadMediaResponse,
+} from './community.js';
 import { API_ERROR_MESSAGES, type ApiErrorBody, type ApiErrorCode } from './errors.js';
 
 /**
@@ -55,8 +104,19 @@ export interface RouteResponses {
   mfaVerify: MfaVerifyResponse;
   tenantContext: TenantContextResponse;
   tenantAudit: AuditListResponse;
+  tenantCommunity: CommunityContent;
+  updateTenantCommunity: CommunityContent;
+  uploadMedia: UploadMediaResponse;
+  publicMedia: unknown;
+  publicDrawBuyers: PublicDrawBuyersResponse;
+  tenantBuyers: TenantBuyersResponse;
+  platformReviewReconciliation: { updated: boolean };
   platformTenants: TenantListResponse;
   platformCreateTenant: CreateTenantResponse;
+  platformReviewQueue: ReviewQueueResponse;
+  platformHealth: PlatformHealthResponse;
+  platformReconciliation: PlatformReconciliationResponse;
+  platformReviewDecide: OrganizerDraw;
   accountOrders: AccountOrdersResponse;
   publicDraws: PublicDrawListResponse;
   publicDraw: PublicDrawDetail;
@@ -64,11 +124,44 @@ export interface RouteResponses {
   createReservation: ReservationResponse;
   createOrder: OrderResponse;
   publicOrder: OrderResponse;
+  publicOrderPayment: OrderResponse;
+  publicDrawResult: PublicDrawResult;
+  organizerDrawResult: OrganizerDrawResult;
+  publishDrawResult: OrganizerDrawResult;
+  tenantDashboard: DashboardResponse;
+  organizerDrawOrders: DrawOrdersResponse;
+  exportDrawOrders: ExportOrdersResponse;
+  tenantTeam: TeamResponse;
+  inviteTeamMember: InviteMemberResponse;
+  revokeTeamInvitation: undefined;
+  changeTeamMemberRole: TeamMember;
+  removeTeamMember: undefined;
+  invitationPreview: InvitationPreview;
+  acceptInvitation: AcceptInvitationResponse;
+  correctDrawResult: OrganizerDrawResult;
+  recordDrawDelivery: OrganizerDrawResult;
+  mercadopagoWebhook: { received: true };
   devConfirmPayment: OrderResponse;
   organizerDraws: OrganizerDrawListResponse;
   organizerDraw: OrganizerDraw;
   createDraw: OrganizerDraw;
+  updateDraw: OrganizerDraw;
   updateDrawStatus: OrganizerDraw;
+  platformPlans: PlatformPlanListResponse;
+  platformCreatePlan: PlatformPlan;
+  platformUpdatePlan: PlatformPlan;
+  platformSubscriptions: PlatformSubscriptionListResponse;
+  tenantBillingPlans: PlanListResponse;
+  tenantBilling: MySubscriptionResponse;
+  tenantEntitlements: EntitlementsResponse;
+  tenantBillingCheckout: RedirectResponse;
+  tenantBillingPortal: RedirectResponse;
+  stripeWebhook: { received: true };
+  tenantPaymentAccounts: PaymentAccountsResponse;
+  tenantPaymentMethods: PaymentMethodsResponse;
+  connectPaymentAccount: RedirectResponse;
+  paymentAccountOAuthCallback: undefined;
+  disconnectPaymentAccount: PaymentAccount;
 }
 
 /** Corpo esperado por rota. Rotas ausentes daqui nao recebem corpo. */
@@ -81,7 +174,21 @@ export interface RouteBodies {
   createReservation: CreateReservationRequest;
   createOrder: CreateOrderRequest;
   createDraw: CreateDrawRequest;
+  updateDraw: UpdateDrawRequest;
+  publishDrawResult: PublishResultRequest;
+  inviteTeamMember: InviteMemberRequest;
+  changeTeamMemberRole: ChangeMemberRoleRequest;
+  correctDrawResult: CorrectResultRequest;
+  recordDrawDelivery: RecordDeliveryRequest;
   updateDrawStatus: UpdateDrawStatusRequest;
+  platformReviewDecide: ReviewDrawRequest;
+  tenantBillingCheckout: CreateCheckoutSessionRequest;
+  platformCreatePlan: CreatePlanRequest;
+  platformUpdatePlan: UpdatePlanRequest;
+  connectPaymentAccount: ConnectPaymentAccountRequest;
+  updateTenantCommunity: UpdateCommunityRequest;
+  uploadMedia: UploadMediaRequest;
+  platformReviewReconciliation: ReviewReconciliationRequest;
 }
 
 export type RouteBody<N extends RouteName> = N extends keyof RouteBodies
@@ -118,6 +225,12 @@ export interface RequestOptions {
   readonly params?: Record<string, string | number>;
   readonly query?: Record<string, string | number | undefined>;
   readonly signal?: AbortSignal;
+  /**
+   * Revalida a resposta com o servidor a cada chamada (`cache: 'no-cache'`). Com o
+   * ETag da API, o navegador manda `If-None-Match` e o servidor responde 304 quando
+   * nada mudou — e o que o polling da grade usa para ser barato.
+   */
+  readonly revalidate?: boolean;
 }
 
 /**
@@ -205,6 +318,7 @@ export class ApiClient {
       method: contract.method,
       headers,
       credentials: 'include',
+      ...(options?.revalidate ? { cache: 'no-cache' as const } : {}),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       ...(options?.signal ? { signal: options.signal } : {}),
     });
