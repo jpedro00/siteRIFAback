@@ -5,6 +5,7 @@ import { registerRoutes } from './http/registerRoutes.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { originGuard } from './middleware/originGuard.js';
 import { requestContext } from './middleware/requestContext.js';
+import { requestLogger } from './middleware/requestLogger.js';
 
 /**
  * Fabrica do aplicativo Express.
@@ -20,9 +21,23 @@ export function createApp(deps: AppDeps): Express {
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
 
-  app.use(express.json({ limit: '1mb' }));
+  // O webhook da Stripe assina o CORPO BRUTO: um JSON reserializado nao confere. Guardamos
+  // os bytes originais so para esse caminho, e o resto da API segue com o corpo ja lido.
+  // Envio de imagem: o corpo e base64 (ate ~2,7 MB). Parser proprio, so neste caminho.
+  app.use('/api/tenant/media', express.json({ limit: '3mb' }));
+  app.use(
+    express.json({
+      limit: '1mb',
+      verify: (req, _res, buf) => {
+        if ((req as express.Request).originalUrl.startsWith('/api/webhooks/stripe')) {
+          (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+        }
+      },
+    }),
+  );
   app.use(cookieParser());
   app.use(requestContext());
+  app.use(requestLogger());
 
   // Controle de origem. Ver middleware/originGuard.ts.
   app.use(originGuard(deps));

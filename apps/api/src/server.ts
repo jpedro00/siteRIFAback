@@ -3,6 +3,8 @@ import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { LoginThrottle } from './lib/loginThrottle.js';
 import { SecretBox } from './lib/secretBox.js';
+import { createPaymentAccounts } from './modules/paymentAccounts/paymentAccountsSetup.js';
+import { createBillingDeps } from './modules/billing/billingSetup.js';
 
 /** Entrada do processo da API. */
 async function main(): Promise<void> {
@@ -21,6 +23,8 @@ async function main(): Promise<void> {
     config,
     pool,
     secretBox: new SecretBox(config.MFA_ENCRYPTION_KEY),
+    paymentAccounts: createPaymentAccounts(config, pool),
+    billing: createBillingDeps(config, pool),
     loginThrottle: new LoginThrottle({
       windowMs: config.LOGIN_ORIGIN_WINDOW_MINUTES * 60_000,
       maxFailures: config.LOGIN_ORIGIN_MAX_FAILURES,
@@ -32,7 +36,9 @@ async function main(): Promise<void> {
     console.log(
       `[api] ouvindo na porta ${config.PORT} (${config.NODE_ENV}); ` +
         `origens declaradas: ${config.corsOrigins.length}; ` +
-        `cabecalho de comunidade: ${config.TENANT_HEADER_ENABLED ? 'ligado' : 'desligado'}`,
+        `cabecalho de comunidade: ${config.TENANT_HEADER_ENABLED ? 'ligado' : 'desligado'}; ` +
+        `pagamento: ${config.PSP_PROVIDER}; ` +
+        `assinaturas: ${config.BILLING_PROVIDER}`,
     );
   });
 

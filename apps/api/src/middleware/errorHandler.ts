@@ -3,6 +3,7 @@ import { ZodError } from 'zod';
 import { API_ERROR_MESSAGES, type ApiErrorBody } from '@clubedarifa/shared';
 import { TenantContextError } from '@clubedarifa/db';
 import { ApiError } from '../lib/apiError.js';
+import { log } from '../lib/log.js';
 
 /**
  * Tradutor final de erro.
@@ -57,7 +58,7 @@ export function errorHandler() {
 
     if (error instanceof TenantContextError) {
       // Contexto de comunidade ausente ou malformado nega acesso; nao vira 500.
-      console.error(`[${requestId}] contexto de comunidade invalido:`, error.message);
+      log.warn('contexto de comunidade invalido', { request_id: requestId, error: error.message });
       const body: ApiErrorBody = {
         error: { code: 'TENANT_NOT_RESOLVED', message: API_ERROR_MESSAGES.TENANT_NOT_RESOLVED },
       };
@@ -65,7 +66,13 @@ export function errorHandler() {
       return;
     }
 
-    console.error(`[${requestId}] erro nao tratado:`, error);
+    // So nome e mensagem (o logger reduz o Error): a pilha e a resposta do banco
+    // podem carregar valores de coluna, e valor de coluna pode ser dado pessoal.
+    log.error('erro nao tratado', {
+      request_id: requestId,
+      tenant_id: req.tenant?.tenantId ?? null,
+      error,
+    });
     const body: ApiErrorBody = {
       error: { code: 'INTERNAL', message: API_ERROR_MESSAGES.INTERNAL },
     };

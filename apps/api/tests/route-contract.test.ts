@@ -37,6 +37,8 @@ function buildTestApp() {
     config,
     pool,
     secretBox: new SecretBox(config.MFA_ENCRYPTION_KEY),
+    paymentAccounts: null,
+    billing: null,
     loginThrottle: new LoginThrottle({
       windowMs: config.LOGIN_ORIGIN_WINDOW_MINUTES * 60_000,
       maxFailures: config.LOGIN_ORIGIN_MAX_FAILURES,
@@ -143,16 +145,22 @@ describe('coerencia do contrato', () => {
      * as duas existem, com servico, migration e teste de concorrencia; manter
      * a proibicao seria proibir o que acabou de ser construido.
      *
-     * A GUARDA CONTINUA VALENDO para o que ainda nao existe. Pagamento com
-     * provedor, webhook e premio pertencem as fases seguintes, e o teste
-     * segue barrando cada um deles.
+     * A GUARDA CONTINUA VALENDO para o que ainda nao existe. O PIX (M05) chegou:
+     * o webhook do provedor e `POST /api/public/orders/:id/payment` existem e saem
+     * da lista. `/payments` continua barrado — a cobranca pertence ao pedido, e
+     * nao ha recurso de pagamento paralelo — assim como `/prizes`, que nao tem rota
+     * propria (o premio viaja dentro do sorteio).
      *
      * `/checkout` fica na lista: o fluxo de compra termina em `/api/public/
      * orders`, e nao ha — nem deve haver — uma rota de checkout paralela.
      */
-    const proibidos = ['/checkout', '/payments', '/webhooks', '/prizes'];
+    const proibidos = ['/checkout', '/payments', '/prizes'];
     for (const name of ROUTE_NAMES) {
       const path = ROUTE_CONTRACTS[name].path;
+      // Fase 7: `/api/tenant/billing/*` e a assinatura da PLATAFORMA (Stripe Checkout de
+      // SaaS). A proibicao acima e sobre o fluxo de COMPRA de numeros, que continua
+      // terminando em `/api/public/orders`; as duas coisas nao se misturam.
+      if (path.startsWith('/api/tenant/billing/')) continue;
       for (const proibido of proibidos) {
         expect(path.includes(proibido), `${path} pertence a uma fase futura`).toBe(false);
       }

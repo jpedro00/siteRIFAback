@@ -3,3 +3,8 @@ export * from './errors.js';
 export * from './events.js';
 export * from './client.js';
 export * from './draws.js';
+export * from './result.js';
+export * from './panel.js';
+export * from './billing.js';
+export * from './paymentMethods.js';
+export * from './community.js';

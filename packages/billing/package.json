@@ -1,0 +1,27 @@
+{
+  "name": "@clubedarifa/billing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/fakeGateway.d.ts",
+      "default": "./dist/testing/fakeGateway.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@clubedarifa/db": "*",
+    "@clubedarifa/shared": "*",
+    "stripe": "^22.6.2"
+  }
+}

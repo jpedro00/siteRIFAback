@@ -1,0 +1,27 @@
+# Atualizacoes de dependencia, uma vez por semana.
+#
+# Agrupadas por ecossistema para render um PR por semana e nao um por pacote:
+# revisar dezenas de PRs pequenos e o jeito de deixar de revisar. O CI (com
+# PostgreSQL real, sem teste pulado) e quem diz se a atualizacao quebra algo.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      npm-semanal:
+        patterns: ['*']
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      actions-semanal:
+        patterns: ['*']

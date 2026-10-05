@@ -12,6 +12,8 @@
   "include": [
     "packages/shared/tests/**/*.ts",
     "packages/db/tests/**/*.ts",
+    "packages/psp/tests/**/*.ts",
+    "packages/logging/tests/**/*.ts",
     "apps/api/tests/**/*.ts",
     "apps/worker/tests/**/*.ts"
   ]

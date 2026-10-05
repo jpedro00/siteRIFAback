@@ -1,0 +1,66 @@
+name: Migrar staging
+
+# MIGRATIONS FICAM FORA DO DEPLOY AUTOMATICO, de proposito.
+#
+# Um deploy (ou rollback) que aplicasse migrations sozinho transformaria "voltar a
+# versao anterior" numa alteracao de esquema. Aqui a migracao e uma ACAO: manual,
+# com aprovacao, e com o registro de quem aprovou.
+#
+# COMO FUNCIONA A APROVACAO
+#   O job usa o environment `staging`. No GitHub: Settings > Environments > staging
+#   > "Required reviewers" — marque quem pode aprovar. Sem revisor obrigatorio
+#   configurado la, este workflow rodaria SEM aprovacao: a protecao e da
+#   configuracao do environment, e este arquivo so a aciona.
+#
+# SEGREDO
+#   `MIGRATION_DATABASE_URL` e secret do environment `staging` (papel dono do
+#   schema). Nunca vai para o repositorio, para o log ou para um servico do Render.
+on:
+  workflow_dispatch:
+    inputs:
+      confirmar:
+        description: 'Digite MIGRAR para confirmar que voce quer alterar o banco de staging'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migrate-staging
+  cancel-in-progress: false
+
+jobs:
+  migrar:
+    if: ${{ inputs.confirmar == 'MIGRAR' }}
+    runs-on: ubuntu-latest
+    environment: staging
+
+    env:
+      MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+      # O CA do provedor (nao e segredo) e o TLS estrito, como em producao.
+      DATABASE_SSL: 'true'
+      DATABASE_CA_CERT: ${{ vars.DATABASE_CA_CERT }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Compilar pacotes internos
+        run: npm run prepare:internal
+
+      # Antes de tocar no banco: se o CI desta versao esta vermelho, nao se migra.
+      - name: Conferir contratos e tipos
+        run: |
+          npm run contracts:verify
+          npm run typecheck
+
+      - name: Aplicar migrations pendentes
+        run: npm run db:migrate

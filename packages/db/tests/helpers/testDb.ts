@@ -71,6 +71,9 @@ export async function resetFoundationTables(): Promise<void> {
     // A ordem respeita as chaves estrangeiras. `tenants` cascateia para
     // branding, dominios e memberships.
     await client.query('DELETE FROM event_consumptions');
+    // Heartbeats de outros arquivos de teste nao podem contaminar a leitura da saude.
+    await client.query('DELETE FROM job_heartbeats');
+    await client.query('DELETE FROM outbox_archive');
     await client.query('DELETE FROM outbox');
     await client.query('DELETE FROM sessions');
     await client.query('DELETE FROM user_mfa_factors');
@@ -94,8 +97,16 @@ export async function resetFoundationTables(): Promise<void> {
     // ---------------------------------------------------------------------
     await client.query('ALTER TABLE draw_numbers DISABLE TRIGGER draw_numbers_protect_paid');
     try {
+      // Resultado e retrato sao imutaveis (DELETE barrado por gatilho, ate para o
+      // dono); TRUNCATE nao dispara gatilho de linha e e o jeito de limpar a bancada.
+      await client.query('TRUNCATE draw_results, draw_snapshots');
       await client.query('DELETE FROM order_items');
       await client.query('DELETE FROM draw_numbers');
+      await client.query('DELETE FROM payments');
+      // Recebimentos por comunidade: os pagamentos apontam para a conta (RESTRICT), entao saem antes.
+      await client.query('DELETE FROM payment_account_oauth_states');
+      await client.query('DELETE FROM tenant_payment_accounts');
+      await client.query('DELETE FROM payment_provider_authorizations');
       await client.query('DELETE FROM orders');
       await client.query('DELETE FROM reservations');
       await client.query('DELETE FROM buyers');
@@ -103,6 +114,18 @@ export async function resetFoundationTables(): Promise<void> {
     } finally {
       await client.query('ALTER TABLE draw_numbers ENABLE TRIGGER draw_numbers_protect_paid');
     }
+    // Fase 7 · cobranca da plataforma e recebimentos por comunidade (0018/0019).
+    // Antes das comunidades: as FKs de assinatura, fatura e conta sao RESTRICT.
+    await client.query('DELETE FROM billing_adjustments');
+    await client.query('DELETE FROM billing_invoices');
+    await client.query('DELETE FROM tenant_subscriptions');
+    await client.query('DELETE FROM billing_checkout_sessions');
+    await client.query('DELETE FROM tenant_billing');
+    await client.query('DELETE FROM stripe_webhook_events');
+    await client.query('DELETE FROM plans');
+    await client.query(
+      'UPDATE billing_settings SET past_due_grace_days = 3, enforcement_enabled = false, updated_by = NULL',
+    );
     // audit_events referencia tenants e users com ON DELETE RESTRICT, entao
     // qualquer linha remanescente impediria a limpeza. Os testes usam tenants
     // proprios; aqui removemos apenas o que nao esta amarrado a trilha.
