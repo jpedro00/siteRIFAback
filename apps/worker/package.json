@@ -17,7 +17,7 @@
     "@clubedarifa/payment-accounts": "*",
     "@clubedarifa/psp": "*",
     "@clubedarifa/shared": "*",
-    "pg": "^8.13.1",
+    "pg": "^8.23.1",
     "pg-boss": "^10.3.2"
   }
 }
