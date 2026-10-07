@@ -1,11 +1,12 @@
 import type { Request, RequestHandler, Response } from 'express';
-import { connectPaymentAccountRequestSchema } from '@clubedarifa/shared';
+import { connectPaymentAccountRequestSchema, setPaymentMethodRequestSchema } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
 import {
   connectPaymentAccount,
   disconnectPaymentAccount,
   getPaymentMethods,
+  setMethodEnabled,
   handleOAuthCallback,
   listPaymentAccounts,
 } from './paymentAccountService.js';
@@ -40,6 +41,21 @@ export function buildPaymentAccountHandlers(deps: AppDeps): Record<string, Reque
 
     tenantPaymentMethods: asyncHandler(async (req, res) => {
       const tenant = requireTenant(req);
+      res.status(200).set('Cache-Control', 'no-store').json(await getPaymentMethods(deps, { tenantId: tenant.tenantId }));
+    }),
+
+    setTenantPaymentMethod: asyncHandler(async (req, res) => {
+      const tenant = requireTenant(req);
+      const session = requireSession(req);
+      const body = setPaymentMethodRequestSchema.parse(req.body);
+      await setMethodEnabled(deps, {
+        tenantId: tenant.tenantId,
+        userId: session.userId,
+        method: body.method,
+        enabled: body.enabled,
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      });
       res.status(200).set('Cache-Control', 'no-store').json(await getPaymentMethods(deps, { tenantId: tenant.tenantId }));
     }),
 

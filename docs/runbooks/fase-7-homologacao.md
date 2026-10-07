@@ -112,3 +112,21 @@ Permanece `false`. Antes de ligar, validar em sandbox real: assinatura, renovaç
 
 Ela entra no corte final, junto com 0017–0021, **depois** do backup do banco e com o legado parado para escrita.
 Atenção: o `RIFAS` (legado) continua sem as 0017–0022; nada foi aplicado nele.
+
+## 7. Migrations 0023–0026 (prontas no repositório, NÃO aplicadas em nenhum banco de produção)
+
+Todas aditivas; não alteram 0001–0022. Entram no próximo corte, depois de backup e com a mesma disciplina da §6.
+
+| Migration | O que faz |
+|---|---|
+| `0023_password_reset` | `password_reset_tokens` (só o hash do token; uso único; sem GRANT) + `app.request_password_reset` / `app.reset_password` (revoga todas as sessões). |
+| `0024_creator_onboarding` | `app.create_own_community`: o próprio usuário cria a comunidade e vira OWNER numa transação; idempotente (inclusive em corrida). |
+| `0025_marketplace` | `app.marketplace_page` / `app.marketplace_creators` (SECURITY DEFINER, projeção mínima) para a lista pública entre comunidades, sem abrir SELECT global nem BYPASSRLS. |
+| `0026_payment_method_preferences` | `tenant_payment_preferences`: o criador pausa/retoma meios que a plataforma suporta (hoje só o PIX). |
+
+### Configuração de produção que essas mudanças pedem
+
+- **API:** `PASSWORD_RESET_URL` (https, página `/redefinir-senha` do Storefront), `CREATOR_MAX_COMMUNITIES` (padrão 3) e, para a entrega do token, um provedor de e-mail ligado a `PasswordResetNotifier` (hoje NÃO existe: o pedido é aceito e o token não chega a ninguém).
+- **CORS:** adicionar as origens exatas do Organizer e do Admin quando publicados. O Organizer central escolhe a comunidade pelo cabeçalho `x-tenant-slug` SÓ em rota autenticada com vínculo conferido; `TENANT_HEADER_ENABLED` continua `false`.
+- **Storefront central:** `VITE_MARKETPLACE_MODE=central`, `VITE_API_BASE_URL`, `VITE_ORGANIZER_BASE_URL` e, se houver links antigos, `VITE_LEGACY_TENANT_SLUG`. Vitrines por domínio de comunidade continuam sem essa variável.
+- **Organizer:** `VITE_API_BASE_URL` e `VITE_STOREFRONT_BASE_URL` (o link "Criar comunidade" aponta para `/quero-criar-rifas`).

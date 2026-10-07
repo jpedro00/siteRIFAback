@@ -268,6 +268,31 @@ export async function listPublicDraws(
   });
 }
 
+/**
+ * Resumos publicos de rifas JA ESCOLHIDAS (o marketplace decide quais; aqui so se monta o
+ * resumo, com o mesmo preco/progresso da vitrine). Roda no contexto da comunidade (RLS) e
+ * repete o filtro de estados visiveis: um id fora dessa lista nunca vira resumo.
+ */
+export async function getPublicDrawSummariesByIds(
+  deps: AppDeps,
+  tenantId: string,
+  ids: readonly string[],
+): Promise<Map<string, PublicDrawSummary>> {
+  if (ids.length === 0) return new Map();
+  return withTenant(deps.pool, { tenantId }, async (client) => {
+    const { rows } = await client.query<DrawRow & { paid_count: string }>(
+      `SELECT d.*,
+              (d.promotional_price_cents IS NOT NULL AND d.promo_until > now()) AS promo_active,
+              (SELECT count(*) FROM draw_numbers n
+                WHERE n.draw_id = d.id AND n.status = 'PAGO')::text AS paid_count
+         FROM draws d
+        WHERE d.id = ANY($1::uuid[]) AND d.status = ANY($2::draw_status[])`,
+      [ids, STATUS_VISIVEL_NA_VITRINE],
+    );
+    return new Map(rows.map((row) => [row.id, toSummary(row, Number(row.paid_count))]));
+  });
+}
+
 export async function getPublicDraw(
   deps: AppDeps,
   tenantId: string,
@@ -407,6 +432,13 @@ export async function createReservation(
         `Número fora da grade deste sorteio: ${foraDaFaixa.join(', ')}.`,
       );
     }
+
+    // O criador pausou o PIX: nao segura numeros de quem nao tem como pagar.
+    const prefs = await client.query<{ disabled_methods: string[] }>(
+      'SELECT disabled_methods FROM tenant_payment_preferences WHERE tenant_id = $1',
+      [input.tenantId],
+    );
+    if (prefs.rows[0]?.disabled_methods.includes('PIX')) throw new ApiError('PAYMENT_METHOD_DISABLED');
 
     // Minimo/maximo de numeros por pedido: regra do organizador, conferida aqui.
     const limites = personalizacaoResolvida({ customization: draw.customization ?? {} } as DrawRow);

@@ -107,12 +107,36 @@ function hostOfOrigin(origin: string | undefined): string | null {
   }
 }
 
-type ResolvedBy = 'domain' | 'slug' | 'origin' | 'header';
+type ResolvedBy = 'domain' | 'slug' | 'origin' | 'header' | 'path';
+
+async function resolveBySlug(deps: AppDeps, slug: string): Promise<ResolveRow | null> {
+  return withoutContext(deps.pool, async (client) => {
+    const { rows } = await client.query<ResolveRow>(
+      'SELECT tenant_id, slug, name, status FROM app.resolve_tenant_by_slug($1)',
+      [slug],
+    );
+    return rows[0] ?? null;
+  });
+}
 
 export async function resolveTenant(
   deps: AppDeps,
   req: Request,
+  options: { authenticatedHeader?: boolean } = {},
 ): Promise<{ row: ResolveRow; resolvedBy: ResolvedBy } | null> {
+  // SELECAO EXPLICITA EM ROTA PRIVADA. O Organizer central tem um dominio so para todos os
+  // criadores, entao o dominio nao diz de qual comunidade se fala. Aqui — e SO aqui — o cabecalho
+  // vale, mesmo com TENANT_HEADER_ENABLED=false, porque: (1) a rota exige sessao, (2) o middleware
+  // confere o vinculo do usuario com a comunidade logo depois (sem vinculo = 404), (3) o slug nao
+  // concede nada: o acesso vem do vinculo. Rotas publicas nunca passam por este ramo.
+  if (options.authenticatedHeader && req.session) {
+    const explicit = req.get('x-tenant-slug')?.trim().toLowerCase();
+    if (explicit && SLUG_RE.test(explicit)) {
+      const row = await resolveBySlug(deps, explicit);
+      if (row) return { row, resolvedBy: 'header' };
+    }
+  }
+
   const host = hostWithoutPort(req.headers.host);
 
   // 1 e 2: o Host da requisicao.
@@ -160,7 +184,7 @@ export function tenantResolver(deps: AppDeps, options: { requireMembership: bool
   return (req: Request, _res: Response, next: NextFunction): void => {
     void (async () => {
       try {
-        const resolved = await resolveTenant(deps, req);
+        const resolved = await resolveTenant(deps, req, { authenticatedHeader: options.requireMembership });
         if (!resolved) {
           throw ApiError.tenantNotResolved();
         }
@@ -201,6 +225,38 @@ export function tenantResolver(deps: AppDeps, options: { requireMembership: bool
           resolvedBy: resolved.resolvedBy,
           roles,
           permissions: tenantPermissionsFor(roles),
+        };
+        next();
+      } catch (error) {
+        next(error);
+      }
+    })();
+  };
+}
+
+/**
+ * Rotas PUBLICAS do marketplace: a comunidade vem do `:tenantSlug` do CAMINHO.
+ *
+ * Nao e um seletor arbitrario: so resolve comunidade ACTIVE, nao concede papel nenhum
+ * (`roles` vazio), e as rotas que usam este middleware expoem exatamente o que a vitrine da
+ * propria comunidade ja expoe ao publico. Comunidade inexistente ou inativa = 404.
+ */
+export function pathTenantResolver(deps: AppDeps) {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    void (async () => {
+      try {
+        const slug = String(req.params['tenantSlug'] ?? '').trim().toLowerCase();
+        if (!SLUG_RE.test(slug) || slug.length > 63) throw ApiError.tenantNotResolved();
+        const row = await resolveBySlug(deps, slug);
+        if (!row || row.status !== 'ACTIVE') throw ApiError.tenantNotResolved();
+        req.tenant = {
+          tenantId: row.tenant_id,
+          slug: row.slug,
+          name: row.name,
+          status: row.status,
+          resolvedBy: 'path',
+          roles: [],
+          permissions: tenantPermissionsFor([]),
         };
         next();
       } catch (error) {

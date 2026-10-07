@@ -121,7 +121,7 @@ describe.skipIf(!hasTestDatabase)(`migrations em banco vazio ${
       const tenantRoot = ['tenants'];
       // Identidade global e a excecao DOCUMENTADA: users, credenciais, fator
       // MFA e sessoes nao tem tenant_id de proposito (ver 0003).
-      const globalIdentity = ['users', 'user_credentials', 'user_mfa_factors', 'sessions', 'platform_admins'];
+      const globalIdentity = ['users', 'user_credentials', 'user_mfa_factors', 'sessions', 'platform_admins', 'password_reset_tokens'];
       // Tabelas de infraestrutura com tenant_id NULO permitido (evento e
       // trilha de plataforma).
       const nullableTenant = ['audit_events', 'outbox', 'outbox_archive', 'stripe_webhook_events'];

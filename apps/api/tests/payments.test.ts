@@ -185,6 +185,26 @@ describe.skipIf(!hasTestDatabase)(`Pagamento PIX ${hasTestDatabase ? '' : skipRe
       expect(res.status).toBe(503);
     });
 
+    it('PIX pausado pelo criador: a reserva e recusada (409) e nenhum numero fica segurado', async () => {
+      const drawId = await sorteioAtivo();
+      await harness.owner.query(
+        `INSERT INTO tenant_payment_preferences (tenant_id, disabled_methods) VALUES ($1, ARRAY['PIX'])
+         ON CONFLICT (tenant_id) DO UPDATE SET disabled_methods = EXCLUDED.disabled_methods`,
+        [tenantId],
+      );
+      try {
+        const res = await reservar(harness, drawId, [60, 61]);
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe('PAYMENT_METHOD_DISABLED');
+        const seguros = await contar("SELECT count(*)::int AS n FROM draw_numbers WHERE draw_id = $1 AND number IN (60, 61)", [drawId]);
+        expect(seguros).toBe(0);
+      } finally {
+        await harness.owner.query('UPDATE tenant_payment_preferences SET disabled_methods = ARRAY[]::text[] WHERE tenant_id = $1', [tenantId]);
+      }
+      // Religado, volta a reservar normalmente.
+      expect((await reservar(harness, drawId, [60, 61])).status).toBe(201);
+    });
+
     it('pedido de OUTRA comunidade nao gera PIX', async () => {
       const { orderId } = await comprar([16]);
       const outra = unique('alheia-');

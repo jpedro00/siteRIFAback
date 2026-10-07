@@ -156,6 +156,13 @@ export async function ensurePixPayment(
     }
     if (pedido.existing_payment) return { pronto: await montarPedido(client, input.orderId) };
 
+    // O criador pode ter pausado o PIX: sem cobranca nova (pagamento ja criado segue valendo).
+    const prefs = await client.query<{ disabled_methods: string[] }>(
+      'SELECT disabled_methods FROM tenant_payment_preferences WHERE tenant_id = $1',
+      [input.tenantId],
+    );
+    if (prefs.rows[0]?.disabled_methods.includes('PIX')) throw new ApiError('PAYMENT_METHOD_DISABLED');
+
     const limite = Date.now() + RESERVATION_TTL_MINUTES * 60_000;
     const fimReserva = pedido.reservation_expires_at
       ? new Date(pedido.reservation_expires_at).getTime()

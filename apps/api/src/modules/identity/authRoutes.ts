@@ -1,6 +1,8 @@
 import type { Request, RequestHandler, Response } from 'express';
 import { withUser } from '@clubedarifa/db';
 import {
+  forgotPasswordRequestSchema,
+  resetPasswordRequestSchema,
   loginRequestSchema,
   mfaCodeRequestSchema,
   registerRequestSchema,
@@ -22,6 +24,7 @@ import {
   startMfaEnrollment,
   verifyMfaForSession,
 } from './authService.js';
+import { requestPasswordReset, resetPassword } from './passwordReset.js';
 
 /** M01 · rotas de identidade. */
 
@@ -181,6 +184,30 @@ export function buildAuthHandlers(deps: AppDeps): Record<string, RequestHandler>
       };
       // O token vai SOMENTE no cookie httpOnly; nunca no corpo da resposta.
       res.status(200).json(response);
+    }),
+
+    forgotPassword: asyncHandler(async (req, res) => {
+      const body = forgotPasswordRequestSchema.parse(req.body);
+      await requestPasswordReset(deps, {
+        email: body.email,
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      });
+      // 202 SEMPRE: existindo a conta ou nao, a resposta e a mesma.
+      res.status(202).set('Cache-Control', 'no-store').json({ accepted: true });
+    }),
+
+    resetPassword: asyncHandler(async (req, res) => {
+      const body = resetPasswordRequestSchema.parse(req.body);
+      await resetPassword(deps, {
+        token: body.token,
+        password: body.password,
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      });
+      // A conta nao fica logada: as sessoes foram revogadas e entra-se com a senha nova.
+      clearSessionCookie(deps, res);
+      res.status(200).set('Cache-Control', 'no-store').json({ reset: true });
     }),
 
     logout: asyncHandler(async (req, res) => {

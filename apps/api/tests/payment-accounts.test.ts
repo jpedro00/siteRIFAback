@@ -920,5 +920,60 @@ describe.skipIf(!hasTestDatabase || WORKER_URL === '')(`Recebimentos por comunid
         (await donoDe(C).get('/api/tenant/payment-methods')).body.accountId,
       );
     });
+
+    describe('o criador liga e desliga so o que existe', () => {
+      const alternar = (c: Comunidade, cookie: string, body: object) =>
+        request(harness.app).put('/api/tenant/payment-methods').set('Cookie', cookie).set('x-tenant-slug', c.slug).send(body);
+
+      it('desligar o PIX: aparece como DISABLED_BY_CREATOR e religar volta ao normal', async () => {
+        const C = await novaComunidade('pm-off-');
+        await conectar(C, '8201');
+        const off = await alternar(C, C.cookie, { method: 'PIX', enabled: false });
+        expect(off.status, JSON.stringify(off.body)).toBe(200);
+        expect(porTipo(off.body, 'PIX')).toMatchObject({ providerReported: true, enabled: false, reason: 'DISABLED_BY_CREATOR' });
+        expect(porTipo((await donoDe(C).get('/api/tenant/payment-methods')).body, 'PIX')).toMatchObject({ enabled: false, reason: 'DISABLED_BY_CREATOR' });
+
+        const on = await alternar(C, C.cookie, { method: 'PIX', enabled: true });
+        expect(porTipo(on.body, 'PIX')).toMatchObject({ enabled: true, reason: 'ENABLED' });
+      });
+
+      it('NAO da para ligar o que a plataforma nao suporta (cartao, saldo, boleto): 400 e nada muda', async () => {
+        const C = await novaComunidade('pm-nope-');
+        await conectar(C, '8202');
+        for (const method of ['CREDIT_CARD', 'DEBIT_CARD', 'ACCOUNT_MONEY', 'BOLETO', 'OTHER']) {
+          const res = await alternar(C, C.cookie, { method, enabled: true });
+          expect(res.status, method).toBe(400);
+        }
+        const estado = await donoDe(C).get('/api/tenant/payment-methods');
+        expect(porTipo(estado.body, 'BOLETO')).toMatchObject({ enabled: false, reason: 'RESERVATION_WINDOW_UNDEFINED' });
+        expect(porTipo(estado.body, 'CREDIT_CARD')).toMatchObject({ enabled: false, reason: 'NOT_SUPPORTED_YET' });
+      });
+
+      it('exige permissao de gerir recebimentos (financeiro le, mas nao altera) e e isolado por comunidade', async () => {
+        const C = await novaComunidade('pm-perm2-');
+        const D = await novaComunidade('pm-perm3-');
+        await conectar(C, '8203');
+        await conectar(D, '8204');
+        const suporte = await membro(C, 'SUPPORT');
+        expect((await alternar(C, suporte.cookie, { method: 'PIX', enabled: false })).status).toBe(403);
+
+        await alternar(C, C.cookie, { method: 'PIX', enabled: false });
+        // A outra comunidade continua com o PIX ligado.
+        expect(porTipo((await donoDe(D).get('/api/tenant/payment-methods')).body, 'PIX')).toMatchObject({ enabled: true });
+        // Quem so tem vinculo na D nao altera a C pelo cabecalho.
+        expect((await alternar(C, D.cookie, { method: 'PIX', enabled: true })).status).toBe(404);
+      });
+
+      it('a alteracao fica na auditoria da comunidade', async () => {
+        const C = await novaComunidade('pm-aud-');
+        await conectar(C, '8205');
+        await alternar(C, C.cookie, { method: 'PIX', enabled: false });
+        const { rows } = await harness.owner.query<{ action: string }>(
+          "SELECT action FROM audit_events WHERE tenant_id = $1 AND action = 'payment_methods.updated'",
+          [C.tenantId],
+        );
+        expect(rows).toHaveLength(1);
+      });
+    });
   });
 });

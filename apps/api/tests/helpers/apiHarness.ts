@@ -10,6 +10,7 @@ import type { PspGateway } from '@clubedarifa/psp';
 import type { PaymentAccountsRuntime } from '@clubedarifa/payment-accounts';
 import { staticPaymentAccountsRuntime } from '@clubedarifa/payment-accounts/testing';
 import type { BillingDeps } from '../../src/deps.js';
+import type { PasswordResetNotifier } from '../../src/lib/passwordResetNotifier.js';
 import { hashPassword } from '../../src/lib/password.js';
 
 const { Client } = pg;
@@ -114,6 +115,8 @@ export interface HarnessOptions {
    * assinatura passam o gateway real da Stripe sobre um cliente EM MEMORIA.
    */
   readonly billing?: BillingDeps | null;
+  /** Entrega do token de recuperacao de senha. Os testes injetam um que captura a mensagem. */
+  readonly passwordResetNotifier?: PasswordResetNotifier;
 }
 
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -133,6 +136,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     // producao e staging recusam cookie sem Secure; a bancada respeita a regra
     SESSION_COOKIE_SECURE:
       options.nodeEnv === 'production' || options.nodeEnv === 'staging' ? 'true' : 'false',
+    PASSWORD_RESET_COOLDOWN_SECONDS: '0',
     LOGIN_MAX_ATTEMPTS: '5',
     LOGIN_LOCK_MINUTES: '15',
     LOGIN_ORIGIN_WINDOW_MINUTES: String(options.originLimits?.windowMinutes ?? 15),
@@ -162,6 +166,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     loginThrottle,
     paymentAccounts: options.paymentAccounts ?? (options.psp ? staticPaymentAccountsRuntime(options.psp) : null),
     billing: options.billing ?? null,
+    ...(options.passwordResetNotifier ? { passwordResetNotifier: options.passwordResetNotifier } : {}),
   });
 
   return {

@@ -35,7 +35,7 @@ export interface ResolvedTenant {
   readonly name: string;
   readonly status: string;
   /** Como a comunidade foi resolvida, util para diagnostico. */
-  readonly resolvedBy: 'domain' | 'slug' | 'origin' | 'header';
+  readonly resolvedBy: 'domain' | 'slug' | 'origin' | 'header' | 'path';
   readonly roles: readonly MembershipRole[];
   readonly permissions: ReadonlySet<TenantPermission>;
 }
