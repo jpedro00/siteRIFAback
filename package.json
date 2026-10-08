@@ -28,6 +28,7 @@
     "contracts:snapshot": "node scripts/contracts-snapshot.mjs --write",
     "contracts:verify": "node scripts/contracts-snapshot.mjs",
     "db:migrate": "npm run migrate -w @clubedarifa/db",
+    "db:issue-reset": "npm run issue-reset -w @clubedarifa/db --",
     "db:bootstrap": "npm run bootstrap -w @clubedarifa/db",
     "db:reset-test": "npm run reset-test -w @clubedarifa/db",
     "queue:install": "npm run queue:install -w @clubedarifa/worker",

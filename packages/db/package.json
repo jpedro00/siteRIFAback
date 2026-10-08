@@ -16,6 +16,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "migrate": "tsx src/cli/migrate.ts",
     "bootstrap": "tsx src/cli/bootstrap.ts",
+    "issue-reset": "tsx src/cli/issue-password-reset.ts",
     "reset-test": "tsx src/cli/reset-test-db.ts"
   },
   "dependencies": {

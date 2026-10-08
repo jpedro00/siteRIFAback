@@ -130,3 +130,13 @@ Todas aditivas; não alteram 0001–0022. Entram no próximo corte, depois de ba
 - **CORS:** adicionar as origens exatas do Organizer e do Admin quando publicados. O Organizer central escolhe a comunidade pelo cabeçalho `x-tenant-slug` SÓ em rota autenticada com vínculo conferido; `TENANT_HEADER_ENABLED` continua `false`.
 - **Storefront central:** `VITE_MARKETPLACE_MODE=central`, `VITE_API_BASE_URL`, `VITE_ORGANIZER_BASE_URL` e, se houver links antigos, `VITE_LEGACY_TENANT_SLUG`. Vitrines por domínio de comunidade continuam sem essa variável.
 - **Organizer:** `VITE_API_BASE_URL` e `VITE_STOREFRONT_BASE_URL` (o link "Criar comunidade" aponta para `/quero-criar-rifas`).
+
+## 8. Conta que não consegue entrar (sem provedor de e-mail ainda)
+
+Não se redefine senha por SQL. Quem opera o banco emite um **link de redefinição** e a pessoa escolhe a própria senha:
+
+1. Migration `0023` aplicada no banco e a página `/redefinir-senha` do Storefront publicada.
+2. Com a credencial administrativa do banco (e TLS validado pela CA):
+   `MIGRATION_DATABASE_URL=... DATABASE_SSL=true DATABASE_CA_CERT=... PASSWORD_RESET_URL=https://<storefront>/redefinir-senha npm run db:issue-reset -- pessoa@exemplo.com`
+3. O comando imprime o link UMA vez (vale 30 minutos, uso único). Entregue-o só ao dono da conta, por canal confiável.
+4. Ao concluir, todas as sessões da conta são revogadas. Fica em `audit_events` (`via: operator_cli`), sem o token.
