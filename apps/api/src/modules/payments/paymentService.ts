@@ -1,6 +1,7 @@
 import { withoutContext, withTenant, type PoolClient } from '@clubedarifa/db';
 import { RESERVATION_TTL_MINUTES, type OrderResponse } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
+import { creatorDisabledMethods } from '../../lib/paymentPrefs.js';
 import { ApiError } from '../../lib/apiError.js';
 import { log } from '../../lib/log.js';
 import {
@@ -155,6 +156,9 @@ export async function ensurePixPayment(
       throw ApiError.conflict('Este pedido não aceita mais pagamento.');
     }
     if (pedido.existing_payment) return { pronto: await montarPedido(client, input.orderId) };
+
+    // O criador pode ter pausado o PIX: sem cobranca nova (pagamento ja criado segue valendo).
+    if ((await creatorDisabledMethods(client, input.tenantId)).includes('PIX')) throw new ApiError('PAYMENT_METHOD_DISABLED');
 
     const limite = Date.now() + RESERVATION_TTL_MINUTES * 60_000;
     const fimReserva = pedido.reservation_expires_at

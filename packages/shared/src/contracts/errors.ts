@@ -40,6 +40,8 @@ export const API_ERROR_CODES = [
   'PAYMENTS_NOT_CONFIGURED',
   /** A conta de recebimento existe, mas a autorizacao esta invalida, vencida, revogada ou desconectando. */
   'PAYMENT_ACCOUNT_UNAVAILABLE',
+  /** O criador desligou este meio de pagamento (so quem pode, e so um suportado). */
+  'PAYMENT_METHOD_DISABLED',
   'INTERNAL',
 ] as const;
 
@@ -76,6 +78,7 @@ export const API_ERROR_STATUS: Readonly<Record<ApiErrorCode, number>> = Object.f
   FEATURE_NOT_IN_PLAN: 403,
   PAYMENTS_NOT_CONFIGURED: 503,
   PAYMENT_ACCOUNT_UNAVAILABLE: 503,
+  PAYMENT_METHOD_DISABLED: 409,
   INTERNAL: 500,
 });
 
@@ -99,5 +102,6 @@ export const API_ERROR_MESSAGES: Readonly<Record<ApiErrorCode, string>> = Object
   FEATURE_NOT_IN_PLAN: 'Esta funcionalidade não está incluída no plano da comunidade.',
   PAYMENTS_NOT_CONFIGURED: 'Esta comunidade ainda não habilitou o recebimento de pagamentos.',
   PAYMENT_ACCOUNT_UNAVAILABLE: 'O recebimento de pagamentos desta comunidade está indisponível no momento.',
+  PAYMENT_METHOD_DISABLED: 'O criador pausou o pagamento por PIX nesta comunidade. Tente novamente mais tarde.',
   INTERNAL: 'Erro interno. Tente novamente em instantes.',
 });

@@ -26,8 +26,10 @@ export type HttpMethod = (typeof HTTP_METHODS)[number];
  * Como a rota decide o contexto de comunidade.
  * - 'none'     : rota de plataforma ou de identidade global; nao abre contexto de tenant.
  * - 'resolved' : exige comunidade resolvida por dominio ou slug (middleware de tenant).
+ * - 'path'     : rota PUBLICA do marketplace; a comunidade vem do `:tenantSlug` do caminho e so
+ *                resolve comunidade ACTIVE. Nunca aceita cabecalho e nunca da acesso privado.
  */
-export type TenantScope = 'none' | 'resolved';
+export type TenantScope = 'none' | 'resolved' | 'path';
 
 export interface RouteContract {
   readonly method: HttpMethod;
@@ -56,10 +58,40 @@ const platformRoleSchema = z.enum(PLATFORM_ROLES);
 // ---------------------------------------------------------------------------
 
 export const loginRequestSchema = z.object({
-  email: z.string().email().max(320),
+  // Mesma normalizacao do cadastro: espaco herdado do teclado nao pode recusar a entrada.
+  email: z.string().trim().toLowerCase().email().max(320),
   password: z.string().min(1).max(512),
 });
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
+
+/**
+ * Recuperacao de senha (identidade GLOBAL: um fluxo so, para qualquer tipo de conta).
+ * O pedido responde igual exista o e-mail ou nao; o token chega por fora (e-mail) e nunca
+ * volta pela API.
+ */
+export const forgotPasswordRequestSchema = z.object({
+  email: z.string().trim().toLowerCase().email().max(320),
+});
+export type ForgotPasswordRequest = z.infer<typeof forgotPasswordRequestSchema>;
+
+export const forgotPasswordResponseSchema = z.object({ accepted: z.literal(true) });
+export type ForgotPasswordResponse = z.infer<typeof forgotPasswordResponseSchema>;
+
+/** Mesma regra de senha do cadastro (10 a 200 caracteres, confirmacao igual). */
+export const resetPasswordRequestSchema = z
+  .object({
+    token: z.string().trim().min(20).max(200),
+    password: z.string().min(10).max(200),
+    passwordConfirmation: z.string().min(10).max(200),
+  })
+  .refine((v) => v.password === v.passwordConfirmation, {
+    message: 'As senhas não coincidem.',
+    path: ['passwordConfirmation'],
+  });
+export type ResetPasswordRequest = z.infer<typeof resetPasswordRequestSchema>;
+
+export const resetPasswordResponseSchema = z.object({ reset: z.literal(true) });
+export type ResetPasswordResponse = z.infer<typeof resetPasswordResponseSchema>;
 
 export const loginResponseSchema = z.object({
   /**
@@ -442,6 +474,22 @@ export const ROUTE_CONTRACTS = {
     mfa: false,
     tenantScope: 'none',
   },
+  forgotPassword: {
+    method: 'POST',
+    path: '/api/auth/password/forgot',
+    summary: 'Pede a redefinicao de senha; a resposta e a mesma exista o e-mail ou nao.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'none',
+  },
+  resetPassword: {
+    method: 'POST',
+    path: '/api/auth/password/reset',
+    summary: 'Redefine a senha com o token recebido e revoga todas as sessoes da conta.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'none',
+  },
   accountOrders: {
     method: 'GET',
     path: '/api/account/orders',
@@ -500,6 +548,110 @@ export const ROUTE_CONTRACTS = {
     auth: true,
     mfa: false,
     tenantScope: 'none',
+  },
+  createMyCommunity: {
+    method: 'POST',
+    path: '/api/creator/communities',
+    summary: 'Cria a PROPRIA comunidade do usuario autenticado (vira OWNER), em uma transacao.',
+    auth: true,
+    mfa: false,
+    tenantScope: 'none',
+  },
+  marketplaceDraws: {
+    method: 'GET',
+    path: '/api/public/marketplace/draws',
+    summary: 'Rifas publicas de TODAS as comunidades ativas, com busca e paginacao.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'none',
+  },
+  marketplaceCreators: {
+    method: 'GET',
+    path: '/api/public/marketplace/creators',
+    summary: 'Criadores (comunidades ativas com rifas publicas), com busca e paginacao.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'none',
+  },
+  marketplaceCreator: {
+    method: 'GET',
+    path: '/api/public/marketplace/creators/:tenantSlug',
+    summary: 'Perfil publico de um criador e as rifas publicas dele.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'none',
+  },
+  marketplaceTenantBranding: {
+    method: 'GET',
+    path: '/api/public/marketplace/t/:tenantSlug',
+    summary: 'Marca publica da comunidade do caminho.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'path',
+  },
+  marketplaceDraw: {
+    method: 'GET',
+    path: '/api/public/marketplace/t/:tenantSlug/draws/:slug',
+    summary: 'Detalhe publico de uma rifa, na comunidade do caminho.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'path',
+  },
+  marketplaceDrawNumbers: {
+    method: 'GET',
+    path: '/api/public/marketplace/t/:tenantSlug/draws/:id/numbers',
+    summary: 'Numeros ocupados de uma rifa, na comunidade do caminho.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'path',
+  },
+  marketplaceCreateReservation: {
+    method: 'POST',
+    path: '/api/public/marketplace/t/:tenantSlug/draws/:id/reservations',
+    summary: 'Reserva numeros (30 min) na comunidade do caminho.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'path',
+  },
+  marketplaceCreateOrder: {
+    method: 'POST',
+    path: '/api/public/marketplace/t/:tenantSlug/orders',
+    summary: 'Cria o pedido a partir da reserva, na comunidade do caminho.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'path',
+  },
+  marketplacePublicOrder: {
+    method: 'GET',
+    path: '/api/public/marketplace/t/:tenantSlug/orders/:id',
+    summary: 'Comprovante do pedido, na comunidade do caminho.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'path',
+  },
+  marketplacePublicOrderPayment: {
+    method: 'POST',
+    path: '/api/public/marketplace/t/:tenantSlug/orders/:id/payment',
+    summary: 'Gera (ou devolve) o PIX do pedido, na comunidade do caminho.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'path',
+  },
+  marketplaceDrawResult: {
+    method: 'GET',
+    path: '/api/public/marketplace/t/:tenantSlug/draws/:slug/result',
+    summary: 'Resultado publico de uma rifa, na comunidade do caminho.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'path',
+  },
+  marketplaceDrawBuyers: {
+    method: 'GET',
+    path: '/api/public/marketplace/t/:tenantSlug/draws/:slug/buyers',
+    summary: 'Compradores (nomes abreviados) quando a rifa permite, na comunidade do caminho.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'path',
   },
   tenantContext: {
     method: 'GET',
@@ -995,6 +1147,15 @@ export const ROUTE_CONTRACTS = {
     tenantScope: 'resolved',
     tenantPermission: 'payment_account:read',
   },
+  setTenantPaymentMethod: {
+    method: 'PUT',
+    path: '/api/tenant/payment-methods',
+    summary: 'Liga ou desliga um meio de pagamento (so os suportados pela plataforma). Exige MFA.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'resolved',
+    tenantPermission: 'payment_account:manage',
+  },
   tenantPaymentMethods: {
     method: 'GET',
     path: '/api/tenant/payment-methods',
@@ -1046,6 +1207,25 @@ export const ROUTE_CONTRACTS = {
 export type RouteName = keyof typeof ROUTE_CONTRACTS;
 
 export const ROUTE_NAMES = Object.keys(ROUTE_CONTRACTS) as readonly RouteName[];
+
+/**
+ * Rotas da vitrine por comunidade e a variante do MARKETPLACE (comunidade no caminho).
+ * Mesmo handler, mesma resposta; so muda COMO a comunidade e escolhida: pelo `:tenantSlug` do
+ * caminho (publico, so comunidade ACTIVE), nunca por cabecalho. O cliente troca sozinho quando
+ * esta em modo marketplace, entao as telas continuam chamando os nomes de sempre.
+ */
+export const MARKETPLACE_ALIASES = {
+  publicTenantBranding: 'marketplaceTenantBranding',
+  publicDraw: 'marketplaceDraw',
+  publicDrawNumbers: 'marketplaceDrawNumbers',
+  createReservation: 'marketplaceCreateReservation',
+  createOrder: 'marketplaceCreateOrder',
+  publicOrder: 'marketplacePublicOrder',
+  publicOrderPayment: 'marketplacePublicOrderPayment',
+  publicDrawResult: 'marketplaceDrawResult',
+  publicDrawBuyers: 'marketplaceDrawBuyers',
+} as const satisfies Record<string, string>;
+export type MarketplaceAliasSource = keyof typeof MARKETPLACE_ALIASES;
 
 /** Chave canonica "METHOD path", usada pelo teste de contrato. */
 export function routeKey(contract: RouteContract): string {

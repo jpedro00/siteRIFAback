@@ -44,6 +44,8 @@ export const PAYMENT_METHOD_REASONS = [
   'NOT_SUPPORTED_YET',
   /** Boleto: falta politica de prazo x reserva x fechamento. */
   'RESERVATION_WINDOW_UNDEFINED',
+  /** O criador desligou um meio que a plataforma e a conta oferecem. */
+  'DISABLED_BY_CREATOR',
 ] as const;
 export type PaymentMethodReason = (typeof PAYMENT_METHOD_REASONS)[number];
 
@@ -116,6 +118,7 @@ export function mapProviderPaymentType(
  */
 export function resolvePaymentMethods(
   reported: ReadonlySet<PaymentMethodKind>,
+  disabledByCreator: ReadonlySet<PaymentMethodKind> = new Set(),
 ): PaymentMethodAvailability[] {
   return PAYMENT_METHOD_KINDS.map((kind): PaymentMethodAvailability => {
     const politica = PAYMENT_METHOD_POLICY[kind];
@@ -123,8 +126,23 @@ export function resolvePaymentMethods(
     if (!politica.platformEnabled) {
       return { kind, providerReported, enabled: false, reason: politica.disabledReason };
     }
+    if (providerReported && disabledByCreator.has(kind)) {
+      return { kind, providerReported, enabled: false, reason: 'DISABLED_BY_CREATOR' };
+    }
     return providerReported
       ? { kind, providerReported, enabled: true, reason: 'ENABLED' }
       : { kind, providerReported, enabled: false, reason: 'NOT_REPORTED_BY_PROVIDER' };
   });
 }
+
+/** Meios que o CRIADOR pode ligar/desligar: so os que a plataforma suporta de verdade. */
+export function creatorTogglableMethods(): PaymentMethodKind[] {
+  return PAYMENT_METHOD_KINDS.filter((k) => PAYMENT_METHOD_POLICY[k].platformEnabled);
+}
+
+export const setPaymentMethodRequestSchema = z.object({
+  method: z.enum(PAYMENT_METHOD_KINDS),
+  /** `true` liga, `false` desliga. Ligar so vale para meio suportado pela plataforma. */
+  enabled: z.boolean(),
+});
+export type SetPaymentMethodRequest = z.infer<typeof setPaymentMethodRequestSchema>;

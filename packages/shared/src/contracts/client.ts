@@ -1,4 +1,5 @@
 import {
+  MARKETPLACE_ALIASES,
   ROUTE_CONTRACTS,
   type RouteName,
   type AccountOrdersResponse,
@@ -8,8 +9,12 @@ import {
   type HealthResponse,
   type PlatformHealthResponse,
   type PlatformReconciliationResponse,
+  type ForgotPasswordRequest,
+  type ForgotPasswordResponse,
   type LoginRequest,
   type LoginResponse,
+  type ResetPasswordRequest,
+  type ResetPasswordResponse,
   type MfaCodeRequest,
   type MfaEnrollStartResponse,
   type MfaVerifyResponse,
@@ -70,9 +75,14 @@ import type {
   PublishResultRequest,
   RecordDeliveryRequest,
 } from './result.js';
-import type { PaymentMethodsResponse } from './paymentMethods.js';
+import type { PaymentMethodsResponse, SetPaymentMethodRequest } from './paymentMethods.js';
 import type {
   CommunityContent,
+  CreateCreatorCommunityRequest,
+  CreateCreatorCommunityResponse,
+  MarketplaceCreatorListResponse,
+  MarketplaceCreatorProfile,
+  MarketplaceDrawListResponse,
   PublicDrawBuyersResponse,
   ReviewReconciliationRequest,
   TenantBuyersResponse,
@@ -96,6 +106,8 @@ export interface RouteResponses {
   publicTenantBranding: PublicTenantBranding;
   register: RegisterResponse;
   login: LoginResponse;
+  forgotPassword: ForgotPasswordResponse;
+  resetPassword: ResetPasswordResponse;
   logout: void;
   logoutAll: { revoked: number };
   session: SessionResponse;
@@ -105,6 +117,20 @@ export interface RouteResponses {
   tenantContext: TenantContextResponse;
   tenantAudit: AuditListResponse;
   tenantCommunity: CommunityContent;
+  createMyCommunity: CreateCreatorCommunityResponse;
+  setTenantPaymentMethod: PaymentMethodsResponse;
+  marketplaceDraws: MarketplaceDrawListResponse;
+  marketplaceCreators: MarketplaceCreatorListResponse;
+  marketplaceCreator: MarketplaceCreatorProfile;
+  marketplaceTenantBranding: PublicTenantBranding;
+  marketplaceDraw: PublicDrawDetail;
+  marketplaceDrawNumbers: DrawNumbersResponse;
+  marketplaceCreateReservation: ReservationResponse;
+  marketplaceCreateOrder: OrderResponse;
+  marketplacePublicOrder: OrderResponse;
+  marketplacePublicOrderPayment: OrderResponse;
+  marketplaceDrawResult: PublicDrawResult;
+  marketplaceDrawBuyers: PublicDrawBuyersResponse;
   updateTenantCommunity: CommunityContent;
   uploadMedia: UploadMediaResponse;
   publicMedia: unknown;
@@ -170,9 +196,13 @@ export interface RouteBodies {
   mfaEnrollConfirm: MfaCodeRequest;
   mfaVerify: MfaCodeRequest;
   platformCreateTenant: CreateTenantRequest;
+  forgotPassword: ForgotPasswordRequest;
+  resetPassword: ResetPasswordRequest;
   register: RegisterRequest;
   createReservation: CreateReservationRequest;
   createOrder: CreateOrderRequest;
+  marketplaceCreateReservation: CreateReservationRequest;
+  marketplaceCreateOrder: CreateOrderRequest;
   createDraw: CreateDrawRequest;
   updateDraw: UpdateDrawRequest;
   publishDrawResult: PublishResultRequest;
@@ -187,6 +217,8 @@ export interface RouteBodies {
   platformUpdatePlan: UpdatePlanRequest;
   connectPaymentAccount: ConnectPaymentAccountRequest;
   updateTenantCommunity: UpdateCommunityRequest;
+  createMyCommunity: CreateCreatorCommunityRequest;
+  setTenantPaymentMethod: SetPaymentMethodRequest;
   uploadMedia: UploadMediaRequest;
   platformReviewReconciliation: ReviewReconciliationRequest;
 }
@@ -289,6 +321,21 @@ export class ApiClient {
     this.#tenantSlug = slug;
   }
 
+  #marketplaceSlug: string | null = null;
+
+  /**
+   * Modo marketplace: as rotas publicas da vitrine passam a usar a variante com a comunidade no
+   * CAMINHO (`/api/public/marketplace/t/:tenantSlug/...`). As telas continuam chamando os mesmos
+   * nomes (`publicDraw`, `createReservation`...); a troca acontece aqui.
+   */
+  setMarketplaceTenant(slug: string | null): void {
+    this.#marketplaceSlug = slug;
+  }
+
+  get marketplaceTenant(): string | null {
+    return this.#marketplaceSlug;
+  }
+
   get tenantSlug(): string | null {
     return this.#tenantSlug;
   }
@@ -304,7 +351,13 @@ export class ApiClient {
     body?: RouteBody<N>,
     options?: RequestOptions,
   ): Promise<RouteResponses[N]> {
-    const contract = ROUTE_CONTRACTS[name];
+    let routeName: RouteName = name;
+    let params = options?.params;
+    if (this.#marketplaceSlug && Object.hasOwn(MARKETPLACE_ALIASES, name)) {
+      routeName = MARKETPLACE_ALIASES[name as keyof typeof MARKETPLACE_ALIASES];
+      params = { ...params, tenantSlug: this.#marketplaceSlug };
+    }
+    const contract = ROUTE_CONTRACTS[routeName];
 
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -312,7 +365,7 @@ export class ApiClient {
       headers['x-tenant-slug'] = this.#tenantSlug;
     }
 
-    const caminho = applyPathParams(contract.path, options?.params);
+    const caminho = applyPathParams(contract.path, params);
 
     const response = await fetch(buildUrl(this.#baseUrl, caminho, options?.query), {
       method: contract.method,

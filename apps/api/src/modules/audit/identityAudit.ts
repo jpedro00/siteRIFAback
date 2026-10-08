@@ -44,6 +44,8 @@ export const AUTH_AUDIT_ACTIONS = {
   MFA_ENROLLMENT_CONFIRMED: 'auth.mfa.enrollment_confirmed',
   MFA_VERIFIED: 'auth.mfa.verified',
   ACCOUNT_LOCKED: 'auth.account_locked',
+  PASSWORD_RESET_REQUESTED: 'auth.password_reset.requested',
+  PASSWORD_RESET_COMPLETED: 'auth.password_reset.completed',
 } as const;
 
 export type AuthAuditAction = (typeof AUTH_AUDIT_ACTIONS)[keyof typeof AUTH_AUDIT_ACTIONS];

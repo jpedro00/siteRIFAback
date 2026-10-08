@@ -112,3 +112,46 @@ Permanece `false`. Antes de ligar, validar em sandbox real: assinatura, renovaç
 
 Ela entra no corte final, junto com 0017–0021, **depois** do backup do banco e com o legado parado para escrita.
 Atenção: o `RIFAS` (legado) continua sem as 0017–0022; nada foi aplicado nele.
+
+## 7. Migrations 0023–0026 (prontas no repositório, NÃO aplicadas em nenhum banco de produção)
+
+Todas aditivas; não alteram 0001–0022. Entram no próximo corte, depois de backup e com a mesma disciplina da §6.
+
+| Migration | O que faz |
+|---|---|
+| `0023_password_reset` | `password_reset_tokens` (só o hash do token; uso único; sem GRANT) + `app.request_password_reset` / `app.reset_password` (revoga todas as sessões). |
+| `0024_creator_onboarding` | `app.create_own_community`: o próprio usuário cria a comunidade e vira OWNER numa transação; idempotente (inclusive em corrida). |
+| `0025_marketplace` | `app.marketplace_page` / `app.marketplace_creators` (SECURITY DEFINER, projeção mínima) para a lista pública entre comunidades, sem abrir SELECT global nem BYPASSRLS. |
+| `0026_payment_method_preferences` | `tenant_payment_preferences`: o criador pausa/retoma meios que a plataforma suporta (hoje só o PIX). |
+
+### Configuração de produção que essas mudanças pedem
+
+- **API:** `PASSWORD_RESET_URL` (https, página `/redefinir-senha` do Storefront), `CREATOR_MAX_COMMUNITIES` (padrão 3) e, para a entrega do token, um provedor de e-mail ligado a `PasswordResetNotifier` (hoje NÃO existe: o pedido é aceito e o token não chega a ninguém).
+- **CORS:** adicionar as origens exatas do Organizer e do Admin quando publicados. O Organizer central escolhe a comunidade pelo cabeçalho `x-tenant-slug` SÓ em rota autenticada com vínculo conferido; `TENANT_HEADER_ENABLED` continua `false`.
+- **Storefront central:** `VITE_MARKETPLACE_MODE=central`, `VITE_API_BASE_URL`, `VITE_ORGANIZER_BASE_URL` e, se houver links antigos, `VITE_LEGACY_TENANT_SLUG`. Vitrines por domínio de comunidade continuam sem essa variável.
+- **Organizer:** `VITE_API_BASE_URL` e `VITE_STOREFRONT_BASE_URL` (o link "Criar comunidade" aponta para `/quero-criar-rifas`).
+
+## 8. Conta que não consegue entrar (sem provedor de e-mail ainda)
+
+Não se redefine senha por SQL. Quem opera o banco emite um **link de redefinição** e a pessoa escolhe a própria senha:
+
+1. Migration `0023` aplicada no banco e a página `/redefinir-senha` do Storefront publicada.
+2. Com a credencial administrativa do banco (e TLS validado pela CA):
+   `MIGRATION_DATABASE_URL=... DATABASE_SSL=true DATABASE_CA_CERT=... PASSWORD_RESET_URL=https://<storefront>/redefinir-senha npm run db:issue-reset -- pessoa@exemplo.com`
+3. O comando imprime o link UMA vez (vale 30 minutos, uso único). Entregue-o só ao dono da conta, por canal confiável.
+4. Ao concluir, todas as sessões da conta são revogadas. Fica em `audit_events` (`via: operator_cli`), sem o token.
+
+## 9. Ninguém consegue entrar: cookie de sessão bloqueado (site e API em domínios diferentes)
+
+**Sintoma:** cadastro funciona, o login responde 200, mas a pessoa volta para a tela de login. **Causa:** o site (`*.vercel.app`) e a API (`*.onrender.com`) são sites diferentes; o cookie de sessão vira cookie de terceiros e Safari, Firefox, Brave, aba anônima e o Chrome atual o bloqueiam. A API está correta (cadastro 201, login 200, sessão 200).
+
+**Correção (primeira parte, sem mudar o backend):** os `vercel.json` do Storefront, Organizer e Admin passam a **proxiar `/api/*`** para a API do Render. O cookie passa a ser do próprio domínio do app.
+
+Em CADA projeto Vercel (Storefront, Organizer, Admin), depois do merge:
+
+1. `VITE_API_BASE_URL` = a **própria URL do projeto** (ex.: `https://rifas-self.vercel.app`), e não mais `https://clubedarifa-api.onrender.com`.
+2. Storefront: `VITE_MARKETPLACE_MODE=central` (o proxy não leva a origem nas leituras GET, então a vitrine por domínio de comunidade não resolve a comunidade por esse caminho; o marketplace identifica a comunidade pelo caminho).
+3. Novo deploy de Production (a variável entra no build).
+4. `CORS_ORIGINS` da API continua com as origens exatas dos apps.
+
+Se mesmo assim o navegador bloquear o cookie, a tela de login agora mostra a mensagem "o navegador bloqueou o cookie de sessão" em vez de só reaparecer.

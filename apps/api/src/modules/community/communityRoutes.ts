@@ -1,12 +1,14 @@
 import type { Request, RequestHandler, Response } from 'express';
-import { withPlatform, withTenant } from '@clubedarifa/db';
+import { withPlatform, withTenant, withoutContext } from '@clubedarifa/db';
 import {
   MEDIA_MAX_BYTES,
   MEDIA_PATH_PREFIX,
+  createCreatorCommunityRequestSchema,
   reviewReconciliationRequestSchema,
   updateCommunityRequestSchema,
   uploadMediaRequestSchema,
   type CommunityContent,
+  type CreateCreatorCommunityResponse,
   type PublicDrawBuyersResponse,
   type TenantBuyer,
   type TenantBuyersResponse,
@@ -16,6 +18,7 @@ import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
 import { decodeCursor, paginate, parseLimit } from '../../lib/cursor.js';
 import { recordAuditEvent } from '../audit/auditService.js';
+import { isUniqueViolation } from '../../lib/pgError.js';
 
 /** M01 · marca, contatos e paginas da comunidade. M02 · imagens. M07 · compradores (lista util). */
 
@@ -96,6 +99,50 @@ function toContent(row: BrandingRow | undefined): CommunityContent {
 
 export function buildCommunityHandlers(deps: AppDeps): Record<string, RequestHandler> {
   return {
+    /**
+     * Onboarding do criador. A conta e a MESMA do participante: criar a comunidade da ao usuario
+     * o vinculo OWNER. Tudo (comunidade, vinculo, marca, auditoria, evento) acontece em UMA
+     * transacao dentro de `app.create_own_community`; o usuario vem SEMPRE da sessao.
+     */
+    createMyCommunity: asyncHandler(async (req, res) => {
+      const session = requireSession(req);
+      const body = createCreatorCommunityRequestSchema.parse(req.body);
+      const contact: Record<string, string> = {};
+      for (const [k, v] of Object.entries(body.contact ?? {})) {
+        if (typeof v === 'string' && v.trim() !== '') contact[k] = v.trim();
+      }
+
+      let row: { tenant_id: string; slug: string; name: string; status: string; created_at: string; created: boolean } | undefined;
+      try {
+        row = await withoutContext(deps.pool, async (client) => {
+          const { rows } = await client.query<NonNullable<typeof row>>(
+            'SELECT tenant_id, slug, name, status, created_at, created FROM app.create_own_community($1, $2, $3, $4::jsonb, $5)',
+            [session.userId, body.slug, body.name, JSON.stringify(contact), deps.config.CREATOR_MAX_COMMUNITIES],
+          );
+          return rows[0];
+        });
+      } catch (error) {
+        if (isUniqueViolation(error, 'tenants_slug_key')) {
+          throw ApiError.conflict('Já existe uma comunidade com esse endereço. Escolha outro.');
+        }
+        if ((error as { code?: string }).code === 'P0001') {
+          throw ApiError.conflict('Você já atingiu o limite de comunidades da sua conta.');
+        }
+        throw error;
+      }
+      if (!row) throw ApiError.badRequest('Não foi possível criar a comunidade.');
+
+      const response: CreateCreatorCommunityResponse = {
+        id: row.tenant_id,
+        slug: row.slug,
+        name: row.name,
+        status: row.status,
+        createdAt: new Date(row.created_at).toISOString(),
+        created: row.created,
+      };
+      res.status(row.created ? 201 : 200).set('Cache-Control', 'no-store').json(response);
+    }),
+
     tenantCommunity: asyncHandler(async (req, res) => {
       const tenant = requireTenant(req);
       const row = await withTenant(deps.pool, { tenantId: tenant.tenantId }, async (client) => {

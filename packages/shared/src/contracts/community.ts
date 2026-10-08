@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { hexColorSchema, imageRefSchema } from './draws.js';
+import { hexColorSchema, imageRefSchema, publicDrawSummarySchema } from './draws.js';
 
 /**
  * Comunidade: marca, contatos, paginas institucionais, imagens e compradores.
@@ -140,3 +140,93 @@ export const reviewReconciliationRequestSchema = z.object({
   note: z.string().trim().max(2000).optional(),
 });
 export type ReviewReconciliationRequest = z.infer<typeof reviewReconciliationRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// Onboarding self-service de criadores (identidade GLOBAL: sem segunda conta)
+// ---------------------------------------------------------------------------
+/** Enderecos que nunca podem virar identificador de comunidade (rotas e servicos da plataforma). */
+export const RESERVED_COMMUNITY_SLUGS = [
+  'admin', 'api', 'app', 'www', 'painel', 'organizer', 'organizador', 'storefront', 'vitrine',
+  'login', 'cadastro', 'conta', 'suporte', 'support', 'status', 'mail', 'static', 'assets',
+  'rifas', 'sorteios', 'criador', 'plataforma', 'clubedarifa', 'tironirifa',
+] as const;
+
+export const creatorSlugSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(3)
+  .max(63)
+  .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, 'Use letras minúsculas, números e hífen.')
+  .refine((v) => !(RESERVED_COMMUNITY_SLUGS as readonly string[]).includes(v), {
+    message: 'Este endereço é reservado. Escolha outro.',
+  });
+
+export const createCreatorCommunityRequestSchema = z.object({
+  name: z.string().trim().min(2).max(160),
+  slug: creatorSlugSchema,
+  contact: z
+    .object({
+      whatsapp: shortText(30).optional(),
+      phone: shortText(30).optional(),
+      email: z.string().trim().toLowerCase().email().max(320).optional(),
+    })
+    .strict()
+    .optional(),
+});
+export type CreateCreatorCommunityRequest = z.infer<typeof createCreatorCommunityRequestSchema>;
+
+export const createCreatorCommunityResponseSchema = z.object({
+  id: z.string().uuid(),
+  slug: z.string(),
+  name: z.string(),
+  status: z.string(),
+  createdAt: z.string(),
+  /** `false` quando o pedido foi repetido e a comunidade ja existia (idempotencia). */
+  created: z.boolean(),
+});
+export type CreateCreatorCommunityResponse = z.infer<typeof createCreatorCommunityResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Marketplace universal (leitura publica entre comunidades)
+// ---------------------------------------------------------------------------
+/** Rifa publica do marketplace: o mesmo resumo da vitrine + de quem e. */
+export const marketplaceDrawSchema = publicDrawSummarySchema.extend({
+  tenantSlug: z.string(),
+  tenantName: z.string(),
+  tenantLogoUrl: z.string().nullable(),
+});
+export type MarketplaceDraw = z.infer<typeof marketplaceDrawSchema>;
+
+export const marketplaceDrawListResponseSchema = z.object({
+  draws: z.array(marketplaceDrawSchema),
+  nextCursor: z.string().nullable(),
+});
+export type MarketplaceDrawListResponse = z.infer<typeof marketplaceDrawListResponseSchema>;
+
+export const marketplaceCreatorSchema = z.object({
+  slug: z.string(),
+  name: z.string(),
+  logoUrl: z.string().nullable(),
+  description: z.string().nullable(),
+  publicDraws: z.number().int().nonnegative(),
+  activeDraws: z.number().int().nonnegative(),
+});
+export type MarketplaceCreator = z.infer<typeof marketplaceCreatorSchema>;
+
+export const marketplaceCreatorListResponseSchema = z.object({
+  creators: z.array(marketplaceCreatorSchema),
+  nextCursor: z.string().nullable(),
+});
+export type MarketplaceCreatorListResponse = z.infer<typeof marketplaceCreatorListResponseSchema>;
+
+/** Perfil publico do criador: marca + as rifas publicas dele. */
+export const marketplaceCreatorProfileSchema = z.object({
+  creator: marketplaceCreatorSchema.extend({
+    bannerUrl: z.string().nullable(),
+    contact: z.record(z.string()),
+  }),
+  draws: z.array(marketplaceDrawSchema),
+  nextCursor: z.string().nullable(),
+});
+export type MarketplaceCreatorProfile = z.infer<typeof marketplaceCreatorProfileSchema>;

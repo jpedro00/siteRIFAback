@@ -110,6 +110,24 @@ const configSchema = z.object({
   LOGIN_LOCK_MINUTES: z.coerce.number().int().positive().default(15),
 
   /**
+   * Recuperacao de senha. O token vale POUCO e so uma vez; um novo pedido invalida o anterior.
+   * `COOLDOWN` e o intervalo minimo entre dois pedidos da MESMA conta (evita usar o endpoint
+   * para encher a caixa de entrada de alguem).
+   */
+  /** Quantas comunidades uma mesma conta pode ter como dona (onboarding self-service). */
+  CREATOR_MAX_COMMUNITIES: z.coerce.number().int().min(1).max(50).default(3),
+  PASSWORD_RESET_TTL_MINUTES: z.coerce.number().int().min(5).max(120).default(30),
+  PASSWORD_RESET_COOLDOWN_SECONDS: z.coerce.number().int().min(0).max(3600).default(60),
+  /**
+   * Pagina do frontend que recebe o token. O token vai no FRAGMENTO (`#token=...`): fragmento
+   * nao e enviado ao servidor nem vai em Referer ou em log de acesso. Em producao, https.
+   */
+  PASSWORD_RESET_URL: z
+    .string()
+    .optional()
+    .transform((v) => (v?.trim() ? v.trim() : undefined)),
+
+  /**
    * Limite por ORIGEM, aplicado antes da autenticacao.
    *
    * Defende a plataforma de uma origem que ataca MUITAS contas — o bloqueio por
@@ -284,6 +302,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       {
         message: 'PUBLIC_API_BASE_URL precisa ser https:// em staging e em producao.',
         path: ['PUBLIC_API_BASE_URL'],
+      },
+    )
+    .refine(
+      (value) =>
+        !(
+          (value.NODE_ENV === 'production' || value.NODE_ENV === 'staging') &&
+          value.PASSWORD_RESET_URL !== undefined &&
+          !value.PASSWORD_RESET_URL.startsWith('https://')
+        ),
+      {
+        message: 'PASSWORD_RESET_URL precisa ser https:// em staging e em producao.',
+        path: ['PASSWORD_RESET_URL'],
       },
     )
     .refine(

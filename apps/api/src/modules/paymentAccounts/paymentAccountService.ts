@@ -1,10 +1,12 @@
 import { withTenant } from '@clubedarifa/db';
+import { recordAuditEvent } from '../audit/auditService.js';
 import {
   PaymentAccountUnavailableError,
   PaymentsNotConfiguredError,
   PspUnavailableError,
 } from '@clubedarifa/psp';
 import {
+  creatorTogglableMethods,
   mapProviderPaymentType,
   resolvePaymentMethods,
   type PaymentAccount,
@@ -14,6 +16,7 @@ import {
 } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
+import { creatorDisabledMethods } from '../../lib/paymentPrefs.js';
 
 /**
  * Recebimentos da comunidade (FLUXO B). A API NUNCA devolve credencial: o que sai daqui vem de
@@ -159,11 +162,58 @@ export async function handleOAuthCallback(
  * Sem conta conectada ou com o provedor fora do ar, a resposta diz isso — nunca inventa
  * uma lista.
  */
+/** Meios que o criador desligou nesta comunidade (vazio = nenhum). */
+export async function readDisabledMethods(deps: AppDeps, tenantId: string): Promise<Set<PaymentMethodKind>> {
+  return withTenant(deps.pool, { tenantId }, async (client) => {
+    return new Set((await creatorDisabledMethods(client, tenantId)) as PaymentMethodKind[]);
+  });
+}
+
+/**
+ * O criador liga/desliga um meio. So vale para meio que a PLATAFORMA suporta de verdade: nao ha
+ * como "ligar" cartao ou boleto por aqui, e nao existe botao para isso.
+ */
+export async function setMethodEnabled(
+  deps: AppDeps,
+  input: { tenantId: string; userId: string; method: PaymentMethodKind; enabled: boolean; ip: string | null; userAgent: string | null },
+): Promise<void> {
+  if (!creatorTogglableMethods().includes(input.method)) {
+    throw ApiError.badRequest('Este meio de pagamento não está disponível na plataforma e não pode ser alterado.');
+  }
+  await withTenant(deps.pool, { tenantId: input.tenantId, userId: input.userId }, async (client) => {
+    const { rows } = await client.query<{ disabled_methods: string[] }>(
+      'SELECT disabled_methods FROM tenant_payment_preferences WHERE tenant_id = $1',
+      [input.tenantId],
+    );
+    const atual = new Set(rows[0]?.disabled_methods ?? []);
+    if (input.enabled) atual.delete(input.method);
+    else atual.add(input.method);
+    await client.query(
+      `INSERT INTO tenant_payment_preferences (tenant_id, disabled_methods, updated_by)
+       VALUES ($1, $2::text[], $3)
+       ON CONFLICT (tenant_id) DO UPDATE
+         SET disabled_methods = EXCLUDED.disabled_methods, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+      [input.tenantId, [...atual], input.userId],
+    );
+    await recordAuditEvent(client, {
+      tenantId: input.tenantId,
+      actorUserId: input.userId,
+      action: 'payment_methods.updated',
+      targetType: 'tenant',
+      targetId: input.tenantId,
+      after: { method: input.method, enabled: input.enabled },
+      ip: input.ip,
+      userAgent: input.userAgent,
+    });
+  });
+}
+
 export async function getPaymentMethods(
   deps: AppDeps,
   input: { tenantId: string },
 ): Promise<PaymentMethodsResponse> {
   const checkedAt = new Date().toISOString();
+  const desligados = await readDisabledMethods(deps, input.tenantId);
   const runtime = deps.paymentAccounts;
   if (!runtime || !runtime.enabled) {
     return { status: 'NO_ACCOUNT', provider: null, accountId: null, methods: resolvePaymentMethods(new Set()), checkedAt };
@@ -174,10 +224,10 @@ export async function getPaymentMethods(
     resolucao = await runtime.resolver.forTenant(input.tenantId);
   } catch (error) {
     if (error instanceof PaymentsNotConfiguredError) {
-      return { status: 'NO_ACCOUNT', provider: null, accountId: null, methods: resolvePaymentMethods(new Set()), checkedAt };
+      return { status: 'NO_ACCOUNT', provider: null, accountId: null, methods: resolvePaymentMethods(new Set(), desligados), checkedAt };
     }
     if (error instanceof PaymentAccountUnavailableError) {
-      return { status: 'UNAVAILABLE', provider: 'MERCADO_PAGO', accountId: null, methods: resolvePaymentMethods(new Set()), checkedAt };
+      return { status: 'UNAVAILABLE', provider: 'MERCADO_PAGO', accountId: null, methods: resolvePaymentMethods(new Set(), desligados), checkedAt };
     }
     throw error;
   }
@@ -192,7 +242,7 @@ export async function getPaymentMethods(
       status: 'OK',
       provider: 'MERCADO_PAGO',
       accountId: resolucao.paymentAccountId,
-      methods: resolvePaymentMethods(reportados),
+      methods: resolvePaymentMethods(reportados, desligados),
       checkedAt,
     };
   } catch (error) {
@@ -201,7 +251,7 @@ export async function getPaymentMethods(
         status: 'UNAVAILABLE',
         provider: 'MERCADO_PAGO',
         accountId: resolucao.paymentAccountId,
-        methods: resolvePaymentMethods(new Set()),
+        methods: resolvePaymentMethods(new Set(), desligados),
         checkedAt,
       };
     }

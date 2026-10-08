@@ -4,6 +4,7 @@ import type { LoginThrottle } from './lib/loginThrottle.js';
 import type { SecretBox } from './lib/secretBox.js';
 import type { PaymentAccountsRuntime } from '@clubedarifa/payment-accounts';
 import type { BillingGateway } from '@clubedarifa/billing';
+import type { PasswordResetNotifier } from './lib/passwordResetNotifier.js';
 
 /** Dependencias injetadas nas rotas. Facilita trocar o pool nos testes. */
 export interface AppDeps {
@@ -29,6 +30,11 @@ export interface AppDeps {
    * o dinheiro do participante e o da assinatura nao passam pelo mesmo caminho.
    */
   readonly billing: BillingDeps | null;
+  /**
+   * Entrega do token de recuperacao de senha (e-mail). Opcional: sem ele, o token e gerado
+   * mas NAO ha como entrega-lo, e o pedido fica registrado em log SEM o token.
+   */
+  readonly passwordResetNotifier?: PasswordResetNotifier;
 }
 
 export interface BillingDeps {

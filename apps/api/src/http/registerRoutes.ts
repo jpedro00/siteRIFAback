@@ -1,8 +1,9 @@
 import type { Express, RequestHandler } from 'express';
-import { ROUTE_CONTRACTS, ROUTE_NAMES, type RouteName } from '@clubedarifa/shared';
+import { MARKETPLACE_ALIASES, ROUTE_CONTRACTS, ROUTE_NAMES, type RouteName } from '@clubedarifa/shared';
 import type { AppDeps } from '../deps.js';
 import { authenticate, authorizeRoute, enforceMfaGate } from '../middleware/authorize.js';
-import { tenantResolver } from '../middleware/tenantResolver.js';
+import { pathTenantResolver, tenantResolver } from '../middleware/tenantResolver.js';
+import { buildMarketplaceHandlers } from '../modules/marketplace/marketplaceRoutes.js';
 import { buildAuthHandlers } from '../modules/identity/authRoutes.js';
 import { buildTenantHandlers } from '../modules/tenancy/tenantRoutes.js';
 import { buildHealthHandler } from '../modules/health/healthRoutes.js';
@@ -48,7 +49,14 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
     ...buildBillingHandlers(deps),
     ...buildPaymentAccountHandlers(deps),
     ...buildCommunityHandlers(deps),
+    ...buildMarketplaceHandlers(deps),
   } as Partial<Record<RouteName, RequestHandler>>;
+
+  // Variantes do marketplace: o MESMO handler da vitrine por comunidade; so a escolha da
+  // comunidade muda (caminho, em vez de dominio). Nao ha handler duplicado para divergir.
+  for (const [original, alias] of Object.entries(MARKETPLACE_ALIASES)) {
+    handlers[alias as RouteName] = handlers[original as RouteName] as RequestHandler;
+  }
 
   const missing = ROUTE_NAMES.filter((name) => handlers[name] === undefined);
   if (missing.length > 0) {
@@ -70,6 +78,8 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
     //    a vitrine publica resolve a comunidade sem exigir vinculo.
     if (contract.tenantScope === 'resolved') {
       chain.push(tenantResolver(deps, { requireMembership: contract.auth }));
+    } else if (contract.tenantScope === 'path') {
+      chain.push(pathTenantResolver(deps));
     }
 
     // 3. Trava global de RN12.
