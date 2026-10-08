@@ -16,6 +16,7 @@ import {
 } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
+import { creatorDisabledMethods } from '../../lib/paymentPrefs.js';
 
 /**
  * Recebimentos da comunidade (FLUXO B). A API NUNCA devolve credencial: o que sai daqui vem de
@@ -164,11 +165,7 @@ export async function handleOAuthCallback(
 /** Meios que o criador desligou nesta comunidade (vazio = nenhum). */
 export async function readDisabledMethods(deps: AppDeps, tenantId: string): Promise<Set<PaymentMethodKind>> {
   return withTenant(deps.pool, { tenantId }, async (client) => {
-    const { rows } = await client.query<{ disabled_methods: string[] }>(
-      'SELECT disabled_methods FROM tenant_payment_preferences WHERE tenant_id = $1',
-      [tenantId],
-    );
-    return new Set((rows[0]?.disabled_methods ?? []) as PaymentMethodKind[]);
+    return new Set((await creatorDisabledMethods(client, tenantId)) as PaymentMethodKind[]);
   });
 }
 

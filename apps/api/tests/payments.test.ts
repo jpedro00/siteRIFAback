@@ -205,6 +205,17 @@ describe.skipIf(!hasTestDatabase)(`Pagamento PIX ${hasTestDatabase ? '' : skipRe
       expect((await reservar(harness, drawId, [60, 61])).status).toBe(201);
     });
 
+    it('migration 0026 ainda NAO aplicada: reserva e PIX seguem funcionando (codigo pode ir antes da migration)', async () => {
+      await harness.owner.query('ALTER TABLE tenant_payment_preferences RENAME TO tenant_payment_preferences_ausente');
+      try {
+        const compra = await comprar([70, 71]);
+        expect(compra.pedido.status).toBe('PENDENTE');
+        expect(compra.pedido.payment).toMatchObject({ status: 'PENDENTE' });
+      } finally {
+        await harness.owner.query('ALTER TABLE tenant_payment_preferences_ausente RENAME TO tenant_payment_preferences');
+      }
+    });
+
     it('pedido de OUTRA comunidade nao gera PIX', async () => {
       const { orderId } = await comprar([16]);
       const outra = unique('alheia-');

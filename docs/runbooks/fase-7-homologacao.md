@@ -140,3 +140,18 @@ Não se redefine senha por SQL. Quem opera o banco emite um **link de redefiniç
    `MIGRATION_DATABASE_URL=... DATABASE_SSL=true DATABASE_CA_CERT=... PASSWORD_RESET_URL=https://<storefront>/redefinir-senha npm run db:issue-reset -- pessoa@exemplo.com`
 3. O comando imprime o link UMA vez (vale 30 minutos, uso único). Entregue-o só ao dono da conta, por canal confiável.
 4. Ao concluir, todas as sessões da conta são revogadas. Fica em `audit_events` (`via: operator_cli`), sem o token.
+
+## 9. Ninguém consegue entrar: cookie de sessão bloqueado (site e API em domínios diferentes)
+
+**Sintoma:** cadastro funciona, o login responde 200, mas a pessoa volta para a tela de login. **Causa:** o site (`*.vercel.app`) e a API (`*.onrender.com`) são sites diferentes; o cookie de sessão vira cookie de terceiros e Safari, Firefox, Brave, aba anônima e o Chrome atual o bloqueiam. A API está correta (cadastro 201, login 200, sessão 200).
+
+**Correção (primeira parte, sem mudar o backend):** os `vercel.json` do Storefront, Organizer e Admin passam a **proxiar `/api/*`** para a API do Render. O cookie passa a ser do próprio domínio do app.
+
+Em CADA projeto Vercel (Storefront, Organizer, Admin), depois do merge:
+
+1. `VITE_API_BASE_URL` = a **própria URL do projeto** (ex.: `https://rifas-self.vercel.app`), e não mais `https://clubedarifa-api.onrender.com`.
+2. Storefront: `VITE_MARKETPLACE_MODE=central` (o proxy não leva a origem nas leituras GET, então a vitrine por domínio de comunidade não resolve a comunidade por esse caminho; o marketplace identifica a comunidade pelo caminho).
+3. Novo deploy de Production (a variável entra no build).
+4. `CORS_ORIGINS` da API continua com as origens exatas dos apps.
+
+Se mesmo assim o navegador bloquear o cookie, a tela de login agora mostra a mensagem "o navegador bloqueou o cookie de sessão" em vez de só reaparecer.

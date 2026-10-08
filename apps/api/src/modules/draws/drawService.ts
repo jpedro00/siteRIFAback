@@ -28,6 +28,7 @@ import {
   type UpdateDrawRequest,
 } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
+import { creatorDisabledMethods } from '../../lib/paymentPrefs.js';
 import { ApiError } from '../../lib/apiError.js';
 import { isUniqueViolation } from '../../lib/pgError.js';
 import { paginate, type Keyset } from '../../lib/cursor.js';
@@ -434,11 +435,7 @@ export async function createReservation(
     }
 
     // O criador pausou o PIX: nao segura numeros de quem nao tem como pagar.
-    const prefs = await client.query<{ disabled_methods: string[] }>(
-      'SELECT disabled_methods FROM tenant_payment_preferences WHERE tenant_id = $1',
-      [input.tenantId],
-    );
-    if (prefs.rows[0]?.disabled_methods.includes('PIX')) throw new ApiError('PAYMENT_METHOD_DISABLED');
+    if ((await creatorDisabledMethods(client, input.tenantId)).includes('PIX')) throw new ApiError('PAYMENT_METHOD_DISABLED');
 
     // Minimo/maximo de numeros por pedido: regra do organizador, conferida aqui.
     const limites = personalizacaoResolvida({ customization: draw.customization ?? {} } as DrawRow);
