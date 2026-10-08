@@ -36,7 +36,7 @@
     "dev:worker": "npm run prepare:internal && npm run dev -w @clubedarifa/worker"
   },
   "devDependencies": {
-    "@eslint/js": "^9.17.0",
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.10.2",
     "dotenv": "^16.4.7",
     "eslint": "^9.17.0",
