@@ -155,3 +155,27 @@ Em CADA projeto Vercel (Storefront, Organizer, Admin), depois do merge:
 4. `CORS_ORIGINS` da API continua com as origens exatas dos apps.
 
 Se mesmo assim o navegador bloquear o cookie, a tela de login agora mostra a mensagem "o navegador bloqueou o cookie de sessão" em vez de só reaparecer.
+
+## 10. E-mail de recuperação de senha (Brevo) e Admin (usuários, criadores, métricas)
+
+### E-mail (opcional; sem ele a recuperação continua respondendo igual e o operador emite o link)
+A API envia o e-mail pela API HTTPS da Brevo (o Render gratuito bloqueia SMTP). Variáveis, só por NOME:
+
+| Onde | Variável | Observação |
+|---|---|---|
+| API | `EMAIL_PROVIDER` | `none` (padrão) ou `brevo` |
+| API | `BREVO_API_KEY` | chave da API da Brevo (v3) |
+| API | `EMAIL_FROM_ADDRESS` | remetente **verificado** na Brevo |
+| API | `EMAIL_FROM_NAME` | padrão `Clube da Rifa` |
+| API | `PASSWORD_RESET_URL` | `https://<storefront>/redefinir-senha` (o token vai no fragmento `#token=`) |
+
+`EMAIL_PROVIDER=brevo` sem chave ou remetente impede a API de subir (erro de configuração claro). O log registra só status HTTP e duração: nunca o token nem o e-mail. Para desligar, `EMAIL_PROVIDER=none`.
+
+### Admin
+Três rotas somente leitura, sem migration nova (a RLS já libera a leitura a quem tem acesso de plataforma):
+`GET /api/platform/users` (`platform:user:read`: Operações e Suporte), `GET /api/platform/creators` (`platform:tenant:read`) e `GET /api/platform/metrics` (`platform:metrics:read`: Operações e Financeiro; o valor bruto dos pedidos só vem para quem tem `platform:billing:read`). Nada devolve hash de senha, segredo de MFA, sessão ou credencial de PSP.
+
+### Frontend (nomes de variáveis, por projeto Vercel)
+- Storefront: `VITE_API_BASE_URL`, `VITE_MARKETPLACE_MODE=central`, `VITE_ORGANIZER_BASE_URL` (habilita "Meu painel").
+- Organizer: `VITE_API_BASE_URL`, `VITE_STOREFRONT_BASE_URL`, `VITE_MARKETPLACE_MODE` (habilita "Ver minha vitrine" e "Voltar ao Clube da Rifa"; os links de "Esqueci minha senha" usam a mesma base).
+- Admin: `VITE_API_BASE_URL`, `VITE_STOREFRONT_BASE_URL` (recuperação/retorno), `VITE_ORGANIZER_BASE_URL` e `VITE_MARKETPLACE_MODE` (links da tela Criadores).

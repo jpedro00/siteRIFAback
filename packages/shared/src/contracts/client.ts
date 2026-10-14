@@ -90,6 +90,11 @@ import type {
   UploadMediaRequest,
   UploadMediaResponse,
 } from './community.js';
+import type {
+  PlatformCreatorListResponse,
+  PlatformMetrics,
+  PlatformUserListResponse,
+} from './platformAdmin.js';
 import { API_ERROR_MESSAGES, type ApiErrorBody, type ApiErrorCode } from './errors.js';
 
 /**
@@ -138,6 +143,9 @@ export interface RouteResponses {
   tenantBuyers: TenantBuyersResponse;
   platformReviewReconciliation: { updated: boolean };
   platformTenants: TenantListResponse;
+  platformUsers: PlatformUserListResponse;
+  platformCreators: PlatformCreatorListResponse;
+  platformMetrics: PlatformMetrics;
   platformCreateTenant: CreateTenantResponse;
   platformReviewQueue: ReviewQueueResponse;
   platformHealth: PlatformHealthResponse;

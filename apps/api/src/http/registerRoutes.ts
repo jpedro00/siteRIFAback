@@ -6,6 +6,7 @@ import { pathTenantResolver, tenantResolver } from '../middleware/tenantResolver
 import { buildMarketplaceHandlers } from '../modules/marketplace/marketplaceRoutes.js';
 import { buildAuthHandlers } from '../modules/identity/authRoutes.js';
 import { buildTenantHandlers } from '../modules/tenancy/tenantRoutes.js';
+import { buildPlatformAdminHandlers } from '../modules/platform/platformAdminRoutes.js';
 import { buildHealthHandler } from '../modules/health/healthRoutes.js';
 import { buildDrawHandlers } from '../modules/draws/drawRoutes.js';
 import { buildPaymentHandlers } from '../modules/payments/paymentRoutes.js';
@@ -41,6 +42,7 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
     ...buildHealthHandler(deps),
     ...buildAuthHandlers(deps),
     ...buildTenantHandlers(deps),
+    ...buildPlatformAdminHandlers(deps),
     ...buildDrawHandlers(deps),
     ...buildPaymentHandlers(deps),
     ...buildResultHandlers(deps),

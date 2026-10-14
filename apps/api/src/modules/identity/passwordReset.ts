@@ -4,6 +4,7 @@ import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
 import { LoginThrottle } from '../../lib/loginThrottle.js';
 import { hashPassword } from '../../lib/password.js';
+import { log } from '../../lib/log.js';
 import { undeliverablePasswordResetNotifier } from '../../lib/passwordResetNotifier.js';
 import { AUTH_AUDIT_ACTIONS, recordIdentityAudit } from '../audit/identityAudit.js';
 
@@ -95,7 +96,9 @@ export async function requestPasswordReset(
       resetUrl: base ? `${base}#token=${token}` : null,
     });
   } catch {
-    // Falha de entrega nao pode virar diferenca visivel de resposta (enumeracao).
+    // Falha de entrega nao pode virar diferenca visivel de resposta (enumeracao), mas fica
+    // observavel: sem token e sem e-mail no registro.
+    log.warn('recuperacao de senha: falha ao entregar a mensagem');
   }
 }
 

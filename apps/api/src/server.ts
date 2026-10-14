@@ -3,6 +3,7 @@ import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { LoginThrottle } from './lib/loginThrottle.js';
 import { SecretBox } from './lib/secretBox.js';
+import { createBrevoPasswordResetNotifier } from './lib/brevoEmail.js';
 import { createPaymentAccounts } from './modules/paymentAccounts/paymentAccountsSetup.js';
 import { createBillingDeps } from './modules/billing/billingSetup.js';
 
@@ -24,6 +25,15 @@ async function main(): Promise<void> {
     pool,
     secretBox: new SecretBox(config.MFA_ENCRYPTION_KEY),
     paymentAccounts: createPaymentAccounts(config, pool),
+    ...(config.EMAIL_PROVIDER === 'brevo' && config.BREVO_API_KEY && config.EMAIL_FROM_ADDRESS
+      ? {
+          passwordResetNotifier: createBrevoPasswordResetNotifier({
+            apiKey: config.BREVO_API_KEY,
+            fromAddress: config.EMAIL_FROM_ADDRESS,
+            fromName: config.EMAIL_FROM_NAME,
+          }),
+        }
+      : {}),
     billing: createBillingDeps(config, pool),
     loginThrottle: new LoginThrottle({
       windowMs: config.LOGIN_ORIGIN_WINDOW_MINUTES * 60_000,
@@ -38,6 +48,7 @@ async function main(): Promise<void> {
         `origens declaradas: ${config.corsOrigins.length}; ` +
         `cabecalho de comunidade: ${config.TENANT_HEADER_ENABLED ? 'ligado' : 'desligado'}; ` +
         `pagamento: ${config.PSP_PROVIDER}; ` +
+        `e-mail: ${config.EMAIL_PROVIDER}; ` +
         `assinaturas: ${config.BILLING_PROVIDER}`,
     );
   });

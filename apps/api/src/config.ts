@@ -128,6 +128,17 @@ const configSchema = z.object({
     .transform((v) => (v?.trim() ? v.trim() : undefined)),
 
   /**
+   * Entrega de e-mail transacional (hoje so a recuperacao de senha). 'none' = nao envia: o
+   * pedido de recuperacao continua respondendo igual e o operador pode emitir o link pelo
+   * comando db:issue-reset. 'brevo' usa a API HTTPS da Brevo (Render gratuito bloqueia SMTP).
+   */
+  EMAIL_PROVIDER: z.enum(['none', 'brevo']).default('none'),
+  BREVO_API_KEY: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  /** Remetente VERIFICADO na Brevo. */
+  EMAIL_FROM_ADDRESS: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+  EMAIL_FROM_NAME: z.string().default('Clube da Rifa'),
+
+  /**
    * Limite por ORIGEM, aplicado antes da autenticacao.
    *
    * Defende a plataforma de uma origem que ataca MUITAS contas — o bloqueio por
@@ -302,6 +313,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       {
         message: 'PUBLIC_API_BASE_URL precisa ser https:// em staging e em producao.',
         path: ['PUBLIC_API_BASE_URL'],
+      },
+    )
+    .refine(
+      (value) =>
+        value.EMAIL_PROVIDER !== 'brevo' ||
+        (value.BREVO_API_KEY !== undefined && value.EMAIL_FROM_ADDRESS !== undefined),
+      {
+        message: 'EMAIL_PROVIDER=brevo exige BREVO_API_KEY e EMAIL_FROM_ADDRESS.',
+        path: ['EMAIL_PROVIDER'],
       },
     )
     .refine(

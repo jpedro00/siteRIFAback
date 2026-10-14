@@ -75,6 +75,10 @@ export const PLATFORM_PERMISSIONS = [
   'platform:audit:read',
   // Fase 7 · administrar o catalogo de planos e a politica de cobranca.
   'platform:billing:manage',
+  // Super Admin · lista de usuarios (dado pessoal: e-mail e nome).
+  'platform:user:read',
+  // Super Admin · metricas consolidadas da plataforma.
+  'platform:metrics:read',
 ] as const;
 
 export type PlatformPermission = (typeof PLATFORM_PERMISSIONS)[number];

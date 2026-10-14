@@ -94,6 +94,8 @@ export const PLATFORM_ROLE_PERMISSIONS: Readonly<
   PLATFORM_OPERATIONS: Object.freeze([
     'platform:tenant:create',
     'platform:tenant:read',
+    'platform:user:read',
+    'platform:metrics:read',
     'platform:health:read',
     'platform:audit:read',
   ] as const),
@@ -113,6 +115,7 @@ export const PLATFORM_ROLE_PERMISSIONS: Readonly<
   ] as const),
   PLATFORM_SUPPORT: Object.freeze([
     'platform:tenant:read',
+    'platform:user:read',
     'platform:support:act',
     'platform:health:read',
   ] as const),
@@ -120,6 +123,7 @@ export const PLATFORM_ROLE_PERMISSIONS: Readonly<
     'platform:tenant:read',
     'platform:billing:read',
     'platform:billing:manage',
+    'platform:metrics:read',
     'platform:refund:second_approval',
     'platform:health:read',
     'platform:audit:read',
