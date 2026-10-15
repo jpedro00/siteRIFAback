@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import Stripe from 'stripe';
 import {
   PspRejectedError,
@@ -153,6 +154,18 @@ export class StripeConnectGateway implements PspGateway {
       MAX_PIX_EXPIRES_SECONDS,
       Math.max(MIN_PIX_EXPIRES_SECONDS, Math.floor((input.expiresAt.getTime() - Date.now()) / 1000)),
     );
+    // Chave de idempotencia = pedido + impressao digital dos PARAMETROS. A Stripe recusa a mesma
+    // chave com parametros diferentes, e prazo (derivado do relogio) e taxa (plano vigente) mudam
+    // entre tentativas: com a chave so do pedido, uma falha depois de criar o PaymentIntent (a
+    // gravacao no banco, a rede) travaria o pedido para sempre. Assim, o retry identico (inclusive
+    // o do proprio SDK) continua deduplicado na Stripe; um retry com parametros novos cria outro
+    // PaymentIntent, e o que vale e a linha que vence o `INSERT ... ON CONFLICT` no banco — o
+    // comprador so ve o QR dela, e o PaymentIntent sem uso expira sozinho pelo prazo do PIX.
+    const fingerprint = createHash('sha256')
+      .update(`${input.amountCents}|${input.platformFeeCents ?? 0}|${expiresAfterSeconds}|${this.#connectedAccountId}`)
+      .digest('hex')
+      .slice(0, 16);
+    const idempotencyKey = `${input.idempotencyKey}:${fingerprint}`;
     return call(async () => {
       const intent = await this.#stripe.paymentIntents.create(
         {
@@ -167,7 +180,7 @@ export class StripeConnectGateway implements PspGateway {
           transfer_data: { destination: this.#connectedAccountId },
           metadata: { order_id: input.externalReference },
         },
-        { idempotencyKey: input.idempotencyKey },
+        { idempotencyKey },
       );
       return toPayment(intent);
     });

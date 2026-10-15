@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type Stripe from 'stripe';
 import { StripeConnectGateway } from '../src/stripeConnect.js';
 import { PspRejectedError, PspUnauthorizedError, PspUnavailableError } from '../src/types.js';
@@ -43,7 +44,67 @@ const input = {
   platformFeeCents: 125,
 };
 
+/** A chave esperada: pedido + impressao digital dos parametros (sha256, 16 hex). */
+const chave = (pedido: string, amount: number, fee: number, expires: number, acct = ACCT) =>
+  `${pedido}:${createHash('sha256').update(`${amount}|${fee}|${expires}|${acct}`).digest('hex').slice(0, 16)}`;
+
 describe('StripeConnectGateway', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  describe('chave de idempotencia (pedido + parametros)', () => {
+    const agora = new Date('2026-10-15T12:00:00Z');
+    const chaveDe = (create: ReturnType<typeof vi.fn>, i: number) =>
+      (create.mock.calls[i] as [unknown, { idempotencyKey: string }])[1].idempotencyKey;
+
+    it('mesmos parametros: mesma chave (retry identico deduplica na Stripe)', async () => {
+      vi.useFakeTimers({ now: agora });
+      const create = vi.fn().mockResolvedValue(intent());
+      const gw = make({ paymentIntents: { create } });
+      const em = new Date(agora.getTime() + 1800_000);
+      await gw.createPixCharge({ ...input, expiresAt: em });
+      await gw.createPixCharge({ ...input, expiresAt: em });
+      expect(chaveDe(create, 0)).toBe(chaveDe(create, 1));
+      expect(chaveDe(create, 0)).toBe(chave('ord-1', 2500, 125, 1800));
+      expect(chaveDe(create, 0)).toMatch(/^ord-1:[0-9a-f]{16}$/);
+    });
+
+    it('prazo, taxa, valor ou conta diferentes: outra chave (sem conflito de idempotencia)', async () => {
+      vi.useFakeTimers({ now: agora });
+      const create = vi.fn().mockResolvedValue(intent());
+      const gw = make({ paymentIntents: { create } });
+      const em = new Date(agora.getTime() + 1800_000);
+      await gw.createPixCharge({ ...input, expiresAt: em });
+      await gw.createPixCharge({ ...input, expiresAt: new Date(em.getTime() - 5_000) });
+      await gw.createPixCharge({ ...input, expiresAt: em, platformFeeCents: 200 });
+      await gw.createPixCharge({ ...input, expiresAt: em, amountCents: 2600 });
+      const outra = new StripeConnectGateway({
+        secretKey: KEY,
+        connectedAccountId: 'acct_outra',
+        client: { paymentIntents: { create } } as unknown as Stripe,
+      });
+      await outra.createPixCharge({ ...input, expiresAt: em });
+      const chaves = [0, 1, 2, 3, 4].map((i) => chaveDe(create, i));
+      expect(new Set(chaves).size).toBe(5);
+      expect(chaves[1]).toBe(chave('ord-1', 2500, 125, 1795));
+      expect(chaves[2]).toBe(chave('ord-1', 2500, 200, 1800));
+      expect(chaves[4]).toBe(chave('ord-1', 2500, 125, 1800, 'acct_outra'));
+    });
+
+    it('sem taxa: a impressao usa 0', async () => {
+      vi.useFakeTimers({ now: agora });
+      const create = vi.fn().mockResolvedValue(intent());
+      const semTaxa: Partial<typeof input> = { ...input };
+      delete semTaxa.platformFeeCents;
+      await make({ paymentIntents: { create } }).createPixCharge({
+        ...(semTaxa as Omit<typeof input, 'platformFeeCents'>),
+        expiresAt: new Date(agora.getTime() + 1800_000),
+      });
+      expect(chaveDe(create, 0)).toBe(chave('ord-1', 2500, 0, 1800));
+    });
+  });
+
   it('createPixCharge monta o PaymentIntent com taxa e destino', async () => {
     const create = vi.fn().mockResolvedValue(intent());
     const p = await make({ paymentIntents: { create } }).createPixCharge(input);
@@ -59,7 +120,8 @@ describe('StripeConnectGateway', () => {
       metadata: { order_id: 'ord-1' },
     });
     expect(params['payment_method_options'].pix.expires_after_seconds).toBeGreaterThanOrEqual(60);
-    expect(opts).toEqual({ idempotencyKey: 'ord-1' });
+    const exp = params['payment_method_options'].pix.expires_after_seconds as number;
+    expect(opts).toEqual({ idempotencyKey: chave('ord-1', 2500, 125, exp) });
     expect(p.copyPaste).toBe('000201PIX');
     expect(p.qrCodeBase64).toBeNull();
     expect(p.status).toBe('PENDENTE');
