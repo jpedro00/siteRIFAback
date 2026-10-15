@@ -1,17 +1,17 @@
 {
   "_comment": "Gerado por scripts/contracts-snapshot.mjs no repositorio BACKEND, a fonte dos contratos. Nao editar a mao. O frontend carrega uma copia deste arquivo e apenas confere.",
   "package": "@clubedarifa/shared",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "tracked": [
     "src/contracts",
     "src/states",
     "src/permissions",
     "src/constants"
   ],
-  "digest": "2347a632da2df5e9762f1307a42d236c28319eebe90c2a669a1d8192fc5503b5",
+  "digest": "47f6caa7827457ba9521946fe0b3729fc99e387d0b4e1633f9c2ac8a58d1e126",
   "files": {
-    "src/contracts/billing.ts": "d23ec40fcea801428194d882dc2590968ca7584785f2384e15c929159625aaa5",
-    "src/contracts/client.ts": "b6cb5f50e534a3bfdf1396bd89075a9c47e319be5a3f90a9b0081f030b889e75",
+    "src/contracts/billing.ts": "c30a8e15c260a21c5b3fc9a7d57c07d06a75d4655fcf0c23418df3b1f64db667",
+    "src/contracts/client.ts": "05f283a80fb4d0b3099af93071616f0b62ba294ed648c9a1f20e365abfe87ef6",
     "src/contracts/community.ts": "02bff98e77dd485975c636795a76b70b70ac738dac0a3893a8223f8718215db4",
     "src/contracts/draws.ts": "1529730b520a55e0ded7c1fe1b8103727674679bff4fa0bcc70b5dde09c7fef7",
     "src/contracts/errors.ts": "5a1215256f1d9c31341a66723166644fecf9f88c05804217ce02d373dc82fb2d",
@@ -21,8 +21,8 @@
     "src/contracts/paymentMethods.ts": "3853f7557476906cbfecc5e4d0a155c4861fd64f1294f3b21b38894dd65e1016",
     "src/contracts/platformAdmin.ts": "d0f77ff262d10ed9840d01d19419577caac1a5c26f7470df2de0cd0771263f56",
     "src/contracts/result.ts": "9c69de6fdf62ca594bf3852f7717003ae23e041b29117dee1a64edfbe5cb3d0d",
-    "src/contracts/routes.ts": "1e8737aff7cad6bb8dd317c3b80d9f961f4b48c653dc685b65e68c294c11b578",
-    "src/states/billing.ts": "ff94c20848d735a8eaf4ed7cdaceac77daa5e8343ee840dee4476adb812ced2b",
+    "src/contracts/routes.ts": "17ec4972a74c4c9a9331cbf887a7cb4566d8e1453ed10659a1f1459b2cb4f073",
+    "src/states/billing.ts": "961ab174f52b88d9d096ba854f39a4424bee333c776509255bef1dcebd43cc1c",
     "src/states/drawStatus.ts": "b49c3d2f50e71caabe88485945447db40308f1db9bc06cf5dbc1155198e02aec",
     "src/states/index.ts": "1c745f4a3c6f21b1950d20d29e0ad618d8a807e80d317f7ff0d8c2a9a7176aaa",
     "src/states/numberStatus.ts": "2e89a8913afa1effa718b9b82dd3d6af219de09eea06a0587e8f3ba23449987c",
