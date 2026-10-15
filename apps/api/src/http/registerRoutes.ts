@@ -16,6 +16,7 @@ import { buildPanelHandlers } from '../modules/panel/panelRoutes.js';
 import { buildBillingHandlers } from '../modules/billing/billingRoutes.js';
 import { buildCommunityHandlers } from '../modules/community/communityRoutes.js';
 import { buildPaymentAccountHandlers } from '../modules/paymentAccounts/paymentAccountRoutes.js';
+import { buildConnectHandlers } from '../modules/paymentAccounts/connectRoutes.js';
 
 /**
  * Registro das rotas a partir do contrato compartilhado.
@@ -50,6 +51,7 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
     ...buildPanelHandlers(deps),
     ...buildBillingHandlers(deps),
     ...buildPaymentAccountHandlers(deps),
+    ...buildConnectHandlers(deps),
     ...buildCommunityHandlers(deps),
     ...buildMarketplaceHandlers(deps),
   } as Partial<Record<RouteName, RequestHandler>>;

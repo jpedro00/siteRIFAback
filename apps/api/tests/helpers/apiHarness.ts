@@ -149,6 +149,16 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     LOGIN_ORIGIN_MAX_ACCOUNTS: String(options.originLimits?.maxAccounts ?? 1_000_000),
     ...(options.billing ? { BILLING_RETURN_URL: 'https://organizer.test' } : {}),
     ...(options.paymentAccounts ? { ORGANIZER_PANEL_URL: 'https://organizer.test' } : {}),
+    // Connect ligado na bancada: chave e segredo OBVIAMENTE falsos (o runtime injetado usa a
+    // Stripe em memoria; a configuracao so precisa existir e passar pelos guards).
+    ...(options.connect
+      ? {
+          CONNECT_ENABLED: 'true',
+          STRIPE_SECRET_KEY: 'sk_test_fake_for_unit_tests',
+          STRIPE_CONNECT_WEBHOOK_SECRET: 'whsec_test_fake_for_unit_tests',
+          ORGANIZER_PANEL_URL: 'https://organizer.test',
+        }
+      : {}),
   });
 
   const pool = createPool({ connectionString: TEST_APP_URL, applicationName: 'test-api', max: 5 });

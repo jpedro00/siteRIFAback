@@ -1220,6 +1220,36 @@ export const ROUTE_CONTRACTS = {
     tenantScope: 'resolved',
     tenantPermission: 'payment_account:manage',
   },
+  // Stripe Connect (conta Express do criador). Com CONNECT_ENABLED=false as tres respondem 404.
+  connectStripeAccount: {
+    method: 'POST',
+    path: '/api/tenant/payment-accounts/connect-stripe',
+    summary:
+      'Cadastra (ou retoma) a conta Stripe Connect da comunidade e devolve um link de cadastro NOVO, hospedado pela Stripe. Nenhum id de conta entra pelo corpo.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'resolved',
+    tenantPermission: 'payment_account:manage',
+  },
+  refreshStripeAccount: {
+    method: 'POST',
+    path: '/api/tenant/payment-accounts/refresh-stripe',
+    summary:
+      'Relê na Stripe o estado da conta Connect DA PROPRIA comunidade (pode receber, pode sacar, pendências) e devolve as contas atualizadas.',
+    auth: true,
+    mfa: false,
+    tenantScope: 'resolved',
+    tenantPermission: 'payment_account:manage',
+  },
+  stripeConnectWebhook: {
+    method: 'POST',
+    path: '/api/webhooks/stripe-connect',
+    summary:
+      'Webhook do Stripe Connect. Assinatura validada sobre o corpo bruto; idempotente por event.id; o estado da conta e o do pagamento são RELIDOS na Stripe antes de valer.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'none',
+  },
   stripeWebhook: {
     method: 'POST',
     path: '/api/webhooks/stripe',

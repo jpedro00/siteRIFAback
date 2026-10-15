@@ -196,6 +196,9 @@ export interface RouteResponses {
   connectPaymentAccount: RedirectResponse;
   paymentAccountOAuthCallback: undefined;
   disconnectPaymentAccount: PaymentAccount;
+  connectStripeAccount: RedirectResponse;
+  refreshStripeAccount: PaymentAccountsResponse;
+  stripeConnectWebhook: { received: true; result: 'processed' | 'duplicate' | 'ignored' };
 }
 
 /** Corpo esperado por rota. Rotas ausentes daqui nao recebem corpo. */

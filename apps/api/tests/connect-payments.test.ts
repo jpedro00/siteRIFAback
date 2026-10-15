@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
-import type Stripe from 'stripe';
 import { createPool, type DbPool } from '@clubedarifa/db';
 import {
   createConnectRuntime,
@@ -26,6 +25,7 @@ import {
   type Harness,
   type SeededAccount,
 } from './helpers/apiHarness.js';
+import { FakeStripe } from './helpers/fakeStripe.js';
 
 /**
  * Stripe Connect · escolha do provedor na hora de cobrar e taxa CONGELADA no pagamento.
@@ -36,99 +36,6 @@ import {
  */
 const FAKE_KEY = 'sk_test_fake_for_unit_tests';
 const CREDENTIALS_KEY = Buffer.alloc(32, 7).toString('base64');
-
-interface FakeAccount {
-  charges_enabled: boolean;
-  payouts_enabled: boolean;
-  requirements: { currently_due: string[]; past_due: string[] };
-}
-
-/** Stripe falsa: so o que o runtime e o gateway usam. Honra `idempotencyKey` como a Stripe. */
-class FakeStripe {
-  readonly intents: { params: Record<string, unknown>; opts: Record<string, unknown> | undefined }[] = [];
-  readonly accountsById = new Map<string, FakeAccount>();
-  readonly #intentByKey = new Map<string, Record<string, unknown>>();
-  #n = 0;
-
-  readonly accounts = {
-    create: async (_params: Record<string, unknown>, _opts?: Record<string, unknown>) => {
-      const id = `acct_${unique('f').replace(/[^A-Za-z0-9]/g, '')}`;
-      this.accountsById.set(id, {
-        charges_enabled: false,
-        payouts_enabled: false,
-        requirements: { currently_due: ['external_account'], past_due: [] },
-      });
-      return { id, object: 'account' };
-    },
-    retrieve: async (id: string) => {
-      const a = this.accountsById.get(id);
-      if (!a) throw Object.assign(new Error('No such account'), { type: 'StripeInvalidRequestError', statusCode: 404 });
-      return { id, object: 'account', ...a };
-    },
-  };
-
-  readonly accountLinks = {
-    create: async (params: Record<string, unknown>) => ({
-      object: 'account_link',
-      url: `https://connect.stripe.test/setup/${String(params['account'])}/${++this.#n}`,
-    }),
-  };
-
-  /** A proxima criacao de PaymentIntent falha com este erro (uma vez). */
-  failNextCreate: Error | null = null;
-  readonly #paramsByKey = new Map<string, string>();
-
-  readonly paymentIntents = {
-    create: async (params: Record<string, unknown>, opts?: Record<string, unknown>) => {
-      this.intents.push({ params, opts });
-      if (this.failNextCreate) {
-        const e = this.failNextCreate;
-        this.failNextCreate = null;
-        throw e;
-      }
-      const key = opts?.['idempotencyKey'];
-      if (typeof key === 'string' && this.#intentByKey.has(key)) {
-        // Como a Stripe: mesma chave com parametros DIFERENTES e erro de idempotencia.
-        if (this.#paramsByKey.get(key) !== JSON.stringify(params)) {
-          throw Object.assign(new Error('Keys for idempotent requests can only be used with the same parameters'), {
-            type: 'StripeIdempotencyError',
-            statusCode: 400,
-          });
-        }
-        return this.#intentByKey.get(key)!;
-      }
-      if (typeof key === 'string') this.#paramsByKey.set(key, JSON.stringify(params));
-      const intent = {
-        id: `pi_${unique('t').replace(/[^A-Za-z0-9]/g, '')}`,
-        object: 'payment_intent',
-        status: 'requires_action',
-        amount: params['amount'],
-        metadata: params['metadata'],
-        transfer_data: params['transfer_data'],
-        next_action: {
-          pix_display_qr_code: {
-            data: `00020126PIXSTRIPE${++this.#n}`,
-            expires_at: Math.floor(Date.now() / 1000) + 600,
-          },
-        },
-      };
-      if (typeof key === 'string') this.#intentByKey.set(key, intent);
-      return intent;
-    },
-  };
-
-  /** O criador termina o cadastro na Stripe. */
-  ready(acct: string): void {
-    const a = this.accountsById.get(acct)!;
-    a.charges_enabled = true;
-    a.payouts_enabled = true;
-    a.requirements = { currently_due: [], past_due: [] };
-  }
-
-  asClient(): Stripe {
-    return this as unknown as Stripe;
-  }
-}
 
 describe.skipIf(!hasTestDatabase)(`Stripe Connect · cobranca e taxa ${hasTestDatabase ? '' : skipReason}`, () => {
   let appPool: DbPool;

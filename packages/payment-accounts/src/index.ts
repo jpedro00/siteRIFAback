@@ -8,3 +8,4 @@ export { createPaymentAccountsRuntime, type PaymentAccountsRuntime, type Payment
 export { sanitize, type Logger, type FetchLike, type PaymentAccountsCore } from './core.js';
 export { createConnectRuntime, type ConnectRuntime, type ConnectConfig } from './connect.js';
 export { ConnectPspGatewayResolver, type ConnectResolverOptions } from './connectResolver.js';
+export { verifyConnectWebhook, InvalidConnectWebhookError, type ConnectWebhookEvent } from './connectWebhook.js';
