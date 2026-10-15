@@ -37,6 +37,8 @@ export interface CreatePixChargeInput {
   readonly expiresAt: Date;
   /** Onde o PSP avisa (webhook). Nulo quando nao ha URL publica configurada. */
   readonly notificationUrl: string | null;
+  /** Taxa da plataforma, em centavos (so provedores com split, como Stripe Connect). */
+  readonly platformFeeCents?: number;
 }
 
 export type WebhookVerification =
@@ -55,7 +57,7 @@ export interface PspPaymentMethod {
 }
 
 export interface PspGateway {
-  readonly provider: 'MERCADO_PAGO' | 'FAKE';
+  readonly provider: 'MERCADO_PAGO' | 'STRIPE' | 'FAKE';
   /**
    * Descobre, na API oficial do provedor, o que a conta conectada aceita. Somente
    * leitura: nao cria cobranca. Habilitar um meio e decisao da plataforma, nao disto.
@@ -63,6 +65,8 @@ export interface PspGateway {
   listPaymentMethods(): Promise<readonly PspPaymentMethod[]>;
   createPixCharge(input: CreatePixChargeInput): Promise<PspPayment>;
   getPayment(providerPaymentId: string): Promise<PspPayment>;
+  /** Devolve o pagamento por inteiro (inclusive a taxa da plataforma). Opcional: nem todo PSP oferece. */
+  refund?(providerPaymentId: string, idempotencyKey: string): Promise<void>;
   /** Confere a ASSINATURA do aviso e extrai o identificador do pagamento. */
   verifyWebhook(input: {
     headers: Readonly<Record<string, string | undefined>>;
@@ -111,7 +115,7 @@ export interface PspResolution {
  */
 export interface PspGatewayResolver {
   /** Provedor dos pagamentos que este resolvedor cria (`payments.provider`). */
-  readonly provider: 'MERCADO_PAGO' | 'FAKE';
+  readonly provider: 'MERCADO_PAGO' | 'STRIPE' | 'FAKE';
   /** Para criar cobranca NOVA: a conta que recebe hoje (CONNECTED). */
   forTenant(tenantId: string): Promise<PspResolution>;
   /**

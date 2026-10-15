@@ -1,0 +1,203 @@
+import Stripe from 'stripe';
+import {
+  PspRejectedError,
+  PspUnauthorizedError,
+  PspUnavailableError,
+  type CreatePixChargeInput,
+  type PspGateway,
+  type PspPayment,
+  type PspPaymentMethod,
+  type PspPaymentStatus,
+  type WebhookVerification,
+} from './types.js';
+
+/**
+ * Adaptador Stripe Connect (PIX, destination charge).
+ *
+ * O gateway fica amarrado a UMA conta conectada (`acct_...`) e usa a chave da PLATAFORMA,
+ * entregue por parametro (lida do ambiente por quem monta). Nada aqui a grava, loga ou devolve.
+ * Cobranca: PaymentIntent na conta da plataforma com `transfer_data.destination` = conta
+ * conectada e `application_fee_amount` = taxa da plataforma.
+ */
+
+export interface StripeConnectOptions {
+  readonly secretKey: string;
+  readonly connectedAccountId: string;
+  /** Chave live so com `allowLive` (a configuracao so o liga em producao). */
+  readonly allowLive?: boolean;
+  /** Para testes: substitui o SDK. */
+  readonly client?: Stripe;
+}
+
+const REQUEST_TIMEOUT_MS = 10_000;
+const MIN_PIX_EXPIRES_SECONDS = 60;
+
+function isLiveKey(secretKey: string): boolean {
+  return secretKey.startsWith('sk_live_') || secretKey.startsWith('rk_live_');
+}
+
+function asRecord(v: unknown): Record<string, unknown> {
+  return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
+}
+
+const iso = (seconds: unknown): string | null =>
+  typeof seconds === 'number' ? new Date(seconds * 1000).toISOString() : null;
+
+/** Mensagem curta e sem nada que lembre uma chave da Stripe. */
+function safeMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : 'Falha na Stripe.';
+  return raw.replace(/\b[rs]k_(?:live|test)_\w*/g, '[chave]').slice(0, 300);
+}
+
+/** 401 = credencial invalida; rede, limite de taxa e 5xx = tentar de novo; o resto (4xx) e definitivo. */
+function classify(error: unknown): Error {
+  if (
+    error instanceof PspRejectedError ||
+    error instanceof PspUnavailableError ||
+    error instanceof PspUnauthorizedError
+  ) {
+    return error;
+  }
+  const e = asRecord(error);
+  const type = String(e['type'] ?? '');
+  const status = typeof e['statusCode'] === 'number' ? (e['statusCode'] as number) : 0;
+  if (status === 401 || type === 'StripeAuthenticationError') return new PspUnauthorizedError();
+  const transient =
+    type === 'StripeConnectionError' ||
+    type === 'StripeRateLimitError' ||
+    type === 'StripeAPIError' ||
+    status === 429 ||
+    status >= 500;
+  const message = safeMessage(error);
+  // A causa original (erro do SDK) pode carregar cabecalhos; so o 5xx/rede a guarda.
+  return transient ? new PspUnavailableError(message, error) : new PspRejectedError(message);
+}
+
+async function call<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    throw classify(error);
+  }
+}
+
+/**
+ * `status` do PaymentIntent -> vocabulario da plataforma.
+ * `canceled` com `cancellation_reason: 'automatic'` e o cancelamento feito pela propria Stripe
+ * quando o prazo do PIX vence sem pagamento: vira EXPIRADO. Qualquer outro motivo (ou nenhum)
+ * e cancelamento deliberado: CANCELADO.
+ */
+function mapStatus(status: unknown, cancellationReason: unknown): PspPaymentStatus {
+  switch (status) {
+    case 'succeeded':
+      return 'APROVADO';
+    case 'canceled':
+      return cancellationReason === 'automatic' ? 'EXPIRADO' : 'CANCELADO';
+    default:
+      // requires_action, processing, requires_payment_method, requires_confirmation...
+      return 'PENDENTE';
+  }
+}
+
+function toPayment(intent: unknown): PspPayment {
+  const pi = asRecord(intent);
+  const id = pi['id'];
+  if (typeof id !== 'string' || id === '') {
+    throw new PspRejectedError('Resposta da Stripe sem identificador de pagamento.');
+  }
+  const status = mapStatus(pi['status'], pi['cancellation_reason']);
+  const pix = asRecord(asRecord(pi['next_action'])['pix_display_qr_code']);
+  const charge = asRecord(pi['latest_charge']); // so vem como objeto quando expandido
+  const metadata = asRecord(pi['metadata']);
+  const orderId = metadata['order_id'];
+  // paidAt: so existe se aprovado. Horario da cobranca paga; sem ela, o `created` do intent.
+  const paidAt = status === 'APROVADO' ? (iso(charge['created']) ?? iso(pi['created'])) : null;
+  return {
+    providerPaymentId: id,
+    status,
+    amountCents: typeof pi['amount'] === 'number' ? (pi['amount'] as number) : 0,
+    externalReference: typeof orderId === 'string' ? orderId : null,
+    paidAt,
+    expiresAt: iso(pix['expires_at']),
+    copyPaste: typeof pix['data'] === 'string' ? (pix['data'] as string) : null,
+    // A Stripe entrega a imagem por URL (`image_url_png`), nao em base64.
+    qrCodeBase64: null,
+    raw: intent,
+  };
+}
+
+export class StripeConnectGateway implements PspGateway {
+  readonly provider = 'STRIPE' as const;
+  readonly #stripe: Stripe;
+  readonly #connectedAccountId: string;
+
+  constructor(options: StripeConnectOptions) {
+    if (isLiveKey(options.secretKey) && options.allowLive !== true) {
+      throw new Error('Chave LIVE da Stripe recusada fora de producao.');
+    }
+    this.#connectedAccountId = options.connectedAccountId;
+    this.#stripe =
+      options.client ??
+      new Stripe(options.secretKey, { timeout: REQUEST_TIMEOUT_MS, maxNetworkRetries: 2 });
+  }
+
+  /** PIX e o unico meio que este gateway cria. */
+  async listPaymentMethods(): Promise<readonly PspPaymentMethod[]> {
+    return [{ id: 'pix', paymentTypeId: 'bank_transfer', name: 'PIX', active: true }];
+  }
+
+  createPixCharge(input: CreatePixChargeInput): Promise<PspPayment> {
+    const expiresAfterSeconds = Math.max(
+      MIN_PIX_EXPIRES_SECONDS,
+      Math.floor((input.expiresAt.getTime() - Date.now()) / 1000),
+    );
+    return call(async () => {
+      const intent = await this.#stripe.paymentIntents.create(
+        {
+          amount: input.amountCents,
+          currency: 'brl',
+          payment_method_types: ['pix'],
+          payment_method_data: { type: 'pix' },
+          payment_method_options: { pix: { expires_after_seconds: expiresAfterSeconds } },
+          confirm: true,
+          description: input.description,
+          ...(input.platformFeeCents !== undefined ? { application_fee_amount: input.platformFeeCents } : {}),
+          transfer_data: { destination: this.#connectedAccountId },
+          metadata: { order_id: input.externalReference },
+        },
+        { idempotencyKey: input.idempotencyKey },
+      );
+      return toPayment(intent);
+    });
+  }
+
+  getPayment(providerPaymentId: string): Promise<PspPayment> {
+    return call(async () => {
+      const intent = await this.#stripe.paymentIntents.retrieve(providerPaymentId, {
+        expand: ['latest_charge'],
+      });
+      // Defesa contra id trocado: o pagamento tem de ser DESTA conta conectada.
+      const destination = asRecord(intent.transfer_data)['destination'];
+      const destinationId = typeof destination === 'string' ? destination : asRecord(destination)['id'];
+      if (destinationId !== this.#connectedAccountId) {
+        throw new PspRejectedError('O pagamento nao pertence a conta conectada deste gateway.');
+      }
+      return toPayment(intent);
+    });
+  }
+
+  /** Estorno total: devolve tambem a taxa da plataforma e reverte a transferencia ao vendedor. */
+  refund(providerPaymentId: string, idempotencyKey: string): Promise<void> {
+    return call(async () => {
+      await this.#stripe.refunds.create(
+        { payment_intent: providerPaymentId, refund_application_fee: true, reverse_transfer: true },
+        { idempotencyKey },
+      );
+    });
+  }
+
+  /** A verificacao do webhook Connect e outra peca (nao usa este gateway). */
+  verifyWebhook(_input: Parameters<PspGateway['verifyWebhook']>[0]): WebhookVerification {
+    return { valid: false, reason: 'use o webhook Connect' };
+  }
+}
