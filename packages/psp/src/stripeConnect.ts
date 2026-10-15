@@ -31,6 +31,8 @@ export interface StripeConnectOptions {
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const MIN_PIX_EXPIRES_SECONDS = 60;
+/** Teto da Stripe para `expires_after_seconds` do PIX (14 dias). */
+const MAX_PIX_EXPIRES_SECONDS = 1_209_600;
 
 function isLiveKey(secretKey: string): boolean {
   return secretKey.startsWith('sk_live_') || secretKey.startsWith('rk_live_');
@@ -147,9 +149,9 @@ export class StripeConnectGateway implements PspGateway {
   }
 
   createPixCharge(input: CreatePixChargeInput): Promise<PspPayment> {
-    const expiresAfterSeconds = Math.max(
-      MIN_PIX_EXPIRES_SECONDS,
-      Math.floor((input.expiresAt.getTime() - Date.now()) / 1000),
+    const expiresAfterSeconds = Math.min(
+      MAX_PIX_EXPIRES_SECONDS,
+      Math.max(MIN_PIX_EXPIRES_SECONDS, Math.floor((input.expiresAt.getTime() - Date.now()) / 1000)),
     );
     return call(async () => {
       const intent = await this.#stripe.paymentIntents.create(
@@ -161,7 +163,7 @@ export class StripeConnectGateway implements PspGateway {
           payment_method_options: { pix: { expires_after_seconds: expiresAfterSeconds } },
           confirm: true,
           description: input.description,
-          ...(input.platformFeeCents !== undefined ? { application_fee_amount: input.platformFeeCents } : {}),
+          ...(input.platformFeeCents !== undefined && input.platformFeeCents > 0 ? { application_fee_amount: input.platformFeeCents } : {}),
           transfer_data: { destination: this.#connectedAccountId },
           metadata: { order_id: input.externalReference },
         },
@@ -176,19 +178,25 @@ export class StripeConnectGateway implements PspGateway {
       const intent = await this.#stripe.paymentIntents.retrieve(providerPaymentId, {
         expand: ['latest_charge'],
       });
-      // Defesa contra id trocado: o pagamento tem de ser DESTA conta conectada.
-      const destination = asRecord(intent.transfer_data)['destination'];
-      const destinationId = typeof destination === 'string' ? destination : asRecord(destination)['id'];
-      if (destinationId !== this.#connectedAccountId) {
-        throw new PspRejectedError('O pagamento nao pertence a conta conectada deste gateway.');
-      }
+      this.#assertOwn(intent);
       return toPayment(intent);
     });
+  }
+
+  /** Defesa contra id trocado: o pagamento tem de ser DESTA conta conectada. */
+  #assertOwn(intent: unknown): void {
+    const destination = asRecord(asRecord(intent)['transfer_data'])['destination'];
+    const destinationId = typeof destination === 'string' ? destination : asRecord(destination)['id'];
+    if (destinationId !== this.#connectedAccountId) {
+      throw new PspRejectedError('O pagamento nao pertence a conta conectada deste gateway.');
+    }
   }
 
   /** Estorno total: devolve tambem a taxa da plataforma e reverte a transferencia ao vendedor. */
   refund(providerPaymentId: string, idempotencyKey: string): Promise<void> {
     return call(async () => {
+      // Mesma defesa do getPayment: nunca estorna pagamento de outra conta.
+      this.#assertOwn(await this.#stripe.paymentIntents.retrieve(providerPaymentId));
       await this.#stripe.refunds.create(
         { payment_intent: providerPaymentId, refund_application_fee: true, reverse_transfer: true },
         { idempotencyKey },

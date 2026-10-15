@@ -118,13 +118,58 @@ describe('StripeConnectGateway', () => {
     }
   });
 
-  it('refund devolve taxa e reverte a transferencia', async () => {
+  it('refund devolve taxa e reverte a transferencia (conta propria)', async () => {
     const create = vi.fn().mockResolvedValue({ id: 're_1' });
-    await make({ refunds: { create } }).refund('pi_1', 'idem-1');
+    const retrieve = vi.fn().mockResolvedValue(intent());
+    await make({ refunds: { create }, paymentIntents: { retrieve } }).refund('pi_1', 'idem-1');
     expect(create).toHaveBeenCalledWith(
       { payment_intent: 'pi_1', refund_application_fee: true, reverse_transfer: true },
       { idempotencyKey: 'idem-1' },
     );
+  });
+
+  it('refund aceita destination expandido (objeto com id)', async () => {
+    const create = vi.fn().mockResolvedValue({ id: 're_1' });
+    const retrieve = vi.fn().mockResolvedValue(intent({ transfer_data: { destination: { id: ACCT } } }));
+    await make({ refunds: { create }, paymentIntents: { retrieve } }).refund('pi_1', 'idem-1');
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('refund de PaymentIntent de outra conta rejeita sem estornar', async () => {
+    const create = vi.fn();
+    const retrieve = vi.fn().mockResolvedValue(intent({ transfer_data: { destination: 'acct_outra' } }));
+    await expect(
+      make({ refunds: { create }, paymentIntents: { retrieve } }).refund('pi_1', 'idem-1'),
+    ).rejects.toBeInstanceOf(PspRejectedError);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('refund classifica falha do retrieve', async () => {
+    const create = vi.fn();
+    const retrieve = vi.fn().mockRejectedValue(Object.assign(new Error('x'), { statusCode: 503 }));
+    await expect(
+      make({ refunds: { create }, paymentIntents: { retrieve } }).refund('pi_1', 'idem-1'),
+    ).rejects.toBeInstanceOf(PspUnavailableError);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('expires_after_seconds tem teto de 1209600', async () => {
+    const create = vi.fn().mockResolvedValue(intent());
+    await make({ paymentIntents: { create } }).createPixCharge({
+      ...input,
+      expiresAt: new Date(Date.now() + 40 * 86_400_000),
+    });
+    expect((create.mock.calls[0] as any)[0].payment_method_options.pix.expires_after_seconds).toBe(1_209_600);
+  });
+
+  it('nao envia application_fee_amount com taxa ausente ou zero', async () => {
+    for (const fee of [undefined, 0]) {
+      const create = vi.fn().mockResolvedValue(intent());
+      const rest: Omit<typeof input, 'platformFeeCents'> & { platformFeeCents?: number } = { ...input };
+      delete rest.platformFeeCents;
+      await make({ paymentIntents: { create } }).createPixCharge(fee === undefined ? rest : { ...rest, platformFeeCents: fee });
+      expect((create.mock.calls[0] as any)[0]).not.toHaveProperty('application_fee_amount');
+    }
   });
 
   it('listPaymentMethods devolve so PIX e verifyWebhook nao e usado', async () => {
