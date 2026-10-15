@@ -478,4 +478,75 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
       }
     });
   });
+  describe('0030 · eventos do webhook Connect (idempotencia por event_id)', () => {
+    const evt = () => unique('evt_').replace(/[^A-Za-z0-9_]/g, '');
+    const registrar = (pool: DbPool, id: string, type = 'account.updated', account: string | null = 'acct_teste123') =>
+      pool
+        .query<{ novo: boolean }>('SELECT app.record_connect_webhook_event($1, $2, $3) AS novo', [id, type, account])
+        .then((r) => r.rows[0]!.novo);
+    const concluir = (pool: DbPool, id: string) =>
+      pool
+        .query<{ ok: boolean }>('SELECT app.finish_connect_webhook_event($1) AS ok', [id])
+        .then((r) => r.rows[0]!.ok);
+
+    it('primeira vez: true; repetido sem concluir: true (retry); depois de concluido: false', async () => {
+      const id = evt();
+      expect(await registrar(app, id)).toBe(true);
+      // O processamento falhou antes de concluir: a Stripe reenvia e o evento roda de novo.
+      expect(await registrar(app, id)).toBe(true);
+      expect(await concluir(app, id)).toBe(true);
+      expect(await registrar(app, id)).toBe(false);
+      expect(await registrar(worker, id)).toBe(false);
+      // Concluir de novo nao muda nada.
+      expect(await concluir(app, id)).toBe(false);
+      const { rows } = await owner.query<{ n: number; type: string; account: string | null; done: boolean }>(
+        `SELECT count(*) OVER ()::int AS n, type, account, processed_at IS NOT NULL AS done
+           FROM stripe_connect_webhook_events WHERE event_id = $1`,
+        [id],
+      );
+      expect(rows).toEqual([{ n: 1, type: 'account.updated', account: 'acct_teste123', done: true }]);
+    });
+
+    it('formato: event_id evt_, conta acct_ (ou nula), tipo curto', async () => {
+      await expect(registrar(app, 'nao-e-evento')).rejects.toThrow();
+      await expect(registrar(app, evt(), 'account.updated', 'conta-qualquer')).rejects.toThrow();
+      await expect(registrar(app, evt(), 'x'.repeat(201))).rejects.toThrow();
+      expect(await registrar(app, evt(), 'payment_intent.succeeded', null)).toBe(true);
+    });
+
+    it('runtime nao le nem escreve a tabela diretamente; RLS ligada', async () => {
+      for (const pool of [app, worker]) {
+        await expect(pool.query('SELECT * FROM stripe_connect_webhook_events')).rejects.toThrow(/permission denied/i);
+        await expect(
+          pool.query(`INSERT INTO stripe_connect_webhook_events (event_id, type) VALUES ('evt_direto', 'x')`),
+        ).rejects.toThrow(/permission denied/i);
+        await expect(pool.query('DELETE FROM stripe_connect_webhook_events')).rejects.toThrow(/permission denied/i);
+      }
+      const { rows } = await owner.query<{ rls: boolean; pub: boolean; u: boolean; w: boolean }>(
+        `SELECT c.relrowsecurity AS rls,
+                has_table_privilege('public', c.oid, 'SELECT') AS pub,
+                has_table_privilege('app_user', c.oid, 'SELECT,INSERT,UPDATE,DELETE') AS u,
+                has_table_privilege('app_worker', c.oid, 'SELECT,INSERT,UPDATE,DELETE') AS w
+           FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relname = 'stripe_connect_webhook_events'`,
+      );
+      expect(rows).toEqual([{ rls: true, pub: false, u: false, w: false }]);
+    });
+
+    it('as funcoes da 0030 sao SECURITY DEFINER, com search_path fixo, nao publicas; app_user/app_worker executam', async () => {
+      const { rows } = await owner.query<{ f: string; pub: boolean; u: boolean; w: boolean; definer: boolean; cfg: string[] | null }>(
+        `SELECT p.proname AS f, p.prosecdef AS definer, p.proconfig AS cfg,
+                has_function_privilege('public', p.oid, 'EXECUTE') AS pub,
+                has_function_privilege('app_user', p.oid, 'EXECUTE') AS u,
+                has_function_privilege('app_worker', p.oid, 'EXECUTE') AS w
+           FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'app' AND p.proname IN ('record_connect_webhook_event','finish_connect_webhook_event')`,
+      );
+      expect(rows).toHaveLength(2);
+      for (const r of rows) {
+        expect(r).toMatchObject({ pub: false, u: true, w: true, definer: true });
+        expect(r.cfg).toContain('search_path=public, pg_temp');
+      }
+    });
+  });
 });

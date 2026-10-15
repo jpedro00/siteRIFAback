@@ -122,6 +122,7 @@ export async function resetFoundationTables(): Promise<void> {
     await client.query('DELETE FROM billing_checkout_sessions');
     await client.query('DELETE FROM tenant_billing');
     await client.query('DELETE FROM stripe_webhook_events');
+    await client.query('DELETE FROM stripe_connect_webhook_events');
     await client.query('DELETE FROM plans');
     await client.query(
       'UPDATE billing_settings SET past_due_grace_days = 3, enforcement_enabled = false, updated_by = NULL',
