@@ -69,7 +69,23 @@ const configSchema = z.object({
   BILLING_PROVIDER: z.enum(['none', 'stripe']).default('none'),
   STRIPE_SECRET_KEY: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
   STRIPE_WEBHOOK_SECRET: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+
+  /**
+   * Recebimento dos criadores via Stripe Connect (mesma variavel da API). PADRAO: desligado — os
+   * jobs de PIX tratam so o Mercado Pago, exatamente como antes. Ligado, os pagamentos STRIPE
+   * pendentes/vencidos tambem sao CONSULTADOS na Stripe (RN06) pela conta original deles.
+   * Exige `STRIPE_SECRET_KEY` (a chave da plataforma). O worker nao recebe o webhook Connect: nao
+   * precisa de `STRIPE_CONNECT_WEBHOOK_SECRET`, nem faz cadastro de conta.
+   */
+  CONNECT_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
+
+function isLiveStripeKey(key: string | undefined): boolean {
+  return key?.startsWith('sk_live_') === true || key?.startsWith('rk_live_') === true;
+}
 
 export type WorkerConfig = Readonly<z.infer<typeof configSchema>>;
 
@@ -96,10 +112,23 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerCo
         path: ['BILLING_PROVIDER'],
       },
     )
-    .refine((v) => !(v.STRIPE_SECRET_KEY?.startsWith('sk_live_') && v.NODE_ENV !== 'production'), {
-      message: 'Chave LIVE da Stripe (sk_live_...) so e aceita com NODE_ENV=production.',
+    .refine((v) => !v.CONNECT_ENABLED || v.STRIPE_SECRET_KEY !== undefined, {
+      message: 'CONNECT_ENABLED=true exige STRIPE_SECRET_KEY: sem a chave nao ha como consultar os pagamentos na Stripe.',
+      path: ['CONNECT_ENABLED'],
+    })
+    .refine((v) => !(isLiveStripeKey(v.STRIPE_SECRET_KEY) && v.NODE_ENV !== 'production'), {
+      message: 'Chave LIVE da Stripe (sk_live_... ou rk_live_...) so e aceita com NODE_ENV=production.',
       path: ['STRIPE_SECRET_KEY'],
     })
+    .refine(
+      (v) =>
+        !(v.CONNECT_ENABLED && v.NODE_ENV === 'production' && v.STRIPE_SECRET_KEY !== undefined && !isLiveStripeKey(v.STRIPE_SECRET_KEY)),
+      {
+        message:
+          'CONNECT_ENABLED=true com NODE_ENV=production exige chave LIVE da Stripe (sk_live_... ou rk_live_...): o ambiente PRODUCTION nunca consulta uma conta de teste.',
+        path: ['STRIPE_SECRET_KEY'],
+      },
+    )
     .safeParse(env);
   if (!parsed.success) {
     const issues = parsed.error.issues

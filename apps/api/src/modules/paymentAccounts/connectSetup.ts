@@ -1,5 +1,5 @@
 import type { DbPool } from '@clubedarifa/db';
-import { createConnectRuntime, type ConnectRuntime } from '@clubedarifa/payment-accounts';
+import { createConnectRuntimeFromConfig, type ConnectRuntime } from '@clubedarifa/payment-accounts';
 import type { AppConfig } from '../../config.js';
 import { log } from '../../lib/log.js';
 
@@ -21,21 +21,14 @@ export function createConnect(config: AppConfig, pool: DbPool): ConnectRuntime |
     throw new Error('Stripe Connect ligado sem STRIPE_SECRET_KEY, STRIPE_CONNECT_WEBHOOK_SECRET ou URL do painel.');
   }
 
-  const production = config.NODE_ENV === 'production';
-  try {
-    return createConnectRuntime(pool, {
-      secretKey: config.STRIPE_SECRET_KEY,
-      returnBaseUrl,
-      environment: production ? 'PRODUCTION' : 'SANDBOX',
-      allowLive: production,
-      log,
-    });
-  } catch (error) {
-    // A mensagem do runtime e fixa (nunca cita a chave); repassa o motivo para a subida.
-    throw new Error(
-      `Stripe Connect nao pode subir: ${error instanceof Error ? error.message : 'configuracao invalida'}`,
-    );
-  }
+  // Mesma montagem do worker (ambiente pelo NODE_ENV, guard de chave live, erro sem a chave).
+  return createConnectRuntimeFromConfig(pool, {
+    enabled: true,
+    secretKey: config.STRIPE_SECRET_KEY,
+    nodeEnv: config.NODE_ENV,
+    returnBaseUrl,
+    log,
+  });
 }
 
 /** Os segredos do webhook Connect (um por endpoint na Stripe). */

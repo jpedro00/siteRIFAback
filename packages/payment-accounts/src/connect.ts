@@ -32,8 +32,12 @@ import type { Logger } from './core.js';
 export interface ConnectConfig {
   /** Chave da PLATAFORMA (do ambiente). Nunca gravada, logada ou devolvida. */
   readonly secretKey: string;
-  /** Base do painel do criador; o retorno do cadastro vai a `<base>/recebimentos`. */
-  readonly returnBaseUrl: string;
+  /**
+   * Base do painel do criador; o retorno do cadastro vai a `<base>/recebimentos`. Ausente = este
+   * processo NAO faz cadastro (o worker so consulta pagamentos): `beginOnboarding` recusa antes de
+   * chamar a Stripe.
+   */
+  readonly returnBaseUrl?: string | undefined;
   readonly environment: PaymentEnvironment;
   /** Chave live so com `allowLive` (a configuracao so o liga em producao). */
   readonly allowLive?: boolean | undefined;
@@ -101,7 +105,7 @@ export function createConnectRuntime(pool: DbPool, config: ConnectConfig): Conne
   }
   const stripe =
     config.client ?? new Stripe(config.secretKey, { timeout: REQUEST_TIMEOUT_MS, maxNetworkRetries: 2 });
-  const base = config.returnBaseUrl.replace(/\/+$/, '');
+  const base = config.returnBaseUrl ? config.returnBaseUrl.replace(/\/+$/, '') : null;
   const log = config.log;
   const environment = config.environment;
 
@@ -125,6 +129,7 @@ export function createConnectRuntime(pool: DbPool, config: ConnectConfig): Conne
   }
 
   async function beginOnboarding(input: { tenantId: string; userId: string }): Promise<{ url: string }> {
+    if (base === null) throw new Error('Cadastro Connect indisponivel neste processo (sem URL de retorno do painel).');
     let account = await tenantAccount(input.tenantId, input.userId);
 
     if (!account) {

@@ -43,6 +43,18 @@ export interface PaymentAccountsConfig {
   readonly log?: Logger | undefined;
 }
 
+/**
+ * Conclui as desconexoes que esperavam pagamentos pendentes, de QUALQUER provedor (a regra e do
+ * banco: `app.finalize_payment_disconnections`, so o `app_worker`). Exposta a parte para o worker
+ * que so tem o Stripe Connect ligado.
+ */
+export async function finalizePaymentDisconnections(pool: DbPool, limit = 50): Promise<number> {
+  return withContext(pool, { userId: null, tenantId: null, platformAccess: false }, async (client) => {
+    const { rows } = await client.query<{ n: number }>('SELECT app.finalize_payment_disconnections($1) AS n', [limit]);
+    return rows[0]!.n;
+  });
+}
+
 export function createPaymentAccountsRuntime(pool: DbPool, config: PaymentAccountsConfig): PaymentAccountsRuntime {
   const core: PaymentAccountsCore = {
     pool,
@@ -70,11 +82,6 @@ export function createPaymentAccountsRuntime(pool: DbPool, config: PaymentAccoun
     beginConnection: (input) => beginConnection(core, input),
     completeConnection: (input) => completeConnection(core, input),
     refreshDue: (limit) => refreshDueAuthorizations(core, limit),
-    async finalizeDisconnections(limit = 50) {
-      return withContext(pool, { userId: null, tenantId: null, platformAccess: false }, async (client) => {
-        const { rows } = await client.query<{ n: number }>('SELECT app.finalize_payment_disconnections($1) AS n', [limit]);
-        return rows[0]!.n;
-      });
-    },
+    finalizeDisconnections: (limit) => finalizePaymentDisconnections(pool, limit),
   };
 }
