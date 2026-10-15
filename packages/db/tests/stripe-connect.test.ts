@@ -302,9 +302,15 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
         ),
       ).then((r) => r.rows[0]!);
 
-    const aplicar = (pool: DbPool, account: string, charges: boolean, payouts: boolean, req: string[]) =>
+    const aplicar = (pool: DbPool, account: string, charges: boolean, payouts: boolean, req: string[], env = 'SANDBOX') =>
       pool
-        .query<{ n: number }>('SELECT app.connect_apply_account_state($1, $2, $3, $4) AS n', [account, charges, payouts, req])
+        .query<{ n: number }>('SELECT app.connect_apply_account_state($1, $2::payment_environment, $3, $4, $5) AS n', [
+          account,
+          env,
+          charges,
+          payouts,
+          req,
+        ])
         .then((r) => r.rows[0]!.n);
 
     const estado = async (account: string) =>
@@ -403,6 +409,42 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
       expect(await has()).toBe(false);
     });
 
+    it('aplicar estado respeita o ambiente: estado de PRODUCTION nao toca a conta SANDBOX', async () => {
+      const t = await tenant();
+      const conta = acct();
+      await registrar(t, t, await dono(t), conta);
+      expect(await aplicar(app, conta, true, true, [], 'PRODUCTION')).toBe(0);
+      expect((await estado(conta))[0]).toMatchObject({ c: null, p: null });
+      expect(await aplicar(app, conta, true, true, [], 'SANDBOX')).toBe(1);
+    });
+
+    it('connect_tenant_account: a conta Stripe mais recente da comunidade, mesmo desconectada; nunca a de outra', async () => {
+      const a = await tenant();
+      const b = await tenant();
+      const ua = await dono(a);
+      const ler = (ctx: string, alvo: string, env = 'SANDBOX') =>
+        comoTenant(ctx, (db) =>
+          db.query<{ acct: string | null }>('SELECT app.connect_tenant_account($1, $2::payment_environment) AS acct', [alvo, env]),
+        ).then((r) => r.rows[0]!.acct);
+
+      expect(await ler(a, a)).toBeNull();
+      const conta = acct();
+      const r1 = await registrar(a, a, ua, conta);
+      expect(await ler(a, a)).toBe(conta);
+      expect(await ler(a, a, 'PRODUCTION')).toBeNull();
+      expect(await ler(b, a)).toBeNull(); // outra comunidade nao enxerga
+
+      // Desconectada (autorizacao REVOKED): continua sendo a conta da comunidade.
+      const d = await comoTenant(a, (db) =>
+        db.query<{ r: string }>('SELECT app.request_payment_account_disconnect($1, $2, $3) AS r', [a, r1.account_id, ua]),
+      );
+      expect(d.rows[0]!.r).toBe('disconnected');
+      expect(await ler(a, a)).toBe(conta);
+
+      // E religar a mesma conta funciona (sem account_taken).
+      expect((await registrar(a, a, ua, conta)).result).toBe('connected');
+    });
+
     it('aplicar estado de conta desconhecida nao cria nada', async () => {
       const conta = acct();
       expect(await aplicar(app, conta, true, true, [])).toBe(0);
@@ -427,9 +469,9 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
                 has_function_privilege('app_user', p.oid, 'EXECUTE') AS u,
                 has_function_privilege('app_worker', p.oid, 'EXECUTE') AS w
            FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-          WHERE n.nspname = 'app' AND p.proname IN ('connect_register_account','connect_apply_account_state')`,
+          WHERE n.nspname = 'app' AND p.proname IN ('connect_register_account','connect_apply_account_state','connect_tenant_account')`,
       );
-      expect(rows).toHaveLength(2);
+      expect(rows).toHaveLength(3);
       for (const r of rows) {
         expect(r).toMatchObject({ pub: false, u: true, w: true, definer: true });
         expect(r.cfg).toContain('search_path=public, pg_temp');

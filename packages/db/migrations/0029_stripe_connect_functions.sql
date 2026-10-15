@@ -8,9 +8,12 @@
 -- Escrita so por estas funcoes (padrao da 0019); as tabelas continuam sem privilegio de runtime.
 --   connect_register_account     contexto da comunidade: cria/reutiliza a autorizacao STRIPE
 --                                (ACTIVE, sem token) e o vinculo CONNECTED.
+--   connect_tenant_account       contexto da comunidade: o `acct_` Stripe mais recente DELA,
+--                                mesmo desconectado (religar reaproveita a conta e o cadastro).
 --   connect_apply_account_state  SEM contexto (vem do webhook `account.updated`): grava
 --                                charges/payouts/pendencias numa autorizacao STRIPE que JA
---                                existe. Nunca cria linha, nunca toca outro provedor.
+--                                existe, no ambiente dado. Nunca cria linha, nunca toca outro
+--                                provedor nem outro ambiente.
 -- =============================================================================
 
 -- Retorna (result, account_id, authorization_id):
@@ -102,12 +105,34 @@ BEGIN
 END;
 $$;
 
+-- A conta Stripe da comunidade neste ambiente: a do vinculo mais recente, em QUALQUER estado.
+-- Quem desconectou e volta religa a MESMA conta (sem refazer o cadastro na Stripe). Nulo = nunca
+-- teve. Uma conta de outra comunidade nunca aparece aqui (e `account_taken` impede o reuso).
+CREATE FUNCTION app.connect_tenant_account(p_tenant uuid, p_environment public.payment_environment)
+RETURNS text
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF NOT app.caller_can_touch_tenant(p_tenant) THEN RETURN NULL; END IF;
+  RETURN (SELECT z.provider_account_id
+            FROM public.tenant_payment_accounts a
+            JOIN public.payment_provider_authorizations z ON z.id = a.authorization_id
+           WHERE a.tenant_id = p_tenant AND a.provider = 'STRIPE' AND a.environment = p_environment
+           ORDER BY (a.status = 'CONNECTED') DESC, a.connected_at DESC
+           LIMIT 1);
+END;
+$$;
+
 -- Estado da conta lido da Stripe (`accounts.retrieve`, disparado pelo webhook). Grava so os
 -- tres campos que a plataforma usa — nunca o corpo da Stripe. As pendencias sao NOMES de campo:
 -- no maximo 100, cada um com ate 200 caracteres, sem repeticao.
 -- Retorna quantas autorizacoes foram atualizadas (0 = conta desconhecida: nada acontece).
 CREATE FUNCTION app.connect_apply_account_state(
   p_account      text,
+  p_environment  public.payment_environment,
   p_charges      boolean,
   p_payouts      boolean,
   p_requirements text[]
@@ -123,7 +148,7 @@ DECLARE
   c     record;
   n     integer := 0;
 BEGIN
-  IF p_account IS NULL OR p_charges IS NULL OR p_payouts IS NULL THEN
+  IF p_account IS NULL OR p_environment IS NULL OR p_charges IS NULL OR p_payouts IS NULL THEN
     RAISE EXCEPTION 'estado da conta incompleto' USING ERRCODE = '22023';
   END IF;
 
@@ -134,7 +159,8 @@ BEGIN
            ORDER BY 1 LIMIT 100) s;
 
   FOR z IN SELECT id, charges_enabled, payouts_enabled FROM public.payment_provider_authorizations
-            WHERE provider = 'STRIPE' AND provider_account_id = p_account AND status <> 'REVOKED'
+            WHERE provider = 'STRIPE' AND environment = p_environment
+              AND provider_account_id = p_account AND status <> 'REVOKED'
             FOR UPDATE
   LOOP
     UPDATE public.payment_provider_authorizations
@@ -163,10 +189,12 @@ $$;
 -- ---------------------------------------------------------------------------
 REVOKE EXECUTE ON FUNCTION
   app.connect_register_account(uuid, uuid, public.payment_environment, text),
-  app.connect_apply_account_state(text, boolean, boolean, text[])
+  app.connect_tenant_account(uuid, public.payment_environment),
+  app.connect_apply_account_state(text, public.payment_environment, boolean, boolean, text[])
 FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION
   app.connect_register_account(uuid, uuid, public.payment_environment, text),
-  app.connect_apply_account_state(text, boolean, boolean, text[])
+  app.connect_tenant_account(uuid, public.payment_environment),
+  app.connect_apply_account_state(text, public.payment_environment, boolean, boolean, text[])
 TO app_user, app_worker;

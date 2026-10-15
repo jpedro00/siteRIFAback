@@ -4,6 +4,7 @@ import { createPool, withTenant, type DbPool } from '@clubedarifa/db';
 import {
   PaymentAccountUnavailableError,
   PaymentsNotConfiguredError,
+  PspUnavailableError,
   type CreatePixChargeInput,
 } from '@clubedarifa/psp';
 import { createConnectRuntime, type ConnectRuntime, type Logger } from '../src/index.js';
@@ -42,6 +43,8 @@ class FakeStripe {
   /** Forca o id devolvido pela criacao (simula a Stripe devolvendo uma conta inesperada). */
   forceId: string | null = null;
   failWith: Error | null = null;
+  /** Falha so na leitura da conta (accounts.retrieve). */
+  failRetrieve: Error | null = null;
   #n = 0;
 
   readonly accounts = {
@@ -61,6 +64,7 @@ class FakeStripe {
     },
     retrieve: async (id: string) => {
       if (this.failWith) throw this.failWith;
+      if (this.failRetrieve) throw this.failRetrieve;
       const a = this.accountsById.get(id);
       if (!a) {
         throw Object.assign(new Error(`No such account: '${id}'`), { type: 'StripeInvalidRequestError', statusCode: 404 });
@@ -83,6 +87,11 @@ class FakeStripe {
       return { id: `pi_${++this.#n}`, status: 'requires_action', amount: params['amount'], metadata: params['metadata'] };
     },
   };
+
+  /** A Stripe guarda a chave de idempotencia por 24h; depois disso, criar de novo cria OUTRA conta. */
+  expireIdempotency(): void {
+    this.#byKey.clear();
+  }
 
   asClient(): Stripe {
     return this as unknown as Stripe;
@@ -242,8 +251,92 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · runtime ${hasTestDatabase ?
 
     it('chave LIVE e recusada sem allowLive', () => {
       stripe = new FakeStripe();
-      expect(() => criar({ secretKey: 'rk_live_nao_vale' })).toThrow(/LIVE/);
-      expect(() => criar({ secretKey: 'sk_live_nao_vale' })).toThrow(/LIVE/);
+      expect(() => criar({ secretKey: 'rk_live_nao_vale', environment: 'PRODUCTION' })).toThrow(/LIVE/);
+      expect(() => criar({ secretKey: 'sk_live_nao_vale', environment: 'PRODUCTION' })).toThrow(/LIVE/);
+      expect(() => criar({ secretKey: 'sk_live_nao_vale', environment: 'PRODUCTION', allowLive: true })).not.toThrow();
+    });
+
+    it('chave e ambiente precisam combinar (teste so em SANDBOX, live so em PRODUCTION), sem citar a chave', () => {
+      stripe = new FakeStripe();
+      const erro = (f: () => unknown) => {
+        try {
+          f();
+        } catch (e) {
+          return (e as Error).message;
+        }
+        return null;
+      };
+      const m1 = erro(() => criar({ secretKey: FAKE_KEY, environment: 'PRODUCTION' }));
+      const m2 = erro(() => criar({ secretKey: 'sk_live_nao_vale', environment: 'SANDBOX', allowLive: true }));
+      for (const m of [m1, m2]) {
+        expect(m).toMatch(/ambiente/);
+        expect(m).not.toMatch(/sk_|rk_/);
+      }
+    });
+
+    it('409 / StripeIdempotencyError e transitorio (tentar de novo)', async () => {
+      novo();
+      const c = await comunidade();
+      stripe.failWith = Object.assign(new Error('Keys for idempotent requests can only be used with the same parameters'), {
+        type: 'StripeIdempotencyError',
+        statusCode: 400,
+      });
+      await expect(runtime.beginOnboarding(c)).rejects.toBeInstanceOf(PspUnavailableError);
+      stripe.failWith = Object.assign(new Error('conflito'), { type: 'StripeInvalidRequestError', statusCode: 409 });
+      await expect(runtime.beginOnboarding(c)).rejects.toBeInstanceOf(PspUnavailableError);
+    });
+
+    it('religar depois de desconectar reaproveita a MESMA conta, sem nova criacao, e ja sai pronta', async () => {
+      novo();
+      const c = await comunidade();
+      const acct = acctDe((await runtime.beginOnboarding(c)).url);
+      stripe.accountsById.set(acct, {
+        charges_enabled: true,
+        payouts_enabled: true,
+        requirements: { currently_due: [], past_due: [] },
+      });
+      await runtime.syncAccount(acct);
+      await runtime.resolver.forTenant(c.tenantId);
+
+      const desconectar = async () => {
+        const id = (await stripeLinks(c.tenantId)).find((l) => l.status === 'CONNECTED')!.id;
+        const r = await withTenant(app, { tenantId: c.tenantId }, (db) =>
+          db.query<{ r: string }>('SELECT app.request_payment_account_disconnect($1, $2, $3) AS r', [c.tenantId, id, c.userId]),
+        );
+        expect(r.rows[0]!.r).toBe('disconnected');
+      };
+
+      await desconectar();
+      await expect(runtime.resolver.forTenant(c.tenantId)).rejects.toBeInstanceOf(PaymentsNotConfiguredError);
+      // Dentro da janela de idempotencia.
+      expect(acctDe((await runtime.beginOnboarding(c)).url)).toBe(acct);
+      expect(stripe.creates).toHaveLength(1);
+      expect((await runtime.resolver.forTenant(c.tenantId)).paymentAccountId).toBeTruthy();
+
+      // Fora da janela (24h depois): ainda a mesma conta, nenhuma criacao nova.
+      await desconectar();
+      stripe.expireIdempotency();
+      expect(acctDe((await runtime.beginOnboarding(c)).url)).toBe(acct);
+      expect(stripe.creates).toHaveLength(1);
+      const r = await runtime.resolver.forTenant(c.tenantId);
+      expect(r.gateway.provider).toBe('STRIPE');
+      await r.gateway.createPixCharge(cobranca('pedido-religado', 1000));
+      expect(stripe.intents.at(-1)).toMatchObject({ transfer_data: { destination: acct } });
+    });
+
+    it('religar com a leitura da Stripe falhando: o link sai mesmo assim e o log nao vaza nada', async () => {
+      novo();
+      const c = await comunidade();
+      const acct = acctDe((await runtime.beginOnboarding(c)).url);
+      const id = (await stripeLinks(c.tenantId))[0]!.id;
+      await withTenant(app, { tenantId: c.tenantId }, (db) =>
+        db.query('SELECT app.request_payment_account_disconnect($1, $2, $3)', [c.tenantId, id, c.userId]),
+      );
+      stripe.failRetrieve = Object.assign(new Error(`boom ${FAKE_KEY} corpo-secreto`), { type: 'StripeAPIError', statusCode: 500 });
+      const { url } = await runtime.beginOnboarding(c);
+      expect(acctDe(url)).toBe(acct);
+      expect(logs.join(' | ')).toMatch(/connect_sync_failed/);
+      expect(logs.join(' | ')).not.toMatch(/sk_test|corpo-secreto/);
     });
   });
 

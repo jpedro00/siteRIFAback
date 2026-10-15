@@ -14,11 +14,13 @@ import type { Logger } from './core.js';
 /**
  * Stripe Connect (Express): cadastro da conta conectada e estado dela.
  *
- * CADASTRO: a conta Express e criada UMA vez por comunidade/ambiente. Se a comunidade ja tem
- * uma conta STRIPE vinculada, ela e reaproveitada; senao e criada com chave de idempotencia
- * derivada da comunidade e do ambiente (dois cliques simultaneos = uma conta na Stripe) e
- * registrada no banco (autorizacao ACTIVE sem token + vinculo CONNECTED). Cada chamada devolve
- * um Account Link NOVO — eles expiram e sao de uso unico.
+ * CADASTRO: a conta Express e criada UMA vez por comunidade/ambiente. Se a comunidade ja teve
+ * uma conta STRIPE — vinculada ou ja desconectada —, ela e reaproveitada (religar nao refaz o
+ * cadastro na Stripe); senao e criada com chave de idempotencia derivada da comunidade e do
+ * ambiente (dois cliques simultaneos = uma conta na Stripe). Em seguida e registrada no banco
+ * (autorizacao ACTIVE sem token + vinculo CONNECTED); quando isso (re)liga a conta, o estado e
+ * lido da Stripe na hora (a Stripe nao reenvia `account.updated` para uma conta que nao mudou).
+ * Cada chamada devolve um Account Link NOVO — eles expiram e sao de uso unico.
  *
  * ESTADO: `syncAccount` le a conta na Stripe (o webhook e so aviso) e grava `charges_enabled`,
  * `payouts_enabled` e as pendencias (`currently_due` + `past_due`). Nunca o corpo da Stripe.
@@ -77,6 +79,9 @@ function classify(error: unknown, log: Logger | undefined, op: string): Error {
     type === 'StripeConnectionError' ||
     type === 'StripeRateLimitError' ||
     type === 'StripeAPIError' ||
+    // Mesma chave de idempotencia ainda em andamento (ou conflito): repetir resolve.
+    type === 'StripeIdempotencyError' ||
+    status === 409 ||
     status === 429 ||
     status >= 500 ||
     status === 0;
@@ -86,7 +91,12 @@ function classify(error: unknown, log: Logger | undefined, op: string): Error {
 }
 
 export function createConnectRuntime(pool: DbPool, config: ConnectConfig): ConnectRuntime {
-  if (isLiveKey(config.secretKey) && config.allowLive !== true) {
+  const live = isLiveKey(config.secretKey);
+  // Chave e ambiente andam juntos: estado de teste e de producao nunca se misturam.
+  if (live !== (config.environment === 'PRODUCTION')) {
+    throw new Error('Chave da Stripe nao combina com o ambiente: chave de teste so em SANDBOX, chave LIVE so em PRODUCTION.');
+  }
+  if (live && config.allowLive !== true) {
     throw new Error('Chave LIVE da Stripe recusada fora de producao.');
   }
   const stripe =
@@ -103,21 +113,19 @@ export function createConnectRuntime(pool: DbPool, config: ConnectConfig): Conne
     }
   }
 
-  /** A conta STRIPE vinculada (CONNECTED) da comunidade neste ambiente, se houver. */
-  async function linkedAccount(tenantId: string, userId: string): Promise<string | null> {
+  /** A conta STRIPE da comunidade neste ambiente (a mais recente, mesmo desconectada), se houver. */
+  async function tenantAccount(tenantId: string, userId: string): Promise<string | null> {
     return withTenant(pool, { tenantId, userId }, async (client) => {
-      const { rows } = await client.query<{ provider_account_id: string }>(
-        `SELECT provider_account_id FROM app.payment_account_overview($1)
-          WHERE provider = 'STRIPE' AND environment = $2::payment_environment AND status = 'CONNECTED'
-          LIMIT 1`,
+      const { rows } = await client.query<{ acct: string | null }>(
+        'SELECT app.connect_tenant_account($1, $2::payment_environment) AS acct',
         [tenantId, environment],
       );
-      return rows[0]?.provider_account_id ?? null;
+      return rows[0]?.acct ?? null;
     });
   }
 
   async function beginOnboarding(input: { tenantId: string; userId: string }): Promise<{ url: string }> {
-    let account = await linkedAccount(input.tenantId, input.userId);
+    let account = await tenantAccount(input.tenantId, input.userId);
 
     if (!account) {
       const created = await stripeCall('accounts.create', () =>
@@ -136,23 +144,33 @@ export function createConnectRuntime(pool: DbPool, config: ConnectConfig): Conne
       if (typeof created.id !== 'string' || !ACCOUNT_ID.test(created.id)) {
         throw new PspRejectedError('Resposta da Stripe sem identificador de conta.');
       }
-
-      const result = await withTenant(pool, { tenantId: input.tenantId, userId: input.userId }, async (client) => {
-        const { rows } = await client.query<{ result: string }>(
-          'SELECT result FROM app.connect_register_account($1, $2, $3::payment_environment, $4)',
-          [input.tenantId, input.userId, environment, created.id],
-        );
-        return rows[0]!.result;
-      });
-      if (result === 'account_taken') {
-        log?.warn('payment_account.connect_account_taken', { tenant_id: input.tenantId });
-        throw new PaymentAccountUnavailableError('ACCOUNT_TAKEN');
-      }
       account = created.id;
-      log?.info('payment_account.connect_registered', { tenant_id: input.tenantId, result });
     }
 
     const connected = account;
+    // Registra (ou religa). Ja vinculada: 'already_linked', nada muda.
+    const result = await withTenant(pool, { tenantId: input.tenantId, userId: input.userId }, async (client) => {
+      const { rows } = await client.query<{ result: string }>(
+        'SELECT result FROM app.connect_register_account($1, $2, $3::payment_environment, $4)',
+        [input.tenantId, input.userId, environment, connected],
+      );
+      return rows[0]!.result;
+    });
+    if (result === 'account_taken') {
+      log?.warn('payment_account.connect_account_taken', { tenant_id: input.tenantId });
+      throw new PaymentAccountUnavailableError('ACCOUNT_TAKEN');
+    }
+    if (result === 'connected') {
+      log?.info('payment_account.connect_registered', { tenant_id: input.tenantId, result });
+      // Vinculo novo (ou religado) nasce sem estado: le da Stripe agora. Falhar aqui nao impede
+      // o cadastro; o webhook ou a proxima chamada corrigem.
+      try {
+        await syncAccount(connected);
+      } catch {
+        log?.warn('payment_account.connect_sync_failed', { tenant_id: input.tenantId });
+      }
+    }
+
     const link = await stripeCall('accountLinks.create', () =>
       stripe.accountLinks.create({
         account: connected,
@@ -174,12 +192,10 @@ export function createConnectRuntime(pool: DbPool, config: ConnectConfig): Conne
     const due = [...new Set([...stringList(req['currently_due']), ...stringList(req['past_due'])])];
 
     const updated = await withContext(pool, NULL_CONTEXT, async (client) => {
-      const { rows } = await client.query<{ n: number }>('SELECT app.connect_apply_account_state($1, $2, $3, $4) AS n', [
-        stripeAccountId,
-        acct.charges_enabled === true,
-        acct.payouts_enabled === true,
-        due,
-      ]);
+      const { rows } = await client.query<{ n: number }>(
+        'SELECT app.connect_apply_account_state($1, $2::payment_environment, $3, $4, $5) AS n',
+        [stripeAccountId, environment, acct.charges_enabled === true, acct.payouts_enabled === true, due],
+      );
       return rows[0]!.n;
     });
     log?.info('payment_account.connect_synced', {
