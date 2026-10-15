@@ -8,7 +8,9 @@ import {
   hasTestDatabase,
   ownerPool,
   resetFoundationTables,
+  seedMembership,
   seedTenant,
+  seedUser,
   unique,
   workerPool,
 } from './helpers/testDb.js';
@@ -280,6 +282,158 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
       );
       expect(rows).toHaveLength(3);
       for (const r of rows) expect(r).toMatchObject({ pub: false, u: true, w: true });
+    });
+  });
+
+  describe('0029 · cadastro e estado da conta Connect', () => {
+    const acct = () => unique('acct_').replace(/[^A-Za-z0-9_]/g, '');
+
+    async function dono(tenantId: string) {
+      const u = await seedUser(owner, `${unique('dono-')}@example.com`, 'Dono');
+      await seedMembership(owner, { tenantId, userId: u.userId, role: 'OWNER' });
+      return u.userId;
+    }
+
+    const registrar = (ctxTenant: string, tenantId: string, userId: string, account: string, env = 'SANDBOX') =>
+      comoTenant(ctxTenant, (db) =>
+        db.query<{ result: string; account_id: string | null; authorization_id: string | null }>(
+          'SELECT * FROM app.connect_register_account($1, $2, $3::payment_environment, $4)',
+          [tenantId, userId, env, account],
+        ),
+      ).then((r) => r.rows[0]!);
+
+    const aplicar = (pool: DbPool, account: string, charges: boolean, payouts: boolean, req: string[]) =>
+      pool
+        .query<{ n: number }>('SELECT app.connect_apply_account_state($1, $2, $3, $4) AS n', [account, charges, payouts, req])
+        .then((r) => r.rows[0]!.n);
+
+    const estado = async (account: string) =>
+      (
+        await owner.query<{ provider: string; status: string; c: boolean | null; p: boolean | null; r: string[]; tok: boolean }>(
+          `SELECT provider::text, status::text, charges_enabled AS c, payouts_enabled AS p, requirements_due AS r,
+                  (access_token_encrypted IS NOT NULL OR refresh_token_encrypted IS NOT NULL) AS tok
+             FROM payment_provider_authorizations WHERE provider_account_id = $1 ORDER BY provider`,
+          [account],
+        )
+      ).rows;
+
+    it('registra a conta: autorizacao STRIPE ACTIVE sem token + vinculo CONNECTED; repetir nao duplica', async () => {
+      const t = await tenant();
+      const u = await dono(t);
+      const a = acct();
+      const r1 = await registrar(t, t, u, a);
+      expect(r1.result).toBe('connected');
+      const r2 = await registrar(t, t, u, a);
+      expect(r2).toMatchObject({ result: 'already_linked', account_id: r1.account_id, authorization_id: r1.authorization_id });
+      expect(await estado(a)).toEqual([{ provider: 'STRIPE', status: 'ACTIVE', c: null, p: null, r: [], tok: false }]);
+      const links = await owner.query('SELECT status::text FROM tenant_payment_accounts WHERE authorization_id = $1', [
+        r1.authorization_id,
+      ]);
+      expect(links.rows).toEqual([{ status: 'CONNECTED' }]);
+      const audit = await owner.query(
+        `SELECT 1 FROM audit_events WHERE tenant_id = $1 AND action = 'payment_account.connected' AND target_id = $2`,
+        [t, r1.account_id],
+      );
+      expect(audit.rowCount).toBe(1);
+    });
+
+    it('uma comunidade nao registra conta em nome de outra (caller_can_touch_tenant)', async () => {
+      const a = await tenant();
+      const b = await tenant();
+      const ub = await dono(b);
+      await expect(registrar(a, b, ub, acct())).rejects.toThrow(/sem acesso a comunidade/);
+      const n = await owner.query('SELECT 1 FROM tenant_payment_accounts WHERE tenant_id = $1', [b]);
+      expect(n.rowCount).toBe(0);
+    });
+
+    it('conta ja vinculada a OUTRA comunidade e recusada (o acct_ nao prova posse)', async () => {
+      const a = await tenant();
+      const b = await tenant();
+      const conta = acct();
+      expect((await registrar(b, b, await dono(b), conta)).result).toBe('connected');
+      const r = await registrar(a, a, await dono(a), conta);
+      expect(r).toEqual({ result: 'account_taken', account_id: null, authorization_id: null });
+      const n = await owner.query('SELECT 1 FROM tenant_payment_accounts WHERE tenant_id = $1', [a]);
+      expect(n.rowCount).toBe(0);
+    });
+
+    it('identificador fora do formato acct_ e recusado', async () => {
+      const t = await tenant();
+      await expect(registrar(t, t, await dono(t), 'nao-e-conta')).rejects.toThrow(/conta Stripe invalido/);
+    });
+
+    it('trocar de conta: a antiga sai de CONNECTED e a nova passa a receber', async () => {
+      const t = await tenant();
+      const u = await dono(t);
+      const r1 = await registrar(t, t, u, acct());
+      const r2 = await registrar(t, t, u, acct());
+      expect(r2.result).toBe('connected');
+      const { rows } = await owner.query<{ id: string; status: string }>(
+        'SELECT id, status::text FROM tenant_payment_accounts WHERE tenant_id = $1',
+        [t],
+      );
+      expect(rows.find((x) => x.id === r1.account_id)!.status).not.toBe('CONNECTED');
+      expect(rows.find((x) => x.id === r2.account_id)!.status).toBe('CONNECTED');
+    });
+
+    it('aplicar estado: so mexe na autorizacao STRIPE daquele acct_, sem contexto de comunidade', async () => {
+      const t = await tenant();
+      const u = await dono(t);
+      const conta = acct();
+      await registrar(t, t, u, conta);
+      // Uma autorizacao Mercado Pago com o MESMO identificador nao pode ser tocada.
+      await owner.query(
+        `INSERT INTO payment_provider_authorizations
+           (provider, environment, provider_account_id, status, access_token_encrypted, refresh_token_encrypted, credentials_key_version)
+         VALUES ('MERCADO_PAGO','SANDBOX',$1,'ACTIVE',$2,$3,1)`,
+        [conta, Buffer.from('a'), Buffer.from('r')],
+      );
+      const has = async () =>
+        (await comoTenant(t, (db) => db.query<{ ok: boolean }>('SELECT app.tenant_has_payment_account($1) AS ok', [t]))).rows[0]!.ok;
+
+      expect(await has()).toBe(false);
+      expect(await aplicar(app, conta, true, false, ['external_account'])).toBe(1);
+      expect(await has()).toBe(true);
+      const e = await estado(conta);
+      expect(e).toEqual([
+        { provider: 'MERCADO_PAGO', status: 'ACTIVE', c: null, p: null, r: [], tok: true },
+        { provider: 'STRIPE', status: 'ACTIVE', c: true, p: false, r: ['external_account'], tok: false },
+      ]);
+      expect(await aplicar(worker, conta, false, false, [])).toBe(1);
+      expect(await has()).toBe(false);
+    });
+
+    it('aplicar estado de conta desconhecida nao cria nada', async () => {
+      const conta = acct();
+      expect(await aplicar(app, conta, true, true, [])).toBe(0);
+      expect(await estado(conta)).toEqual([]);
+    });
+
+    it('requirements: limita quantidade e tamanho (nao vira deposito de corpo da Stripe)', async () => {
+      const t = await tenant();
+      const conta = acct();
+      await registrar(t, t, await dono(t), conta);
+      const muitos = Array.from({ length: 500 }, (_, i) => `campo_${i}_${'x'.repeat(400)}`);
+      await aplicar(app, conta, false, false, muitos);
+      const [s] = await estado(conta);
+      expect(s!.r.length).toBeLessThanOrEqual(100);
+      for (const r of s!.r) expect(r.length).toBeLessThanOrEqual(200);
+    });
+
+    it('as funcoes da 0029 nao sao publicas e app_user/app_worker as executam', async () => {
+      const { rows } = await owner.query<{ f: string; pub: boolean; u: boolean; w: boolean; definer: boolean; cfg: string[] | null }>(
+        `SELECT p.proname AS f, p.prosecdef AS definer, p.proconfig AS cfg,
+                has_function_privilege('public', p.oid, 'EXECUTE') AS pub,
+                has_function_privilege('app_user', p.oid, 'EXECUTE') AS u,
+                has_function_privilege('app_worker', p.oid, 'EXECUTE') AS w
+           FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'app' AND p.proname IN ('connect_register_account','connect_apply_account_state')`,
+      );
+      expect(rows).toHaveLength(2);
+      for (const r of rows) {
+        expect(r).toMatchObject({ pub: false, u: true, w: true, definer: true });
+        expect(r.cfg).toContain('search_path=public, pg_temp');
+      }
     });
   });
 });
