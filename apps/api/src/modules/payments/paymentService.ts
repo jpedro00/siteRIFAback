@@ -97,7 +97,8 @@ function exigirPagamentos(deps: AppDeps): void {
  * QUAL resolvedor atende a comunidade numa cobranca nova.
  *
  * Um provedor so ligado: o dele (o resolvedor aplica as proprias regras de conta). Sem o Connect,
- * isto e exatamente o caminho de antes. Os dois ligados: pergunta ao banco
+ * isto e exatamente o caminho de antes. Os dois ligados (no MESMO ambiente; senao
+ * PAYMENT_PROVIDER_UNAVAILABLE): pergunta ao banco
  * (`app.tenant_receiving_provider`) — vale a conta conectada MAIS RECENTEMENTE que pode receber
  * (Stripe so conta com `charges_enabled`). Nenhuma pode: o erro vem do resolvedor da conta mais
  * recente da comunidade (Stripe com cadastro incompleto = NOT_READY); nenhuma conta =
@@ -112,13 +113,15 @@ async function escolherResolvedor(deps: AppDeps, tenantId: string): Promise<PspG
   }
   if (!mercadoPago) return connect.resolver;
 
-  // Os dois runtimes devem estar no mesmo ambiente; se divergirem, vale o do Mercado Pago.
+  // Os dois runtimes tem de estar no mesmo ambiente. Divergiu: falha fechado (nao cobra), em vez
+  // de escolher a conta num ambiente e cobrar no outro.
   const ambiente = mercadoPago.environment;
   if (connect.environment !== ambiente) {
-    log.warn('recebimento: ambientes do Mercado Pago e do Connect divergem; vale o do Mercado Pago', {
+    log.error('recebimento: ambientes do Mercado Pago e do Connect divergem; cobranca recusada', {
       mercado_pago: ambiente,
       connect: connect.environment,
     });
+    throw new ApiError('PAYMENT_PROVIDER_UNAVAILABLE');
   }
 
   const provedor = await withTenant(deps.pool, { tenantId }, async (client) => {

@@ -74,11 +74,30 @@ class FakeStripe {
     }),
   };
 
+  /** A proxima criacao de PaymentIntent falha com este erro (uma vez). */
+  failNextCreate: Error | null = null;
+  readonly #paramsByKey = new Map<string, string>();
+
   readonly paymentIntents = {
     create: async (params: Record<string, unknown>, opts?: Record<string, unknown>) => {
       this.intents.push({ params, opts });
+      if (this.failNextCreate) {
+        const e = this.failNextCreate;
+        this.failNextCreate = null;
+        throw e;
+      }
       const key = opts?.['idempotencyKey'];
-      if (typeof key === 'string' && this.#intentByKey.has(key)) return this.#intentByKey.get(key)!;
+      if (typeof key === 'string' && this.#intentByKey.has(key)) {
+        // Como a Stripe: mesma chave com parametros DIFERENTES e erro de idempotencia.
+        if (this.#paramsByKey.get(key) !== JSON.stringify(params)) {
+          throw Object.assign(new Error('Keys for idempotent requests can only be used with the same parameters'), {
+            type: 'StripeIdempotencyError',
+            statusCode: 400,
+          });
+        }
+        return this.#intentByKey.get(key)!;
+      }
+      if (typeof key === 'string') this.#paramsByKey.set(key, JSON.stringify(params));
       const intent = {
         id: `pi_${unique('t').replace(/[^A-Za-z0-9]/g, '')}`,
         object: 'payment_intent',
@@ -302,7 +321,8 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · cobranca e taxa ${hasTestDa
 
       expect(stripe.intents).toHaveLength(antes + 1);
       const chamada = stripe.intents.at(-1)!;
-      expect(chamada.opts?.['idempotencyKey']).toBe(orderId);
+      // Chave = pedido + impressao digital dos parametros.
+      expect(chamada.opts?.['idempotencyKey']).toMatch(new RegExp(`^${orderId}:[0-9a-f]{16}$`));
       expect(chamada.params).toMatchObject({
         amount: 1999,
         currency: 'brl',
@@ -475,6 +495,140 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · cobranca e taxa ${hasTestDa
       const { pagamento } = await compraOk(soStripe, c, 1500);
       expect(pagamento).toMatchObject({ amount_cents: 1500, platform_fee_bps: 10_000, platform_fee_cents: 1500 });
       expect(stripe.intents.at(-1)!.params['application_fee_amount']).toBe(1500);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('nova tentativa depois de falha parcial (idempotencia na Stripe x linha no banco)', () => {
+    const pedidoMaisRecente = async (tenantId: string) =>
+      (
+        await soStripe.owner.query<{ id: string }>(
+          'SELECT id FROM orders WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 1',
+          [tenantId],
+        )
+      ).rows[0]!.id;
+
+    const gerarPix = (h: Harness, c: Comunidade, orderId: string) =>
+      request(h.app).post(`/api/public/orders/${orderId}/payment`).set('x-tenant-slug', c.slug);
+
+    /**
+     * A PROXIMA gravacao de pagamento desta comunidade falha uma vez (a cobranca ja saiu na Stripe).
+     * Sequencia, e nao tabela: o `nextval` sobrevive ao rollback do INSERT que falhou.
+     */
+    async function falharProximaGravacao(tenantId: string): Promise<() => Promise<void>> {
+      const nome = unique('falha_').replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+      const o = soStripe.owner;
+      await o.query(`CREATE SEQUENCE ${nome}_seq`);
+      await o.query(
+        `CREATE FUNCTION ${nome}_fn() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $f$
+         BEGIN
+           IF NEW.tenant_id = '${tenantId}'::uuid AND nextval('${nome}_seq') = 1 THEN
+             RAISE EXCEPTION 'falha simulada na gravacao do pagamento';
+           END IF;
+           RETURN NEW;
+         END $f$`,
+      );
+      await o.query(`CREATE TRIGGER ${nome}_tg BEFORE INSERT ON payments FOR EACH ROW EXECUTE FUNCTION ${nome}_fn()`);
+      return async () => {
+        await o.query(`DROP TRIGGER IF EXISTS ${nome}_tg ON payments`);
+        await o.query(`DROP FUNCTION IF EXISTS ${nome}_fn()`);
+        await o.query(`DROP SEQUENCE IF EXISTS ${nome}_seq`);
+      };
+    }
+
+    it('PI criado mas a gravacao falhou; a nova tentativa (com taxa nova) cobra e o pedido mostra o PI da linha', async () => {
+      const c = await novaComunidade(soStripe, 'ci-');
+      await cadastrarStripe(c, true);
+      const planId = await plano(300);
+      await assinar(c, planId);
+      const antes = stripe.intents.length;
+
+      const desfazer = await falharProximaGravacao(c.tenantId);
+      try {
+        const primeira = await comprar(soStripe, c, 1999);
+        expect(primeira.status).toBe(500);
+      } finally {
+        await desfazer();
+      }
+      const orderId = await pedidoMaisRecente(c.tenantId);
+      expect(stripe.intents).toHaveLength(antes + 1);
+      expect(await pagamentosDa(c.tenantId)).toBe(0);
+
+      // Entre as tentativas o plano muda: os parametros da cobranca mudam (taxa e prazo).
+      await soStripe.owner.query('UPDATE plans SET platform_fee_bps = 800 WHERE id = $1', [planId]);
+
+      const segunda = await gerarPix(soStripe, c, orderId);
+      expect(segunda.status, JSON.stringify(segunda.body)).toBe(200);
+      expect(stripe.intents).toHaveLength(antes + 2);
+
+      const linha = await pagamentoDe(orderId);
+      expect(linha).toMatchObject({ provider: 'STRIPE', platform_fee_bps: 800, platform_fee_cents: 159 });
+      const { rows } = await soStripe.owner.query<{ pix_copy_paste: string }>(
+        'SELECT pix_copy_paste FROM payments WHERE order_id = $1',
+        [orderId],
+      );
+      expect(segunda.body.payment.copyPaste).toBe(rows[0]!.pix_copy_paste);
+      // As duas tentativas usaram chaves diferentes (pedido + impressao dos parametros).
+      const [k1, k2] = stripe.intents.slice(-2).map((i) => i.opts?.['idempotencyKey'] as string);
+      expect(k1).not.toBe(k2);
+      expect(k1!.startsWith(`${orderId}:`)).toBe(true);
+      expect(k2!.startsWith(`${orderId}:`)).toBe(true);
+
+      // E a consulta seguinte devolve o mesmo pagamento, sem nova cobranca.
+      const terceira = await gerarPix(soStripe, c, orderId);
+      expect(terceira.body.payment.copyPaste).toBe(rows[0]!.pix_copy_paste);
+      expect(stripe.intents).toHaveLength(antes + 2);
+    });
+
+    it('duplo envio simultaneo: UMA linha de pagamento e as duas respostas mostram o QR dela', async () => {
+      const c = await novaComunidade(soStripe, 'cd-');
+      await cadastrarStripe(c, true);
+      // A primeira cobranca (no checkout) falha de forma temporaria: o pedido nasce sem PIX.
+      stripe.failNextCreate = Object.assign(new Error('rede'), { type: 'StripeConnectionError' });
+      const pedido = await comprar(soStripe, c, 1999);
+      expect(pedido.status).toBe(201);
+      expect(pedido.body.payment).toBeNull();
+      const orderId = pedido.body.orderId as string;
+
+      const respostas = await Promise.all([gerarPix(soStripe, c, orderId), gerarPix(soStripe, c, orderId)]);
+      for (const r of respostas) expect(r.status, JSON.stringify(r.body)).toBe(200);
+
+      const { rows } = await soStripe.owner.query<{ pix_copy_paste: string }>(
+        'SELECT pix_copy_paste FROM payments WHERE order_id = $1',
+        [orderId],
+      );
+      expect(rows).toHaveLength(1);
+      for (const r of respostas) expect(r.body.payment.copyPaste).toBe(rows[0]!.pix_copy_paste);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('ambientes divergentes entre Mercado Pago e Connect', () => {
+    it('falha fechado: PAYMENT_PROVIDER_UNAVAILABLE e nenhuma cobranca', async () => {
+      // Runtime Connect que se declara de outro ambiente (o resto e o real).
+      const divergente: ConnectRuntime = { ...connect, environment: 'PRODUCTION' };
+      const h = await createHarness({ paymentAccounts: mpRuntime, connect: divergente });
+      try {
+        const c = await novaComunidade(h, 'cenv-');
+        await cadastrarStripe(c, true);
+        const antes = stripe.intents.length;
+        const mpAntes = mp.callsTo('/v1/payments');
+
+        const pedido = await comprar(h, c);
+        // O checkout engole a indisponibilidade do provedor: o pedido nasce sem PIX.
+        expect(pedido.status).toBe(201);
+        expect(pedido.body.payment).toBeNull();
+        const res = await request(h.app)
+          .post(`/api/public/orders/${pedido.body.orderId as string}/payment`)
+          .set('x-tenant-slug', c.slug);
+        expect(res.status).toBe(503);
+        expect(res.body.error.code).toBe('PAYMENT_PROVIDER_UNAVAILABLE');
+        expect(stripe.intents).toHaveLength(antes);
+        expect(mp.callsTo('/v1/payments')).toBe(mpAntes);
+        expect(await pagamentosDa(c.tenantId)).toBe(0);
+      } finally {
+        await h.close();
+      }
     });
   });
 });
