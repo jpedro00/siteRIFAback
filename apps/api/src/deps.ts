@@ -2,7 +2,7 @@ import type { DbPool } from '@clubedarifa/db';
 import type { AppConfig } from './config.js';
 import type { LoginThrottle } from './lib/loginThrottle.js';
 import type { SecretBox } from './lib/secretBox.js';
-import type { PaymentAccountsRuntime } from '@clubedarifa/payment-accounts';
+import type { ConnectRuntime, PaymentAccountsRuntime } from '@clubedarifa/payment-accounts';
 import type { BillingGateway } from '@clubedarifa/billing';
 import type { PasswordResetNotifier } from './lib/passwordResetNotifier.js';
 
@@ -25,6 +25,12 @@ export interface AppDeps {
    * de fingir que cobrou. NAO existe credencial global: cada comunidade usa a propria conta.
    */
   readonly paymentAccounts: PaymentAccountsRuntime | null;
+  /**
+   * Recebimento via Stripe Connect (conta Express do criador; a chave e da PLATAFORMA). `null` =
+   * desligado (padrao): o Mercado Pago segue exatamente como antes. Com os dois ligados, cada
+   * cobranca NOVA vai para a conta da comunidade conectada mais recentemente que pode receber.
+   */
+  readonly connect: ConnectRuntime | null;
   /**
    * Cobranca da PLATAFORMA (Stripe). `null` = desligada (padrao). Separada de `paymentAccounts`:
    * o dinheiro do participante e o da assinatura nao passam pelo mesmo caminho.

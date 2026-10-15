@@ -25,6 +25,8 @@ async function main(): Promise<void> {
     pool,
     secretBox: new SecretBox(config.MFA_ENCRYPTION_KEY),
     paymentAccounts: createPaymentAccounts(config, pool),
+    // Stripe Connect: desligado ate existir a configuracao propria (CONNECT_ENABLED).
+    connect: null,
     ...(config.EMAIL_PROVIDER === 'brevo' && config.BREVO_API_KEY && config.EMAIL_FROM_ADDRESS
       ? {
           passwordResetNotifier: createBrevoPasswordResetNotifier({

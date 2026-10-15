@@ -319,6 +319,12 @@ export const paymentAccountSchema = z.object({
   canReceivePayments: z.boolean(),
   /** Pagamentos que ainda dependem da credencial (uma desconexao espera por eles). */
   openObligations: z.number().int().min(0),
+  /** Stripe Connect: a conta ja pode cobrar? `null` no Mercado Pago (ou estado ainda desconhecido). */
+  chargesEnabled: z.boolean().nullable(),
+  /** Stripe Connect: a conta ja recebe repasses? `null` no Mercado Pago (ou estado ainda desconhecido). */
+  payoutsEnabled: z.boolean().nullable(),
+  /** Stripe Connect: o que falta no cadastro (codigos da Stripe). Vazio no Mercado Pago. */
+  requirementsDue: z.array(z.string()),
 });
 export type PaymentAccount = z.infer<typeof paymentAccountSchema>;
 

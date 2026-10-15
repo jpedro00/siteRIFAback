@@ -37,6 +37,9 @@ interface OverviewRow {
   disconnect_requested_at: Date | null;
   can_receive: boolean;
   open_obligations: number;
+  charges_enabled: boolean | null;
+  payouts_enabled: boolean | null;
+  requirements_due: string[] | null;
 }
 
 const iso = (v: Date | string | null): string | null => (v === null ? null : new Date(v).toISOString());
@@ -56,6 +59,9 @@ function toAccount(r: OverviewRow): PaymentAccount {
     disconnectRequestedAt: iso(r.disconnect_requested_at),
     canReceivePayments: r.can_receive,
     openObligations: r.open_obligations,
+    chargesEnabled: r.charges_enabled,
+    payoutsEnabled: r.payouts_enabled,
+    requirementsDue: r.requirements_due ?? [],
   };
 }
 
@@ -77,12 +83,17 @@ export async function listPaymentAccounts(
     const { rows: apto } = await client.query<{ ok: boolean }>('SELECT app.tenant_has_payment_account($1) AS ok', [
       input.tenantId,
     ]);
-    const enabled = deps.paymentAccounts?.enabled === true;
+    // Ligado = ao menos uma forma de recebimento disponivel (OAuth do Mercado Pago ou Connect).
+    const enabled = deps.paymentAccounts?.enabled === true || deps.connect !== null;
+    // So conta a conta cujo provedor esta ligado nesta implantacao: uma Stripe pronta com o
+    // Connect desligado nao recebe nada.
+    const ligado = (provider: OverviewRow['provider']) =>
+      provider === 'STRIPE' ? deps.connect !== null : deps.paymentAccounts !== null;
     return {
       enabled,
       accounts: rows.map(toAccount),
-      // Checkout pago: precisa de modulo ligado E conta conectada com autorizacao utilizavel.
-      checkoutAvailable: deps.paymentAccounts !== null && apto[0]!.ok,
+      // Checkout pago: precisa de modulo ligado E conta conectada que pode receber.
+      checkoutAvailable: apto[0]!.ok && rows.some((r) => r.can_receive && ligado(r.provider)),
     };
   });
 }

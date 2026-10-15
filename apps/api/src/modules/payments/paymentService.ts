@@ -1,5 +1,5 @@
 import { withoutContext, withTenant, type PoolClient } from '@clubedarifa/db';
-import { RESERVATION_TTL_MINUTES, type OrderResponse } from '@clubedarifa/shared';
+import { RESERVATION_TTL_MINUTES, computePlatformFeeCents, type OrderResponse } from '@clubedarifa/shared';
 import type { AppDeps } from '../../deps.js';
 import { creatorDisabledMethods } from '../../lib/paymentPrefs.js';
 import { ApiError } from '../../lib/apiError.js';
@@ -9,6 +9,7 @@ import {
   PaymentsNotConfiguredError,
   PspRejectedError,
   PspUnavailableError,
+  type PspGatewayResolver,
   type PspPayment,
   type PspResolution,
 } from '@clubedarifa/psp';
@@ -87,9 +88,57 @@ async function chamarFuncao(
 // Gerar o PIX
 // ---------------------------------------------------------------------------
 
-function exigirPagamentos(deps: AppDeps) {
-  if (!deps.paymentAccounts) throw new ApiError('PAYMENT_PROVIDER_UNAVAILABLE');
-  return deps.paymentAccounts;
+/** Algum provedor de recebimento ligado (Mercado Pago, Stripe Connect ou os dois)? */
+function exigirPagamentos(deps: AppDeps): void {
+  if (!deps.paymentAccounts && !deps.connect) throw new ApiError('PAYMENT_PROVIDER_UNAVAILABLE');
+}
+
+/**
+ * QUAL resolvedor atende a comunidade numa cobranca nova.
+ *
+ * Um provedor so ligado: o dele (o resolvedor aplica as proprias regras de conta). Sem o Connect,
+ * isto e exatamente o caminho de antes. Os dois ligados: pergunta ao banco
+ * (`app.tenant_receiving_provider`) — vale a conta conectada MAIS RECENTEMENTE que pode receber
+ * (Stripe so conta com `charges_enabled`). Nenhuma pode: o erro vem do resolvedor da conta mais
+ * recente da comunidade (Stripe com cadastro incompleto = NOT_READY); nenhuma conta =
+ * PaymentsNotConfiguredError.
+ */
+async function escolherResolvedor(deps: AppDeps, tenantId: string): Promise<PspGatewayResolver> {
+  const mercadoPago = deps.paymentAccounts;
+  const connect = deps.connect;
+  if (!connect) {
+    if (!mercadoPago) throw new ApiError('PAYMENT_PROVIDER_UNAVAILABLE');
+    return mercadoPago.resolver;
+  }
+  if (!mercadoPago) return connect.resolver;
+
+  // Os dois runtimes devem estar no mesmo ambiente; se divergirem, vale o do Mercado Pago.
+  const ambiente = mercadoPago.environment;
+  if (connect.environment !== ambiente) {
+    log.warn('recebimento: ambientes do Mercado Pago e do Connect divergem; vale o do Mercado Pago', {
+      mercado_pago: ambiente,
+      connect: connect.environment,
+    });
+  }
+
+  const provedor = await withTenant(deps.pool, { tenantId }, async (client) => {
+    const { rows } = await client.query<{ provider: string }>(
+      'SELECT provider::text AS provider FROM app.tenant_receiving_provider($1, $2::payment_environment)',
+      [tenantId, ambiente],
+    );
+    if (rows[0]) return rows[0].provider;
+    // Ninguem recebe: a conta mais recente (mesma ordem dos resolvedores) diz o porque.
+    const { rows: ultima } = await client.query<{ provider: string }>(
+      `SELECT provider::text AS provider FROM app.payment_account_overview($1)
+        WHERE environment = $2::payment_environment
+        ORDER BY (status = 'CONNECTED') DESC, connected_at DESC
+        LIMIT 1`,
+      [tenantId, ambiente],
+    );
+    return ultima[0]?.provider ?? null;
+  });
+  if (provedor === null) throw new PaymentsNotConfiguredError();
+  return provedor === 'STRIPE' ? connect.resolver : mercadoPago.resolver;
 }
 
 /**
@@ -98,7 +147,7 @@ function exigirPagamentos(deps: AppDeps) {
  */
 async function resolverPspDaComunidade(deps: AppDeps, tenantId: string): Promise<PspResolution> {
   try {
-    return await exigirPagamentos(deps).resolver.forTenant(tenantId);
+    return await (await escolherResolvedor(deps, tenantId)).forTenant(tenantId);
   } catch (error) {
     if (error instanceof PaymentsNotConfiguredError) throw new ApiError('PAYMENTS_NOT_CONFIGURED');
     if (error instanceof PaymentAccountUnavailableError) {
@@ -106,6 +155,12 @@ async function resolverPspDaComunidade(deps: AppDeps, tenantId: string): Promise
     }
     throw error;
   }
+}
+
+/** Taxa vigente da plataforma, em pontos-base: plano da assinatura viva, senao o padrao. */
+async function taxaVigenteBps(client: PoolClient, tenantId: string): Promise<number> {
+  const { rows } = await client.query<{ bps: number }>('SELECT app.tenant_platform_fee_bps($1) AS bps', [tenantId]);
+  return rows[0]!.bps;
 }
 
 /**
@@ -168,14 +223,29 @@ export async function ensurePixPayment(
     if (expiraEm <= Date.now() + 30_000) {
       throw ApiError.conflict('O prazo desta reserva terminou. Escolha os números novamente.');
     }
-    return { pedido, expiraEm: new Date(expiraEm) };
+
+    // Taxa VIGENTE da plataforma (plano da assinatura viva, senao o padrao), lida no momento do
+    // pedido. So existe cobranca com taxa pelo Connect: sem ele, nada e lido (caminho de antes).
+    const taxaBps = deps.connect ? await taxaVigenteBps(client, input.tenantId) : null;
+    return { pedido, expiraEm: new Date(expiraEm), taxaBps };
   });
 
   if ('pronto' in preparo) return preparo.pronto;
-  const { pedido, expiraEm } = preparo;
+  const { pedido, expiraEm, taxaBps } = preparo;
 
   // A conta que vai receber e escolhida AGORA, pela comunidade do pedido.
   const { gateway: psp, paymentAccountId } = await resolverPspDaComunidade(deps, input.tenantId);
+
+  // Taxa CONGELADA neste pagamento: so na Stripe (destination charge com application fee). O
+  // Mercado Pago nao tem taxa de intermediacao: as colunas ficam NULL.
+  const stripe = psp.provider === 'STRIPE';
+  let taxa: { bps: number; cents: number } | null = null;
+  if (stripe) {
+    // So o runtime Connect devolve gateway STRIPE, e com ele a taxa ja foi lida no preparo.
+    const bps =
+      taxaBps ?? (await withTenant(deps.pool, { tenantId: input.tenantId }, (c) => taxaVigenteBps(c, input.tenantId)));
+    taxa = { bps, cents: computePlatformFeeCents(pedido.total_cents, bps) };
+  }
 
   const base = deps.config.PUBLIC_API_BASE_URL;
   let cobranca: PspPayment;
@@ -188,7 +258,9 @@ export async function ensurePixPayment(
       payerEmail: pedido.buyer_email,
       payerName: pedido.buyer_name.split(' ')[0] ?? pedido.buyer_name,
       expiresAt: expiraEm,
-      notificationUrl: base ? `${base}/api/webhooks/mercadopago/${input.tenantSlug}` : null,
+      // O aviso do Mercado Pago chega por esta URL; o da Stripe tem rota e segredo proprios.
+      notificationUrl: !stripe && base ? `${base}/api/webhooks/mercadopago/${input.tenantSlug}` : null,
+      ...(taxa ? { platformFeeCents: taxa.cents } : {}),
     });
   } catch (error) {
     if (error instanceof PspUnavailableError) {
@@ -212,11 +284,14 @@ export async function ensurePixPayment(
   return withTenant(deps.pool, { tenantId: input.tenantId }, async (client) => {
     // `ON CONFLICT (idempotency_key) DO NOTHING`: se outra chamada concorrente
     // ja gravou a cobranca deste pedido, a nossa nao cria uma segunda linha.
+    // A taxa so entra quando ha taxa (Stripe): sem ela o comando e o mesmo de antes do Connect.
+    const colunasTaxa = taxa ? ', platform_fee_bps, platform_fee_cents' : '';
+    const valoresTaxa = taxa ? ', $12, $13' : '';
     await client.query(
       `INSERT INTO payments
          (tenant_id, order_id, provider, provider_payment_id, status, idempotency_key,
-          amount_cents, pix_copy_paste, pix_qr_base64, expires_at, raw, payment_account_id)
-       VALUES ($1, $2, $3, $4, 'PENDENTE', $5, $6, $7, $8, $9, $10::jsonb, $11)
+          amount_cents, pix_copy_paste, pix_qr_base64, expires_at, raw, payment_account_id${colunasTaxa})
+       VALUES ($1, $2, $3, $4, 'PENDENTE', $5, $6, $7, $8, $9, $10::jsonb, $11${valoresTaxa})
        ON CONFLICT (idempotency_key) DO NOTHING`,
       [
         input.tenantId,
@@ -230,6 +305,7 @@ export async function ensurePixPayment(
         expiraEm.toISOString(),
         JSON.stringify(cobranca.raw ?? null),
         paymentAccountId,
+        ...(taxa ? [taxa.bps, taxa.cents] : []),
       ],
     );
     return montarPedido(client, input.orderId);

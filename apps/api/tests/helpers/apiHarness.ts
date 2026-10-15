@@ -7,7 +7,7 @@ import { loadConfig, type AppConfig } from '../../src/config.js';
 import { LoginThrottle } from '../../src/lib/loginThrottle.js';
 import { SecretBox } from '../../src/lib/secretBox.js';
 import type { PspGateway } from '@clubedarifa/psp';
-import type { PaymentAccountsRuntime } from '@clubedarifa/payment-accounts';
+import type { ConnectRuntime, PaymentAccountsRuntime } from '@clubedarifa/payment-accounts';
 import { staticPaymentAccountsRuntime } from '@clubedarifa/payment-accounts/testing';
 import type { BillingDeps } from '../../src/deps.js';
 import type { PasswordResetNotifier } from '../../src/lib/passwordResetNotifier.js';
@@ -111,6 +111,11 @@ export interface HarnessOptions {
    */
   readonly paymentAccounts?: PaymentAccountsRuntime | null;
   /**
+   * Recebimento via Stripe Connect. PADRAO desligado. Os testes de Connect passam o runtime
+   * real sobre uma Stripe EM MEMORIA.
+   */
+  readonly connect?: ConnectRuntime | null;
+  /**
    * Cobranca da PLATAFORMA (Stripe) injetada. PADRAO nenhuma (desligada). Os testes de
    * assinatura passam o gateway real da Stripe sobre um cliente EM MEMORIA.
    */
@@ -165,6 +170,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     secretBox: new SecretBox(TEST_MFA_KEY),
     loginThrottle,
     paymentAccounts: options.paymentAccounts ?? (options.psp ? staticPaymentAccountsRuntime(options.psp) : null),
+    connect: options.connect ?? null,
     billing: options.billing ?? null,
     ...(options.passwordResetNotifier ? { passwordResetNotifier: options.passwordResetNotifier } : {}),
   });
