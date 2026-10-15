@@ -5,6 +5,7 @@ import { LoginThrottle } from './lib/loginThrottle.js';
 import { SecretBox } from './lib/secretBox.js';
 import { createBrevoPasswordResetNotifier } from './lib/brevoEmail.js';
 import { createPaymentAccounts } from './modules/paymentAccounts/paymentAccountsSetup.js';
+import { createConnect } from './modules/paymentAccounts/connectSetup.js';
 import { createBillingDeps } from './modules/billing/billingSetup.js';
 
 /** Entrada do processo da API. */
@@ -25,8 +26,9 @@ async function main(): Promise<void> {
     pool,
     secretBox: new SecretBox(config.MFA_ENCRYPTION_KEY),
     paymentAccounts: createPaymentAccounts(config, pool),
-    // Stripe Connect: desligado ate existir a configuracao propria (CONNECT_ENABLED).
-    connect: null,
+    // Stripe Connect: `null` com CONNECT_ENABLED=false (padrao). Chave x ambiente incoerentes
+    // derrubam a subida aqui.
+    connect: createConnect(config, pool),
     ...(config.EMAIL_PROVIDER === 'brevo' && config.BREVO_API_KEY && config.EMAIL_FROM_ADDRESS
       ? {
           passwordResetNotifier: createBrevoPasswordResetNotifier({
@@ -51,7 +53,8 @@ async function main(): Promise<void> {
         `cabecalho de comunidade: ${config.TENANT_HEADER_ENABLED ? 'ligado' : 'desligado'}; ` +
         `pagamento: ${config.PSP_PROVIDER}; ` +
         `e-mail: ${config.EMAIL_PROVIDER}; ` +
-        `assinaturas: ${config.BILLING_PROVIDER}`,
+        `assinaturas: ${config.BILLING_PROVIDER}; ` +
+        `stripe connect: ${config.CONNECT_ENABLED ? 'ligado' : 'desligado'}`,
     );
   });
 

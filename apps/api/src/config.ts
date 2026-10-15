@@ -203,6 +203,34 @@ const configSchema = z.object({
   STRIPE_WEBHOOK_SECRET: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
   /** URL do painel do organizador: para onde a Stripe devolve a pessoa (sem barra final). */
   BILLING_RETURN_URL: z.string().optional().transform((v) => (v?.trim() ? v.trim().replace(/\/+$/, '') : undefined)),
+
+  /**
+   * Recebimento dos criadores via Stripe Connect (conta Express; destination charge com a taxa
+   * da plataforma). PADRAO: desligado — as rotas de cadastro e o webhook Connect respondem 404 e
+   * o Mercado Pago segue exatamente como antes.
+   *
+   * Ligado, exige `STRIPE_SECRET_KEY` (a MESMA chave da plataforma; restrita `rk_` de preferencia),
+   * `STRIPE_CONNECT_WEBHOOK_SECRET` e a URL do painel (`ORGANIZER_PANEL_URL`, ou
+   * `BILLING_RETURN_URL` na falta dela), para onde a Stripe devolve o criador depois do cadastro.
+   * O ambiente segue o processo: `production` = PRODUCTION (chave live), o resto = SANDBOX.
+   */
+  CONNECT_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
+   * Segredo(s) de assinatura do webhook Connect (`whsec_...`). A Stripe entrega os eventos das
+   * CONTAS CONECTADAS (`account.updated`) e os da PROPRIA conta (o PaymentIntent de uma
+   * destination charge mora na plataforma) por endpoints diferentes, cada um com o seu segredo:
+   * aceita um ou mais, separados por virgula. Vazio conta como ausente.
+   */
+  STRIPE_CONNECT_WEBHOOK_SECRET: z
+    .string()
+    .optional()
+    .transform((v) => {
+      const lista = (v ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
+      return lista.length > 0 ? lista.join(',') : undefined;
+    }),
 });
 
 export type AppConfig = Readonly<z.infer<typeof configSchema>> & {
@@ -264,9 +292,41 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       },
     )
     .refine(
-      (value) => !(value.STRIPE_SECRET_KEY?.startsWith('sk_live_') && value.NODE_ENV !== 'production'),
+      (value) =>
+        !value.CONNECT_ENABLED ||
+        (value.STRIPE_SECRET_KEY !== undefined &&
+          value.STRIPE_CONNECT_WEBHOOK_SECRET !== undefined &&
+          (value.ORGANIZER_PANEL_URL !== undefined || value.BILLING_RETURN_URL !== undefined)),
       {
-        message: 'Chave LIVE da Stripe (sk_live_...) so e aceita com NODE_ENV=production. Use sk_test_... aqui.',
+        message:
+          'CONNECT_ENABLED=true exige STRIPE_SECRET_KEY, STRIPE_CONNECT_WEBHOOK_SECRET e ORGANIZER_PANEL_URL (ou BILLING_RETURN_URL): sem a chave nao ha como cadastrar nem cobrar, sem o segredo do webhook nao ha como validar os avisos, e sem a URL do painel a Stripe nao sabe para onde devolver o criador.',
+        path: ['CONNECT_ENABLED'],
+      },
+    )
+    .refine(
+      (value) =>
+        !(
+          (value.STRIPE_SECRET_KEY?.startsWith('sk_live_') || value.STRIPE_SECRET_KEY?.startsWith('rk_live_')) &&
+          value.NODE_ENV !== 'production'
+        ),
+      {
+        message:
+          'Chave LIVE da Stripe (sk_live_... ou rk_live_...) so e aceita com NODE_ENV=production. Use sk_test_.../rk_test_... aqui.',
+        path: ['STRIPE_SECRET_KEY'],
+      },
+    )
+    .refine(
+      (value) =>
+        !(
+          value.CONNECT_ENABLED &&
+          value.NODE_ENV === 'production' &&
+          value.STRIPE_SECRET_KEY !== undefined &&
+          !value.STRIPE_SECRET_KEY.startsWith('sk_live_') &&
+          !value.STRIPE_SECRET_KEY.startsWith('rk_live_')
+        ),
+      {
+        message:
+          'CONNECT_ENABLED=true com NODE_ENV=production exige chave LIVE da Stripe (sk_live_... ou rk_live_...): o ambiente PRODUCTION nunca recebe por uma conta de teste.',
         path: ['STRIPE_SECRET_KEY'],
       },
     )
