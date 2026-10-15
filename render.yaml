@@ -222,6 +222,16 @@ services:
       - key: BILLING_RETURN_URL
         sync: false
 
+      # RECEBIMENTO VIA STRIPE CONNECT — DESLIGADO por padrao. Usa a MESMA STRIPE_SECRET_KEY
+      # (chave restrita rk_test_ em staging). Ligado, exige STRIPE_CONNECT_WEBHOOK_SECRET e
+      # ORGANIZER_PANEL_URL (ou BILLING_RETURN_URL). Ver docs/runbooks/staging.md.
+      - key: CONNECT_ENABLED
+        value: 'false'
+      # Segredo(s) whsec_ do endpoint /api/webhooks/stripe-connect (dois, separados por virgula,
+      # quando houver um endpoint de "contas conectadas" e outro de "sua conta").
+      - key: STRIPE_CONNECT_WEBHOOK_SECRET
+        sync: false
+
   # ---------------------------------------------------------------------------
   # Worker — relay da outbox e consumidores
   #
@@ -287,6 +297,11 @@ services:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      # Stripe Connect: mesmo interruptor da API (a reconciliacao do PIX Stripe pelo worker
+      # usa a STRIPE_SECRET_KEY acima). O segredo do webhook Connect fica SO na API: o worker
+      # nao recebe webhook.
+      - key: CONNECT_ENABLED
+        value: 'false'
       - key: DATABASE_SSL
         value: 'true'
       # Mesma CA publica da API. Ver o comentario no servico web acima.

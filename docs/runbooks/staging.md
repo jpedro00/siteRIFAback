@@ -451,6 +451,66 @@ assinatura do aplicativo, descobre a conta do pagamento e **consulta** o pagamen
 Pago com a conta original antes de concluir a venda. Trocar `PAYMENT_CREDENTIALS_KEY` invalida
 as credenciais guardadas (as comunidades precisam reconectar).
 
+### Recebimento via Stripe Connect — desligado por padrão
+
+`CONNECT_ENABLED=false`: `POST /api/tenant/payment-accounts/connect-stripe`,
+`POST /api/tenant/payment-accounts/refresh-stripe` e `POST /api/webhooks/stripe-connect`
+respondem 404, e o Mercado Pago segue igual. Reverter = voltar para `false` (nada de dado é
+apagado).
+
+O criador cadastra uma conta **Express** pela Stripe (formulário hospedado por ela) e volta
+para `{ORGANIZER_PANEL_URL}/recebimentos`. O PIX é cobrado na conta da **plataforma**
+(destination charge) e repassado ao criador, descontada a taxa do plano; o estorno devolve a
+taxa. Não há token por criador: a chave é a da plataforma.
+
+**Chave.** Use uma chave **restrita** (`rk_test_...` em staging), com permissão de escrita em:
+Accounts, Account Links, PaymentIntents, Refunds e Transfers. É a mesma `STRIPE_SECRET_KEY` da
+cobrança da plataforma (se a cobrança estiver ligada, a chave restrita precisa também das
+permissões dela). Chave `sk_live_`/`rk_live_` é recusada fora de `NODE_ENV=production`; com o
+Connect ligado, produção exige chave live.
+
+**Webhook.** No painel da Stripe (modo **teste**), *Developers → Webhooks*, URL
+`{PUBLIC_API_BASE_URL}/api/webhooks/stripe-connect`, eventos:
+
+- `account.updated` — endpoint de **eventos das contas conectadas** (*Connected accounts*);
+- `payment_intent.succeeded`, `payment_intent.payment_failed`, `payment_intent.canceled`,
+  `charge.refunded` — numa destination charge o PaymentIntent mora na conta da **plataforma**,
+  então esses chegam pelo endpoint de **eventos da sua conta** (*Your account*).
+
+Cada endpoint tem o seu `whsec_...`: os dois vão em `STRIPE_CONNECT_WEBHOOK_SECRET`, separados
+por vírgula. O aviso **não vale como verdade**: a API grava o `event.id` (idempotência; o mesmo
+evento duas vezes tem efeito uma vez), relê a conta na Stripe (`account.updated`) ou consulta o
+PaymentIntent pela conta conectada do pagamento antes de aplicar. Falha transitória responde
+503 e a Stripe reenvia.
+
+Variáveis (API; o worker recebe só `CONNECT_ENABLED`):
+
+```text
+CONNECT_ENABLED                 = true
+STRIPE_SECRET_KEY               = <STRIPE_SECRET_KEY>             (rk_test_..., nunca no repositório)
+STRIPE_CONNECT_WEBHOOK_SECRET   = <WHSEC_CONTAS_CONECTADAS>,<WHSEC_SUA_CONTA>
+ORGANIZER_PANEL_URL             = https://<painel>                (ou BILLING_RETURN_URL)
+PUBLIC_API_BASE_URL             = https://<api>.onrender.com
+```
+
+**Ordem de ativação.**
+
+1. Pré-requisitos fora do código: Connect habilitado na conta Stripe, PIX disponível para
+   destination charges no Brasil, segmento aceito pela Stripe.
+2. Aplicar a migration `0030` (workflow **Migrar staging**) **antes** de subir o código.
+3. Staging em **modo teste**: criar a chave restrita de teste e os dois endpoints, preencher as
+   variáveis, `CONNECT_ENABLED=true`, redeploy da API e do worker.
+4. Testar ponta a ponta: cadastro → volta ao painel → `refresh-stripe` → conta pode receber →
+   compra PIX (modo teste) → webhook → pedido pago → estorno devolve a taxa.
+5. Só então produção, com chave **live** e endpoints live (segredos próprios).
+
+**Risco residual.** `app.connect_apply_account_state` (grava `charges_enabled`,
+`payouts_enabled` e pendências) pode ser chamada por qualquer sessão `app_user`, sem contexto
+de comunidade — é o que o webhook precisa. Ela só toca autorizações `STRIPE` com o `acct_` exato
+e o ambiente dado, nunca cria linha, e o único chamador (`syncAccount`) relê o estado na Stripe
+antes de gravar. Explorar isso exigiria executar SQL arbitrário como `app_user`, o que já daria
+alcance maior por outros caminhos.
+
 ### Logs
 
 Uma linha JSON por evento (`service`, `level`, `msg`, `ts`), com `request_id` (o mesmo
