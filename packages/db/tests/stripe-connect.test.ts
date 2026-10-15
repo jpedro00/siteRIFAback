@@ -1,0 +1,285 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { withTenant } from '../src/context.js';
+import type { DbPool } from '../src/pool.js';
+import {
+  appPool,
+  describeSkipReason,
+  ensureMigrated,
+  hasTestDatabase,
+  ownerPool,
+  resetFoundationTables,
+  seedTenant,
+  unique,
+  workerPool,
+} from './helpers/testDb.js';
+
+/**
+ * 0027/0028 · Stripe Connect: provedor STRIPE, taxa da plataforma e conta conectada.
+ * Fixtures semeadas pelo dono; as funcoes sao chamadas pelas roles de runtime.
+ */
+describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase ? '' : describeSkipReason()}`, () => {
+  let owner: DbPool;
+  let app: DbPool;
+  let worker: DbPool;
+
+  beforeAll(async () => {
+    await ensureMigrated();
+    owner = ownerPool();
+    app = appPool();
+    worker = workerPool();
+    await resetFoundationTables();
+  }, 120_000);
+
+  afterAll(async () => {
+    await owner?.end();
+    await app?.end();
+    await worker?.end();
+  });
+
+  const slug = () => unique('sc-').toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  const comoTenant = <T>(tenantId: string, fn: Parameters<typeof withTenant<T>>[2]) => withTenant(app, { tenantId }, fn);
+
+  async function plano(feeBps: number | null) {
+    const { rows } = await owner.query<{ id: string }>(
+      `INSERT INTO plans (code, name, billing_interval, price_cents, platform_fee_bps)
+       VALUES ($1, 'Plano fee', 'month', 1000, $2) RETURNING id`,
+      [slug(), feeBps],
+    );
+    return rows[0]!.id;
+  }
+
+  async function tenant() {
+    return (await seedTenant(owner, unique('sc-'), 'Stripe Connect')).tenantId;
+  }
+
+  async function conta(
+    tenantId: string,
+    o: { provider?: 'STRIPE' | 'MERCADO_PAGO'; charges?: boolean | null; env?: string; connectedAt?: string } = {},
+  ) {
+    const provider = o.provider ?? 'STRIPE';
+    const env = o.env ?? 'SANDBOX';
+    const mp = provider === 'MERCADO_PAGO';
+    const { rows: a } = await owner.query<{ id: string }>(
+      `INSERT INTO payment_provider_authorizations
+         (provider, environment, provider_account_id, status, access_token_encrypted, refresh_token_encrypted,
+          credentials_key_version, charges_enabled, payouts_enabled)
+       VALUES ($1::payment_provider, $2::payment_environment, $3, 'ACTIVE', $4, $5, $6, $7, $7) RETURNING id`,
+      [provider, env, unique(mp ? 'MP-' : 'acct_'), mp ? Buffer.from('a') : null, mp ? Buffer.from('r') : null, mp ? 1 : null, o.charges ?? null],
+    );
+    const { rows: v } = await owner.query<{ id: string }>(
+      `INSERT INTO tenant_payment_accounts (tenant_id, authorization_id, provider, environment, status, connected_at)
+       VALUES ($1, $2, $3::payment_provider, $4::payment_environment, 'CONNECTED', COALESCE($5::timestamptz, now())) RETURNING id`,
+      [tenantId, a[0]!.id, provider, env, o.connectedAt ?? null],
+    );
+    return { authorizationId: a[0]!.id, accountId: v[0]!.id };
+  }
+
+  async function pagamento(
+    tenantId: string,
+    extra: { provider?: string; bps?: number | null; cents?: number | null; accountId?: string | null } = {},
+  ) {
+    const { rows: d } = await owner.query<{ id: string }>(
+      `INSERT INTO draws (tenant_id, slug, title, prize_name, ticket_price_cents, total_numbers) VALUES ($1,$2,'T','P',1000,100) RETURNING id`,
+      [tenantId, unique('d-')],
+    );
+    const { rows: b } = await owner.query<{ id: string }>(
+      `INSERT INTO buyers (tenant_id, name, phone) VALUES ($1,'Maria','+5511912345678') RETURNING id`,
+      [tenantId],
+    );
+    const { rows: o } = await owner.query<{ id: string }>(
+      `INSERT INTO orders (tenant_id, draw_id, buyer_id, status, unit_price_cents, quantity, total_cents, accepted_terms_at)
+       VALUES ($1,$2,$3,'PENDENTE',1000,1,1000,now()) RETURNING id`,
+      [tenantId, d[0]!.id, b[0]!.id],
+    );
+    return owner.query(
+      `INSERT INTO payments (tenant_id, order_id, provider, provider_payment_id, status, idempotency_key, amount_cents, expires_at,
+                             payment_account_id, platform_fee_bps, platform_fee_cents)
+       VALUES ($1,$2,$3,$4,'PENDENTE',$8,1000, now() + interval '30 minutes', $5, $6, $7)`,
+      [
+        tenantId,
+        o[0]!.id,
+        extra.provider ?? 'FAKE',
+        unique('pp-'),
+        extra.accountId ?? null,
+        extra.bps === undefined ? null : extra.bps,
+        extra.cents === undefined ? null : extra.cents,
+        unique('idem-'),
+      ],
+    );
+  }
+
+  describe('enum e taxa', () => {
+    it('STRIPE e um valor valido do enum payment_provider', async () => {
+      const { rows } = await owner.query<{ ok: boolean }>(`SELECT 'STRIPE'::payment_provider IS NOT NULL AS ok`);
+      expect(rows[0]!.ok).toBe(true);
+    });
+
+    it('plans_fee_range rejeita 10001 e aceita 0, 500 e 10000', async () => {
+      await expect(plano(10001)).rejects.toThrow(/plans_fee_range/);
+      await expect(plano(-1)).rejects.toThrow(/plans_fee_range/);
+      for (const bps of [0, 500, 10000, null]) await expect(plano(bps)).resolves.toBeTruthy();
+    });
+
+    it('billing_settings.default_platform_fee_bps tem padrao 500 e faixa 0..10000', async () => {
+      const { rows } = await owner.query<{ d: number }>('SELECT default_platform_fee_bps AS d FROM billing_settings');
+      expect(rows[0]!.d).toBe(500);
+      await expect(owner.query('UPDATE billing_settings SET default_platform_fee_bps = 10001')).rejects.toThrow(
+        /billing_settings_fee_range/,
+      );
+    });
+  });
+
+  describe('payments', () => {
+    it('guarda a taxa congelada e valida a faixa (fee <= valor)', async () => {
+      const t = await tenant();
+      await expect(pagamento(t, { bps: 500, cents: 50 })).resolves.toBeDefined();
+      await expect(pagamento(t, { bps: 500, cents: 1001 })).rejects.toThrow(/payments_fee_valid/);
+      await expect(pagamento(t, { bps: 10001, cents: 10 })).rejects.toThrow(/payments_fee_valid/);
+      await expect(pagamento(t, { bps: 500, cents: null })).rejects.toThrow(/payments_fee_valid/);
+      await expect(pagamento(t)).resolves.toBeDefined(); // sem taxa (pagamentos antigos)
+    });
+
+    it('payments_provider_known aceita STRIPE e continua rejeitando desconhecidos', async () => {
+      const t = await tenant();
+      const c = await conta(t, { charges: true });
+      await expect(pagamento(t, { provider: 'STRIPE', accountId: c.accountId })).resolves.toBeDefined();
+      await expect(pagamento(t, { provider: 'PAYPAL', accountId: c.accountId })).rejects.toThrow(/payments_provider_known/);
+    });
+  });
+
+  describe('payment_provider_authorizations', () => {
+    it('STRIPE ACTIVE vale sem tokens; MERCADO_PAGO ACTIVE continua exigindo', async () => {
+      await expect(conta(await tenant(), { charges: false })).resolves.toBeDefined();
+      await expect(
+        owner.query(
+          `INSERT INTO payment_provider_authorizations (provider, environment, provider_account_id, status)
+           VALUES ('MERCADO_PAGO','SANDBOX',$1,'ACTIVE')`,
+          [unique('MP-')],
+        ),
+      ).rejects.toThrow(/ppa_active_has_credentials/);
+    });
+
+    it('ppa_stripe_no_tokens: conta Stripe nao guarda token', async () => {
+      await expect(
+        owner.query(
+          `INSERT INTO payment_provider_authorizations
+             (provider, environment, provider_account_id, status, access_token_encrypted, refresh_token_encrypted, credentials_key_version)
+           VALUES ('STRIPE','SANDBOX',$1,'ACTIVE',$2,$3,1)`,
+          [unique('acct_'), Buffer.from('a'), Buffer.from('r')],
+        ),
+      ).rejects.toThrow(/ppa_stripe_no_tokens/);
+    });
+
+    it('requirements_due comeca vazio e charges/payouts comecam nulos', async () => {
+      const { rows: a } = await owner.query<{ id: string }>(
+        `INSERT INTO payment_provider_authorizations (provider, environment, provider_account_id, status)
+         VALUES ('STRIPE','SANDBOX',$1,'ACTIVE') RETURNING id`,
+        [unique('acct_')],
+      );
+      const { rows } = await owner.query<{ r: string[]; c: boolean | null; p: boolean | null }>(
+        'SELECT requirements_due AS r, charges_enabled AS c, payouts_enabled AS p FROM payment_provider_authorizations WHERE id = $1',
+        [a[0]!.id],
+      );
+      expect(rows[0]).toEqual({ r: [], c: null, p: null });
+    });
+  });
+
+  describe('funcoes de recebimento', () => {
+    it('Stripe sem charges_enabled nao pode receber; com, pode (tenant_has_payment_account e overview)', async () => {
+      const t = await tenant();
+      const c = await conta(t, { charges: false });
+      const has = async () =>
+        (await comoTenant(t, (db) => db.query<{ ok: boolean }>('SELECT app.tenant_has_payment_account($1) AS ok', [t]))).rows[0]!.ok;
+      const overview = async () =>
+        (
+          await comoTenant(t, (db) =>
+            db.query<{ can_receive: boolean; charges_enabled: boolean | null; payouts_enabled: boolean | null; requirements_due: string[] }>(
+              'SELECT * FROM app.payment_account_overview($1)',
+              [t],
+            ),
+          )
+        ).rows[0]!;
+      expect(await has()).toBe(false);
+      expect((await overview()).can_receive).toBe(false);
+      await owner.query(
+        `UPDATE payment_provider_authorizations SET charges_enabled = true, payouts_enabled = false, requirements_due = ARRAY['external_account'] WHERE id = $1`,
+        [c.authorizationId],
+      );
+      expect(await has()).toBe(true);
+      expect(await overview()).toMatchObject({
+        can_receive: true,
+        charges_enabled: true,
+        payouts_enabled: false,
+        requirements_due: ['external_account'],
+      });
+    });
+
+    it('Mercado Pago ativo continua podendo receber (charges_enabled nao se aplica)', async () => {
+      const t = await tenant();
+      await conta(t, { provider: 'MERCADO_PAGO' });
+      const r = await comoTenant(t, (db) => db.query<{ ok: boolean }>('SELECT app.tenant_has_payment_account($1) AS ok', [t]));
+      expect(r.rows[0]!.ok).toBe(true);
+    });
+
+    it('tenant_receiving_provider: a conectada ha menos tempo que pode receber; ignora Stripe sem charges', async () => {
+      const t = await tenant();
+      const antiga = await conta(t, { provider: 'MERCADO_PAGO', connectedAt: new Date(Date.now() - 86_400_000).toISOString() });
+      const stripe = await conta(t, { charges: false });
+      const qual = async () =>
+        (
+          await comoTenant(t, (db) =>
+            db.query<{ account_id: string; provider: string }>('SELECT * FROM app.tenant_receiving_provider($1, $2)', [t, 'SANDBOX']),
+          )
+        ).rows;
+      expect(await qual()).toEqual([{ account_id: antiga.accountId, provider: 'MERCADO_PAGO' }]);
+      await owner.query('UPDATE payment_provider_authorizations SET charges_enabled = true WHERE id = $1', [stripe.authorizationId]);
+      expect(await qual()).toEqual([{ account_id: stripe.accountId, provider: 'STRIPE' }]);
+      const prod = await comoTenant(t, (db) => db.query('SELECT * FROM app.tenant_receiving_provider($1, $2)', [t, 'PRODUCTION']));
+      expect(prod.rows).toHaveLength(0);
+    });
+
+    it('tenant_receiving_provider nao vaza dados de outra comunidade', async () => {
+      const a = await tenant();
+      const b = await tenant();
+      await conta(b, { charges: true });
+      const r = await comoTenant(a, (db) => db.query('SELECT * FROM app.tenant_receiving_provider($1, $2)', [b, 'SANDBOX']));
+      expect(r.rows).toHaveLength(0);
+    });
+
+    it('tenant_platform_fee_bps: plano da assinatura viva > padrao da plataforma (500)', async () => {
+      const t = await tenant();
+      const bps = async () =>
+        (await comoTenant(t, (db) => db.query<{ bps: number }>('SELECT app.tenant_platform_fee_bps($1) AS bps', [t]))).rows[0]!.bps;
+      expect(await bps()).toBe(500);
+
+      const customer = unique('cus_');
+      await owner.query('INSERT INTO tenant_billing (tenant_id, stripe_customer_id) VALUES ($1,$2)', [t, customer]);
+      const semTaxa = await plano(null);
+      const sub = await owner.query<{ id: string }>(
+        `INSERT INTO tenant_subscriptions (tenant_id, plan_id, stripe_customer_id, stripe_subscription_id, status, stripe_synced_at)
+         VALUES ($1,$2,$3,$4,'active', now()) RETURNING id`,
+        [t, semTaxa, customer, unique('sub_')],
+      );
+      expect(await bps()).toBe(500); // plano sem taxa propria cai no padrao
+
+      await owner.query('UPDATE tenant_subscriptions SET plan_id = $1 WHERE id = $2', [await plano(200), sub.rows[0]!.id]);
+      expect(await bps()).toBe(200);
+
+      await owner.query(`UPDATE tenant_subscriptions SET status = 'canceled' WHERE id = $1`, [sub.rows[0]!.id]);
+      expect(await bps()).toBe(500); // assinatura encerrada nao conta
+    });
+
+    it('as funcoes novas nao sao publicas e app_user/app_worker as executam', async () => {
+      const { rows } = await owner.query<{ f: string; pub: boolean; u: boolean; w: boolean }>(
+        `SELECT p.proname AS f,
+                has_function_privilege('public', p.oid, 'EXECUTE') AS pub,
+                has_function_privilege('app_user', p.oid, 'EXECUTE') AS u,
+                has_function_privilege('app_worker', p.oid, 'EXECUTE') AS w
+           FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'app' AND p.proname IN ('tenant_receiving_provider','tenant_platform_fee_bps','payment_account_overview')`,
+      );
+      expect(rows).toHaveLength(3);
+      for (const r of rows) expect(r).toMatchObject({ pub: false, u: true, w: true });
+    });
+  });
+});
