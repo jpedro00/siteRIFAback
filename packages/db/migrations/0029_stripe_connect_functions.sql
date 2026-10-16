@@ -198,3 +198,101 @@ GRANT EXECUTE ON FUNCTION
   app.connect_tenant_account(uuid, public.payment_environment),
   app.connect_apply_account_state(text, public.payment_environment, boolean, boolean, text[])
 TO app_user, app_worker;
+
+-- ---------------------------------------------------------------------------
+-- apply_psp_payment: estorno de pagamento STRIPE ja aprovado.
+--
+-- Ate aqui, pagamento APROVADO era fim de linha (`already_processed`), e o ramo ESTORNADO so
+-- valia para quem nunca chegou a aprovado. Mas o estorno Stripe acontece justamente DEPOIS de
+-- aprovado (o pago que nao pode ser honrado: `needs_manual_refund`). Para o provedor STRIPE:
+--   * APROVADO + a Stripe diz ESTORNADO (consultado, RN06) -> ESTORNADO, `refunded`, auditado;
+--   * ESTORNADO e terminal: qualquer consulta posterior (webhook repetido, consulta velha que
+--     ainda diz aprovado) e `already_processed`, sem segunda auditoria.
+-- O pedido nao muda (como no ramo ESTORNADO que ja existia). Se o pagamento estornado era o que
+-- pagou o pedido, a conciliacao local abre ORDER_PAID_PAYMENT_NOT_APPROVED para o operador.
+-- Mercado Pago (e o FAKE) seguem EXATAMENTE como antes: o estorno deles e manual.
+-- CREATE OR REPLACE: a assinatura nao muda, entao os GRANTs da 0019 continuam valendo.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION app.apply_psp_payment(
+  p_provider             text,
+  p_provider_payment_id  text,
+  p_status               text,
+  p_amount_cents         integer,
+  p_external_reference   text,
+  p_paid_at              timestamptz,
+  p_raw                  jsonb,
+  p_payment_account_id   uuid DEFAULT NULL
+)
+RETURNS text
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  pay public.payments%ROWTYPE;
+  r   text;
+BEGIN
+  SELECT * INTO pay
+    FROM public.payments
+   WHERE provider = p_provider AND provider_payment_id = p_provider_payment_id
+   FOR UPDATE;
+
+  -- Ausente ou de OUTRA comunidade: para quem chama, e a mesma coisa.
+  IF NOT FOUND OR NOT app.caller_can_touch_tenant(pay.tenant_id) THEN
+    RETURN 'unknown_payment';
+  END IF;
+
+  -- A consulta foi feita com a conta X; o pagamento pertence a conta Y: nao confere.
+  IF p_payment_account_id IS DISTINCT FROM pay.payment_account_id THEN
+    INSERT INTO public.audit_events
+      (tenant_id, actor_user_id, actor_type, action, target_type, target_id)
+    VALUES (pay.tenant_id, NULL, 'SYSTEM', 'payment.account_mismatch', 'payment', pay.id::text);
+    RETURN 'mismatch';
+  END IF;
+
+  -- O que o PSP diz precisa CONFERIR com o que cobramos. Valor ou pedido
+  -- diferente nunca paga: e sinal de aviso forjado ou de bug.
+  IF p_external_reference IS DISTINCT FROM pay.order_id::text
+     OR p_amount_cents IS DISTINCT FROM pay.amount_cents THEN
+    INSERT INTO public.audit_events
+      (tenant_id, actor_user_id, actor_type, action, target_type, target_id, after)
+    VALUES (pay.tenant_id, NULL, 'SYSTEM', 'payment.mismatch', 'payment', pay.id::text,
+            jsonb_build_object(
+              'expectedAmountCents', pay.amount_cents,
+              'receivedAmountCents', p_amount_cents,
+              'referenceMatches', p_external_reference IS NOT DISTINCT FROM pay.order_id::text));
+    RETURN 'mismatch';
+  END IF;
+
+  -- STRIPE: estornado e terminal.
+  IF pay.provider = 'STRIPE' AND pay.status = 'ESTORNADO' THEN
+    RETURN 'already_processed';
+  END IF;
+
+  -- Aprovado e fim de linha, salvo o estorno STRIPE (abaixo, no ramo ESTORNADO).
+  IF pay.status = 'APROVADO' AND NOT (pay.provider = 'STRIPE' AND p_status = 'ESTORNADO') THEN
+    RETURN 'already_processed';
+  END IF;
+
+  IF p_status = 'APROVADO' THEN
+    UPDATE public.payments
+       SET status = 'APROVADO', paid_at = COALESCE(p_paid_at, now()), raw = p_raw
+     WHERE id = pay.id;
+    r := app.settle_order_paid(pay.order_id, pay.id, 'PSP');
+    RETURN CASE WHEN r = 'REFUND_REQUIRED' THEN 'refund_required' ELSE 'paid' END;
+  ELSIF p_status IN ('EXPIRADO', 'CANCELADO') THEN
+    UPDATE public.payments SET status = p_status::public.payment_status, raw = p_raw WHERE id = pay.id;
+    RETURN 'closed';
+  ELSIF p_status = 'ESTORNADO' THEN
+    UPDATE public.payments
+       SET status = 'ESTORNADO', paid_at = COALESCE(paid_at, p_paid_at, now()), raw = p_raw
+     WHERE id = pay.id;
+    INSERT INTO public.audit_events
+      (tenant_id, actor_user_id, actor_type, action, target_type, target_id)
+    VALUES (pay.tenant_id, NULL, 'SYSTEM', 'payment.refunded', 'payment', pay.id::text);
+    RETURN 'refunded';
+  END IF;
+
+  RETURN 'pending';
+END;
+$$;

@@ -582,4 +582,64 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
       }
     });
   });
+
+  describe('apply_psp_payment · estorno STRIPE (APROVADO -> ESTORNADO)', () => {
+    /** Pagamento ja APROVADO (o pedido tanto faz aqui): so o estado do pagamento importa. */
+    async function aprovado(provider: 'STRIPE' | 'FAKE') {
+      const tenantId = await tenant();
+      const accountId = provider === 'STRIPE' ? (await conta(tenantId, { charges: true })).accountId : null;
+      await pagamento(tenantId, { provider, accountId });
+      const { rows } = await owner.query<{ id: string; order_id: string; provider_payment_id: string }>(
+        `UPDATE payments SET status = 'APROVADO', paid_at = now() - interval '1 hour'
+          WHERE tenant_id = $1 RETURNING id, order_id, provider_payment_id`,
+        [tenantId],
+      );
+      return { tenantId, accountId, ...rows[0]! };
+    }
+    const aplicar = (p: Awaited<ReturnType<typeof aprovado>>, provider: string, status: string) =>
+      worker
+        .query<{ r: string }>('SELECT app.apply_psp_payment($1, $2, $3, 1000, $4, now(), NULL, $5::uuid) AS r', [
+          provider,
+          p.provider_payment_id,
+          status,
+          p.order_id,
+          p.accountId,
+        ])
+        .then((r) => r.rows[0]!.r);
+    const estado = async (id: string) =>
+      (await owner.query<{ s: string; paid_at: string | null }>('SELECT status::text AS s, paid_at FROM payments WHERE id = $1', [id])).rows[0]!;
+    const auditorias = async (id: string) =>
+      (
+        await owner.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM audit_events WHERE action = 'payment.refunded' AND target_id = $1`,
+          [id],
+        )
+      ).rows[0]!.n;
+
+    it('STRIPE aprovado e estornado na Stripe: vira ESTORNADO, mantem paid_at e audita UMA vez', async () => {
+      const p = await aprovado('STRIPE');
+      const antes = (await estado(p.id)).paid_at;
+      expect(await aplicar(p, 'STRIPE', 'ESTORNADO')).toBe('refunded');
+      const e = await estado(p.id);
+      expect(e.s).toBe('ESTORNADO');
+      expect(e.paid_at).not.toBeNull();
+      expect(new Date(e.paid_at!).getTime()).toBe(new Date(antes!).getTime());
+      // Reaplicar (webhook repetido, consumidor e webhook juntos): no-op, sem segunda auditoria.
+      expect(await aplicar(p, 'STRIPE', 'ESTORNADO')).toBe('already_processed');
+      expect(await auditorias(p.id)).toBe(1);
+    });
+
+    it('ESTORNADO e terminal no STRIPE: consulta velha dizendo APROVADO nao reaprova', async () => {
+      const p = await aprovado('STRIPE');
+      await aplicar(p, 'STRIPE', 'ESTORNADO');
+      expect(await aplicar(p, 'STRIPE', 'APROVADO')).toBe('already_processed');
+      expect((await estado(p.id)).s).toBe('ESTORNADO');
+    });
+
+    it('outros provedores seguem como antes: aprovado + ESTORNADO e already_processed', async () => {
+      const p = await aprovado('FAKE');
+      expect(await aplicar(p, 'FAKE', 'ESTORNADO')).toBe('already_processed');
+      expect((await estado(p.id)).s).toBe('APROVADO');
+    });
+  });
 });
