@@ -194,6 +194,39 @@ describe.skipIf(!hasDb || APP_URL === '')(`Estorno automatico Stripe ${hasDb ? '
     expect((await pagamento(p.paymentId)).status).toBe('ESTORNADO');
   });
 
+  it('estorno aceito mas a consulta ainda nao o mostra: falha (retry); o retry, mesma chave, confirma', async () => {
+    const p = await pagoQueNaoPodeSerHonrado();
+    stripe.refundLags = true;
+    try {
+      await expect(entregar(p.message)).rejects.toThrow();
+    } finally {
+      stripe.refundLags = false;
+    }
+    expect(await pagamento(p.paymentId)).toEqual({ status: 'APROVADO', needs_manual_refund: true });
+
+    // A Stripe passa a refletir o estorno; a fila reentrega.
+    stripe.markRefunded(p.pi);
+    await entregar(p.message);
+    const chaves = estornosDe(p.pi).map((c) => c.opts?.['idempotencyKey']);
+    expect(chaves).toEqual([`${p.paymentId}:refund`, `${p.paymentId}:refund`]);
+    expect((await pagamento(p.paymentId)).status).toBe('ESTORNADO');
+  });
+
+  it('payload MALFORMADO de pagamento Mercado Pago (legado): nao lanca e nada sai para a Stripe', async () => {
+    const tenantId = await seedTenant(bench.owner);
+    const draw = await seedDraw(bench.owner, tenantId);
+    const pedido = await seedPendingOrder(bench.owner, tenantId, draw, [nextNumber++], { provider: 'MERCADO_PAGO' });
+    // Sem drawId/amountCents/reason: nao passa no schema estrito.
+    const payload = { tenantId, orderId: pedido.orderId, paymentId: pedido.paymentId };
+    const outboxEventId = await seedOutboxEvent(bench.owner, tenantId, 'payment.refund_required', payload);
+    const antes = { estornos: stripe.refundCalls.length, consultas: stripe.retrieved.length };
+    await expect(entregar({ outboxEventId, tenantId, eventType: 'payment.refund_required', payload })).resolves.toBeUndefined();
+    // Nem um lixo completo derruba o consumidor.
+    await expect(entregar({ outboxEventId, tenantId, eventType: 'payment.refund_required', payload: { x: 1 } })).resolves.toBeUndefined();
+    expect(stripe.refundCalls.length).toBe(antes.estornos);
+    expect(stripe.retrieved.length).toBe(antes.consultas);
+  });
+
   it('Connect desligado no worker: nada sai para a Stripe e o sinal fica', async () => {
     const p = await pagoQueNaoPodeSerHonrado();
     await expect(entregar(p.message, null)).resolves.toBeUndefined();

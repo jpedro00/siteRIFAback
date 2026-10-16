@@ -125,6 +125,8 @@ export class FakeStripe {
   readonly refundCalls: { params: Record<string, unknown>; opts: Record<string, unknown> | undefined }[] = [];
   /** O proximo estorno falha com este erro (uma vez). */
   failNextRefund: Error | null = null;
+  /** Estorno aceito mas a consulta ainda nao o reflete (a cobranca so vira com `markRefunded`). */
+  refundLags = false;
   readonly #refundByKey = new Map<string, Record<string, unknown>>();
 
   readonly refunds = {
@@ -161,7 +163,7 @@ export class FakeStripe {
           statusCode: 400,
         });
       }
-      this.markRefunded(id);
+      if (!this.refundLags) this.markRefunded(id);
       const refund = {
         id: `re_${unique('r').replace(/[^A-Za-z0-9]/g, '')}`,
         object: 'refund',

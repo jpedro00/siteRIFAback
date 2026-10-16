@@ -25,7 +25,8 @@ import { aplicarPagamentoDoPsp } from '../jobs/definitions.js';
  *   3. `gateway.refund(pi, '<payment.id>:refund')`: chave ESTAVEL entre tentativas, e o gateway
  *      devolve tambem a taxa da plataforma (`refund_application_fee`) e reverte a transferencia;
  *   4. CONSULTA a Stripe e aplica pelo `app.apply_psp_payment` (RN06: quem diz ESTORNADO e a
- *      Stripe). O webhook `charge.refunded` chega depois pelo mesmo caminho e e no-op.
+ *      Stripe). Consulta que ainda nao mostra o estorno = transitorio (retry). O webhook
+ *      `charge.refunded` chega pelo mesmo caminho e e no-op (ou conclui antes do retry).
  *
  * Falhas: Stripe fora, 401 ou conta indisponivel (revogada...) LANCAM — a fila tenta de novo
  * (retryLimit da fila) e o `needs_manual_refund` continua ligado, entao o painel do operador
@@ -66,7 +67,17 @@ export async function consumeRefundRequired(
   log: Logger,
   input: { eventId: string; payload: unknown },
 ): Promise<RefundResult> {
-  const p = paymentRefundRequiredPayloadSchema.parse(input.payload);
+  // safeParse: um payload legado/malformado (de qualquer provedor) nunca lanca — lancar faria a
+  // fila reentregar ate a dead-letter algo que nao tem o que executar. O sinal
+  // `needs_manual_refund` continua no banco, e o painel do operador mostra o caso.
+  const parsed = paymentRefundRequiredPayloadSchema.safeParse(input.payload);
+  if (!parsed.success) {
+    log.error('payment.refund_required com payload invalido; estorno fica para o operador', {
+      issues: parsed.error.issues.map((i) => i.path.join('.')).join(','),
+    });
+    return { applied: false, reason: 'payload invalido' };
+  }
+  const p = parsed.data;
 
   // O pagamento E da comunidade do evento: payload de outra comunidade nao acha nada.
   const { rows } = await pool.query<PaymentRow>(
@@ -132,9 +143,10 @@ export async function consumeRefundRequired(
         log.error('estorno Stripe recusado; fica para o operador', { ...campos, error: recusa, outcome });
         return { applied: false, reason: 'estorno recusado pela Stripe' };
       }
-      // Estorno aceito mas a consulta ainda nao o reflete: o webhook `charge.refunded` conclui.
-      log.warn('estorno Stripe pedido; aguardando a Stripe refletir (webhook conclui)', { ...campos, outcome });
-      return { applied: true, reason: 'estorno pedido, aguardando confirmacao' };
+      // Estorno aceito mas a consulta ainda nao o reflete. Nao depende do webhook: falha
+      // transitoria, a fila tenta de novo — o `refund` com a mesma chave e o MESMO estorno na
+      // Stripe, e a proxima consulta confirma.
+      throw new PspUnavailableError('Estorno pedido, mas a Stripe ainda nao o reflete na consulta.');
     }
     log.info('estorno Stripe confirmado', { ...campos, outcome });
     return { applied: true };
