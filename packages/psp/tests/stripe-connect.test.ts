@@ -44,9 +44,9 @@ const input = {
   platformFeeCents: 125,
 };
 
-/** A chave esperada: pedido + impressao digital dos parametros (sha256, 16 hex). */
-const chave = (pedido: string, amount: number, fee: number, expires: number, acct = ACCT) =>
-  `${pedido}:${createHash('sha256').update(`${amount}|${fee}|${expires}|${acct}`).digest('hex').slice(0, 16)}`;
+/** A chave esperada: pedido + impressao digital dos parametros (sha256, 16 hex). `expires` e ABSOLUTO (epoch s). */
+const chave = (pedido: string, amount: number, fee: number, expires: number, acct = ACCT, desc = 'Rifa') =>
+  `${pedido}:${createHash('sha256').update(`${amount}|${fee}|${expires}|${acct}|${desc}`).digest('hex').slice(0, 16)}`;
 
 describe('StripeConnectGateway', () => {
   afterEach(() => {
@@ -58,6 +58,8 @@ describe('StripeConnectGateway', () => {
     const chaveDe = (create: ReturnType<typeof vi.fn>, i: number) =>
       (create.mock.calls[i] as [unknown, { idempotencyKey: string }])[1].idempotencyKey;
 
+    const epoch = (d: Date) => Math.floor(d.getTime() / 1000);
+
     it('mesmos parametros: mesma chave (retry identico deduplica na Stripe)', async () => {
       vi.useFakeTimers({ now: agora });
       const create = vi.fn().mockResolvedValue(intent());
@@ -66,11 +68,25 @@ describe('StripeConnectGateway', () => {
       await gw.createPixCharge({ ...input, expiresAt: em });
       await gw.createPixCharge({ ...input, expiresAt: em });
       expect(chaveDe(create, 0)).toBe(chaveDe(create, 1));
-      expect(chaveDe(create, 0)).toBe(chave('ord-1', 2500, 125, 1800));
+      expect(chaveDe(create, 0)).toBe(chave('ord-1', 2500, 125, epoch(em)));
       expect(chaveDe(create, 0)).toMatch(/^ord-1:[0-9a-f]{16}$/);
     });
 
-    it('prazo, taxa, valor ou conta diferentes: outra chave (sem conflito de idempotencia)', async () => {
+    it('mesmo prazo ABSOLUTO, chamadas segundos depois: mesma chave e mesmo expires_at', async () => {
+      vi.useFakeTimers({ now: agora });
+      const create = vi.fn().mockResolvedValue(intent());
+      const gw = make({ paymentIntents: { create } });
+      const em = new Date(agora.getTime() + 1800_000);
+      await gw.createPixCharge({ ...input, expiresAt: em });
+      vi.setSystemTime(agora.getTime() + 7_400); // duplo envio / retry 7,4 s depois
+      await gw.createPixCharge({ ...input, expiresAt: em });
+      expect(chaveDe(create, 0)).toBe(chaveDe(create, 1));
+      const pixDe = (i: number) => (create.mock.calls[i] as any)[0].payment_method_options.pix;
+      expect(pixDe(0)).toEqual({ expires_at: epoch(em) });
+      expect(pixDe(1)).toEqual({ expires_at: epoch(em) });
+    });
+
+    it('prazo, taxa, valor, conta ou descricao diferentes: outra chave (sem conflito de idempotencia)', async () => {
       vi.useFakeTimers({ now: agora });
       const create = vi.fn().mockResolvedValue(intent());
       const gw = make({ paymentIntents: { create } });
@@ -85,11 +101,13 @@ describe('StripeConnectGateway', () => {
         client: { paymentIntents: { create } } as unknown as Stripe,
       });
       await outra.createPixCharge({ ...input, expiresAt: em });
-      const chaves = [0, 1, 2, 3, 4].map((i) => chaveDe(create, i));
-      expect(new Set(chaves).size).toBe(5);
-      expect(chaves[1]).toBe(chave('ord-1', 2500, 125, 1795));
-      expect(chaves[2]).toBe(chave('ord-1', 2500, 200, 1800));
-      expect(chaves[4]).toBe(chave('ord-1', 2500, 125, 1800, 'acct_outra'));
+      await gw.createPixCharge({ ...input, expiresAt: em, description: 'Outra rifa' });
+      const chaves = [0, 1, 2, 3, 4, 5].map((i) => chaveDe(create, i));
+      expect(new Set(chaves).size).toBe(6);
+      expect(chaves[1]).toBe(chave('ord-1', 2500, 125, epoch(em) - 5));
+      expect(chaves[2]).toBe(chave('ord-1', 2500, 200, epoch(em)));
+      expect(chaves[4]).toBe(chave('ord-1', 2500, 125, epoch(em), 'acct_outra'));
+      expect(chaves[5]).toBe(chave('ord-1', 2500, 125, epoch(em), ACCT, 'Outra rifa'));
     });
 
     it('sem taxa: a impressao usa 0', async () => {
@@ -101,7 +119,7 @@ describe('StripeConnectGateway', () => {
         ...(semTaxa as Omit<typeof input, 'platformFeeCents'>),
         expiresAt: new Date(agora.getTime() + 1800_000),
       });
-      expect(chaveDe(create, 0)).toBe(chave('ord-1', 2500, 0, 1800));
+      expect(chaveDe(create, 0)).toBe(chave('ord-1', 2500, 0, epoch(agora) + 1800));
     });
   });
 
@@ -119,8 +137,9 @@ describe('StripeConnectGateway', () => {
       transfer_data: { destination: ACCT },
       metadata: { order_id: 'ord-1' },
     });
-    expect(params['payment_method_options'].pix.expires_after_seconds).toBeGreaterThanOrEqual(60);
-    const exp = params['payment_method_options'].pix.expires_after_seconds as number;
+    expect(params['payment_method_options'].pix).toEqual({ expires_at: Math.floor(input.expiresAt.getTime() / 1000) });
+    expect(params['payment_method_options'].pix).not.toHaveProperty('expires_after_seconds');
+    const exp = params['payment_method_options'].pix.expires_at as number;
     expect(opts).toEqual({ idempotencyKey: chave('ord-1', 2500, 125, exp) });
     expect(p.copyPaste).toBe('000201PIX');
     expect(p.qrCodeBase64).toBeNull();
@@ -128,10 +147,11 @@ describe('StripeConnectGateway', () => {
     expect(p.providerPaymentId).toBe('pi_1');
   });
 
-  it('expires_after_seconds tem minimo de 60', async () => {
+  it('expires_at tem minimo de agora + 60 s', async () => {
+    vi.useFakeTimers({ now: new Date('2026-10-15T12:00:00Z') });
     const create = vi.fn().mockResolvedValue(intent());
     await make({ paymentIntents: { create } }).createPixCharge({ ...input, expiresAt: new Date(Date.now() + 1000) });
-    expect((create.mock.calls[0] as any)[0].payment_method_options.pix.expires_after_seconds).toBe(60);
+    expect((create.mock.calls[0] as any)[0].payment_method_options.pix.expires_at).toBe(Math.floor(Date.now() / 1000) + 60);
   });
 
   it('getPayment mapeia estados', async () => {
@@ -255,13 +275,14 @@ describe('StripeConnectGateway', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('expires_after_seconds tem teto de 1209600', async () => {
+  it('expires_at tem teto de agora + 1209600 s (14 dias)', async () => {
+    vi.useFakeTimers({ now: new Date('2026-10-15T12:00:00Z') });
     const create = vi.fn().mockResolvedValue(intent());
     await make({ paymentIntents: { create } }).createPixCharge({
       ...input,
       expiresAt: new Date(Date.now() + 40 * 86_400_000),
     });
-    expect((create.mock.calls[0] as any)[0].payment_method_options.pix.expires_after_seconds).toBe(1_209_600);
+    expect((create.mock.calls[0] as any)[0].payment_method_options.pix.expires_at).toBe(Math.floor(Date.now() / 1000) + 1_209_600);
   });
 
   it('nao envia application_fee_amount com taxa ausente ou zero', async () => {

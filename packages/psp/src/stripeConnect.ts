@@ -32,7 +32,7 @@ export interface StripeConnectOptions {
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const MIN_PIX_EXPIRES_SECONDS = 60;
-/** Teto da Stripe para `expires_after_seconds` do PIX (14 dias). */
+/** Teto da Stripe para o prazo do PIX (`expires_at` ate 14 dias no futuro). */
 const MAX_PIX_EXPIRES_SECONDS = 1_209_600;
 
 function isLiveKey(secretKey: string): boolean {
@@ -167,19 +167,26 @@ export class StripeConnectGateway implements PspGateway {
   }
 
   createPixCharge(input: CreatePixChargeInput): Promise<PspPayment> {
-    const expiresAfterSeconds = Math.min(
-      MAX_PIX_EXPIRES_SECONDS,
-      Math.max(MIN_PIX_EXPIRES_SECONDS, Math.floor((input.expiresAt.getTime() - Date.now()) / 1000)),
+    // Prazo ABSOLUTO (epoch em segundos), limitado ao que a Stripe aceita: ao menos agora + 60 s e
+    // no maximo agora + 14 dias. Absoluto, e nao relativo: o mesmo `expiresAt` gera o mesmo valor
+    // em qualquer segundo, entao um retry ou duplo envio segundos depois repete os parametros.
+    const agoraSeg = Math.floor(Date.now() / 1000);
+    const expiresAt = Math.min(
+      agoraSeg + MAX_PIX_EXPIRES_SECONDS,
+      Math.max(agoraSeg + MIN_PIX_EXPIRES_SECONDS, Math.floor(input.expiresAt.getTime() / 1000)),
     );
     // Chave de idempotencia = pedido + impressao digital dos PARAMETROS. A Stripe recusa a mesma
-    // chave com parametros diferentes, e prazo (derivado do relogio) e taxa (plano vigente) mudam
-    // entre tentativas: com a chave so do pedido, uma falha depois de criar o PaymentIntent (a
-    // gravacao no banco, a rede) travaria o pedido para sempre. Assim, o retry identico (inclusive
-    // o do proprio SDK) continua deduplicado na Stripe; um retry com parametros novos cria outro
-    // PaymentIntent, e o que vale e a linha que vence o `INSERT ... ON CONFLICT` no banco — o
-    // comprador so ve o QR dela, e o PaymentIntent sem uso expira sozinho pelo prazo do PIX.
+    // chave com parametros diferentes, e prazo e taxa (plano vigente) podem mudar entre
+    // tentativas: com a chave so do pedido, uma falha depois de criar o PaymentIntent (a gravacao
+    // no banco, a rede) travaria o pedido para sempre. Assim, o retry identico (inclusive o do
+    // proprio SDK, e o duplo envio com o mesmo prazo absoluto) continua deduplicado na Stripe; um
+    // retry com parametros novos cria outro PaymentIntent, e o que vale e a linha que vence o
+    // `INSERT ... ON CONFLICT` no banco — o comprador so ve o QR dela, e o PaymentIntent sem uso
+    // expira sozinho pelo prazo do PIX.
     const fingerprint = createHash('sha256')
-      .update(`${input.amountCents}|${input.platformFeeCents ?? 0}|${expiresAfterSeconds}|${this.#connectedAccountId}`)
+      .update(
+        `${input.amountCents}|${input.platformFeeCents ?? 0}|${expiresAt}|${this.#connectedAccountId}|${input.description}`,
+      )
       .digest('hex')
       .slice(0, 16);
     const idempotencyKey = `${input.idempotencyKey}:${fingerprint}`;
@@ -190,7 +197,7 @@ export class StripeConnectGateway implements PspGateway {
           currency: 'brl',
           payment_method_types: ['pix'],
           payment_method_data: { type: 'pix' },
-          payment_method_options: { pix: { expires_after_seconds: expiresAfterSeconds } },
+          payment_method_options: { pix: { expires_at: expiresAt } },
           confirm: true,
           description: input.description,
           ...(input.platformFeeCents !== undefined && input.platformFeeCents > 0 ? { application_fee_amount: input.platformFeeCents } : {}),
