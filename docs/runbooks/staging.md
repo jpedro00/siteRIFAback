@@ -476,8 +476,8 @@ Connect ligado, produção exige chave live.
 - `payment_intent.succeeded`, `payment_intent.payment_failed`, `payment_intent.canceled`,
   `charge.refunded`, `refund.failed`, `refund.updated` — numa destination charge o
   PaymentIntent (e o estorno) mora na conta da **plataforma**, então esses chegam pelo endpoint
-  de **eventos da sua conta** (*Your account*). (`charge.refund.updated`, nome antigo, também é
-  aceito.) Estorno que falha abre a divergência `REFUND_FAILED`: ver
+  de **eventos da sua conta** (*Your account*). (`charge.refund.updated` também é aceito, mas é
+  um subconjunto de `refund.updated`: assiná-lo é desnecessário.) Estorno que falha abre a divergência `REFUND_FAILED`: ver
   `docs/runbooks/stripe-connect.md` §6.
 
 Cada endpoint tem o seu `whsec_...`: os dois vão em `STRIPE_CONNECT_WEBHOOK_SECRET`, separados

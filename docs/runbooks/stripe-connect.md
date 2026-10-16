@@ -123,7 +123,8 @@ Staging, chave `rk_test_`/`sk_test_`, nunca live. Cada passo traz o resultado es
    ambos com URL `{PUBLIC_API_BASE_URL}/api/webhooks/stripe-connect`:
    - Endpoint **"Your account"**: `payment_intent.succeeded`, `payment_intent.payment_failed`,
      `payment_intent.canceled`, `charge.refunded`, `refund.failed`, `refund.updated`
-     (`charge.refund.updated`, nome antigo, também é tratado; não é preciso assinar os dois).
+     (`charge.refund.updated` também é tratado, mas é um subconjunto de `refund.updated` — os
+     estornos de cobrança —, então assiná-lo é desnecessário).
    - Endpoint **"Connected accounts"**: `account.updated`.
 
    Copie os dois `whsec_...` para `STRIPE_CONNECT_WEBHOOK_SECRET` (separados por vírgula).
@@ -232,6 +233,13 @@ Do ledger (`.superpowers/sdd/2026-10-15-stripe-connect-recebimento/progress.md`)
 - PaymentIntents órfãos (criados mas nunca gravados) expiram sozinhos pelo prazo do PIX; não há
   job de cancelamento. Pelo mesmo motivo, ao liberar uma reserva o PaymentIntent não é
   cancelado: um pagamento tardio vira `refund_required`.
+- **Risco residual aceito — estorno falho só pelo webhook.** Não há job do worker que consulte
+  estornos falhos: se a Stripe desistir de entregar `refund.failed`/`refund.updated` (endpoint
+  fora do ar além da janela de reenvio), **nenhuma** divergência `REFUND_FAILED` é aberta. Conferir
+  periodicamente no Dashboard (*Payments → Refunds*, filtro *Failed*) até haver uma varredura.
+- **Risco residual aceito — estorno `canceled` não alarma.** Só `failed` abre divergência; um
+  estorno cancelado (p.ex. pelo próprio Dashboard) não é sinalizado. Decisão de produto
+  pendente.
 
 **Adiadas por decisão, com o portão de cada uma:**
 
@@ -260,39 +268,54 @@ Um estorno PIX pode falhar **depois** de a Stripe aceitá-lo (p.ex. a conta do c
 encerrada). Para a Stripe, `ESTORNADO` é terminal: o pagamento **continua `ESTORNADO`** e o
 código **não** tenta estornar de novo. O que acontece:
 
-- `refund.failed` / `refund.updated` / `charge.refund.updated` chegam ao webhook Connect
+- `refund.failed` / `refund.updated` (ou `charge.refund.updated`, subconjunto do anterior) chegam ao webhook Connect
   (endpoint "Your account", §4 passo 1; §5 pergunta 8). O corpo só identifica o PaymentIntent:
   a API acha a comunidade/conta pelo nosso registro (`app.find_payment_route`), confere a conta
   do evento, e **relê na Stripe** os estornos do PaymentIntent (`refunds.list`, depois de
   conferir que o destino é a conta conectada do pagamento — RN06).
-- Havendo estorno `failed`, `app.record_psp_refund_failed` (migration **0032**) abre **uma**
-  divergência `REFUND_FAILED` por pagamento (evento repetido ou por outro tipo não duplica) e
-  audita `payment.refund_failed`. `detail` = `{refundId, failureReason, amountCents}`, sem dado
-  pessoal (`failureReason` é só o código da Stripe). Nenhum estorno `failed` na Stripe: `ignored`.
+- Para **cada** estorno `failed`, `app.record_psp_refund_failed` (migration **0032**) registra
+  a falha **uma vez por estorno** (`refundId`), auditando `payment.refund_failed`:
+  - sem divergência `REFUND_FAILED` aberta no pagamento: abre uma;
+  - com uma aberta (de outro estorno): o novo estorno entra **nela**, em `detail.refunds`;
+  - estorno já registrado — numa divergência aberta **ou já resolvida** — não faz nada. A Stripe
+    continua listando o estorno falho para sempre; sem isso, o novo estorno feito pelo operador
+    reabriria a divergência resolvida.
+
+  `detail` = `{refundId, failureReason, amountCents, refunds: [{refundId, failureReason,
+  amountCents}, ...]}` (o primeiro também no topo), sem dado pessoal (`failureReason` é só o
+  código da Stripe). Nada novo: `ignored`.
 - A divergência aparece no Console Super Admin → Financeiro → conciliação (mesmo com o
   pagamento `ESTORNADO`) e na contagem de abertas da Saúde. A conciliação local **não** a fecha.
 
 **O que o operador faz:**
 
-1. No Dashboard da Stripe, abrir o estorno (`refundId` do `detail`) e o PaymentIntent; confirmar
-   que o estorno está `failed` e o motivo.
+1. No Dashboard da Stripe, abrir os estornos listados em `detail.refunds` (a consulta abaixo) e o
+   PaymentIntent; confirmar que estão `failed` e o motivo.
 2. Contatar o comprador (pelo pedido, no painel da comunidade) para combinar a devolução por
    outro meio, ou criar um **novo** estorno pelo Dashboard se a Stripe permitir. Decisão de
    quem arca: ver §2 (estorno/disputa).
 3. Registrar o que foi feito e marcar a divergência como *Resolvida manualmente* no Console
-   (status de revisão; fecha a divergência). Uma nova falha depois disso abre outra.
+   (status de revisão; fecha a divergência). Só a falha de um estorno **novo** abre outra; o
+   estorno antigo, ainda `failed` na Stripe, não reabre.
 
 Divergências abertas deste tipo (somente leitura):
 
 ```sql
 SELECT i.id, i.tenant_id, left(i.order_id::text, 8) AS pedido, p.status AS pagamento,
-       i.detail->>'refundId' AS refund_id, i.detail->>'failureReason' AS motivo,
-       (i.detail->>'amountCents')::int AS valor_centavos, i.review_status, i.detected_at
+       r->>'refundId' AS refund_id, r->>'failureReason' AS motivo,
+       (r->>'amountCents')::int AS valor_centavos, i.review_status, i.detected_at
   FROM payment_reconciliation_issues i
   JOIN payments p ON p.id = i.payment_id
+  CROSS JOIN LATERAL jsonb_array_elements(i.detail->'refunds') AS r
  WHERE i.kind = 'REFUND_FAILED' AND i.resolved_at IS NULL
  ORDER BY i.detected_at;
 ```
+
+> **Ordem de deploy — frontend ANTES (ou junto) do backend.** O Console Super Admin
+> (`apps/admin`, página Financeiro) precisa do rótulo de `REFUND_FAILED` e da renderização
+> defensiva de tipos desconhecidos **antes** de o backend poder emitir esse tipo: publique o
+> frontend re-sincronizado (contratos 0.18.0 com `REFUND_FAILED`) antes de, ou junto com, o
+> backend com a `0032`. Um Console antigo pode quebrar a tela de conciliação ao receber o tipo novo.
 
 > A `0032` troca a constraint `payment_recon_kind_known` (só acrescenta `REFUND_FAILED`). Reverter
 > o código deixa a função sem uso; voltar à constraint antiga só sem linhas `REFUND_FAILED`.
