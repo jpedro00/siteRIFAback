@@ -269,6 +269,29 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · cobranca e taxa ${hasTestDa
       expect(await pagamentosDa(c.tenantId)).toBe(0);
     });
 
+    it('a lista informa quais provedores estao ligados: connectEnabled e mercadoPagoEnabled', async () => {
+      const soMp = await createHarness({ paymentAccounts: mpRuntime });
+      const nenhum = await createHarness();
+      try {
+        const casos: Array<[string, Harness, boolean, boolean, boolean]> = [
+          ['MP so', soMp, true, true, false],
+          ['Connect so', soStripe, true, false, true],
+          ['ambos', ambos, true, true, true],
+          ['nenhum', nenhum, false, false, false],
+        ];
+        for (const [nome, h, enabled, mercadoPagoEnabled, connectEnabled] of casos) {
+          const c = await novaComunidade(h, 'cs-fl-');
+          const cookie = await entrar(h, c.owner);
+          const res = await request(h.app).get('/api/tenant/payment-accounts').set('Cookie', cookie).set('x-tenant-slug', c.slug);
+          expect(res.status, `${nome}: ${JSON.stringify(res.body)}`).toBe(200);
+          expect(res.body, nome).toMatchObject({ enabled, mercadoPagoEnabled, connectEnabled });
+        }
+      } finally {
+        await soMp.close();
+        await nenhum.close();
+      }
+    });
+
     it('sem conta nenhuma: PAYMENTS_NOT_CONFIGURED', async () => {
       const c = await novaComunidade(soStripe, 'cs-0-');
       const pedido = await comprar(soStripe, c);

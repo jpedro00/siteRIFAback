@@ -8,9 +8,9 @@
     "src/permissions",
     "src/constants"
   ],
-  "digest": "b56cf7df4cf935fcad4ddcb69c182a587ae721bc9973f59e536ab93663cb2e23",
+  "digest": "d5e35cd99f9f270705cd511782c309cee195a5bdf913aad4c46f44e684a996d1",
   "files": {
-    "src/contracts/billing.ts": "e01b8e6137fdd4e7ceff89a54f3a21d1b8889c82f6d987f31b85a2b3c313a462",
+    "src/contracts/billing.ts": "9faa4acbef631e7c026894ebb56db0c2e0666f61cddf49f29eeafcb045d48cba",
     "src/contracts/client.ts": "05f283a80fb4d0b3099af93071616f0b62ba294ed648c9a1f20e365abfe87ef6",
     "src/contracts/community.ts": "02bff98e77dd485975c636795a76b70b70ac738dac0a3893a8223f8718215db4",
     "src/contracts/draws.ts": "1529730b520a55e0ded7c1fe1b8103727674679bff4fa0bcc70b5dde09c7fef7",

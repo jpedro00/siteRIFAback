@@ -86,13 +86,17 @@ export async function listPaymentAccounts(
       input.tenantId,
     ]);
     // Ligado = ao menos uma forma de recebimento disponivel (OAuth do Mercado Pago ou Connect).
-    const enabled = deps.paymentAccounts?.enabled === true || deps.connect !== null;
+    const mercadoPagoEnabled = deps.paymentAccounts?.enabled === true;
+    const connectEnabled = deps.connect !== null;
+    const enabled = mercadoPagoEnabled || connectEnabled;
     // So conta a conta cujo provedor esta ligado nesta implantacao: uma Stripe pronta com o
     // Connect desligado nao recebe nada.
     const ligado = (provider: OverviewRow['provider']) =>
       provider === 'STRIPE' ? deps.connect !== null : deps.paymentAccounts !== null;
     return {
       enabled,
+      connectEnabled,
+      mercadoPagoEnabled,
       accounts: rows.map(toAccount),
       // Checkout pago: precisa de modulo ligado E conta conectada que pode receber.
       checkoutAvailable: apto[0]!.ok && rows.some((r) => r.can_receive && ligado(r.provider)),

@@ -344,6 +344,10 @@ export type PaymentAccount = z.infer<typeof paymentAccountSchema>;
  */
 export const paymentAccountsResponseSchema = z.object({
   enabled: z.boolean(),
+  /** O Stripe Connect esta ligado nesta implantacao? (a tela so oferece o que funciona) */
+  connectEnabled: z.boolean(),
+  /** A conexao OAuth do Mercado Pago esta ligada nesta implantacao? */
+  mercadoPagoEnabled: z.boolean(),
   accounts: z.array(paymentAccountSchema),
   /** O checkout pago esta disponivel para esta comunidade? */
   checkoutAvailable: z.boolean(),
