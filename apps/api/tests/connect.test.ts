@@ -443,7 +443,7 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · rotas e webhook ${hasTestDa
       expect(await eventoGravado(id)).toEqual({ processed: true });
     });
 
-    it('duas entregas SIMULTANEAS do mesmo event.id: uma processa, a outra responde 200 sem trabalho', async () => {
+    it('duas entregas SIMULTANEAS do mesmo event.id: uma processa, a outra responde 503 sem trabalho (a Stripe reenvia)', async () => {
       const c = await novaComunidade('cn-par-');
       await cadastrarOk(c, true);
       const { orderId, pi } = await compra(c);
@@ -462,14 +462,16 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · rotas e webhook ${hasTestDa
       } finally {
         stripe.retrieveDelayMs = 0;
       }
-      for (const r of respostas) expect(r.status, JSON.stringify(r.body)).toBe(200);
-      expect(respostas.map((r) => r.body.result).sort()).toEqual(['duplicate', 'processed']);
+      // A que chegou com a outra em andamento NAO diz "duplicate": se a primeira falhar, a Stripe
+      // ja teria parado de reenviar. 503 = "tente de novo depois".
+      expect(respostas.map((r) => r.status).sort()).toEqual([200, 503]);
+      expect(respostas.find((r) => r.status === 200)!.body).toEqual({ received: true, result: 'processed' });
       expect(stripe.retrieved.filter((x) => x === pi).length - consultas).toBe(1);
       expect(await pagamentosConfirmados(orderId)).toBe(1);
       expect(await eventoGravado(id)).toEqual({ processed: true });
     });
 
-    it('lease: evento reivindicado ha pouco nao e reprocessado; lease vencido (>60s) e', async () => {
+    it('lease: evento reivindicado ha pouco responde 503 sem trabalho; lease vencido (>60s) processa', async () => {
       const c = await novaComunidade('cn-lease-');
       await cadastrarOk(c, true);
       const { orderId, pi } = await compra(c);
@@ -482,8 +484,8 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · rotas e webhook ${hasTestDa
       );
       const consultas = stripe.retrieved.length;
       const emAndamento = await avisar(h, { id, type: 'payment_intent.succeeded', object: { id: pi } });
-      expect(emAndamento.status).toBe(200);
-      expect(emAndamento.body).toEqual({ received: true, result: 'duplicate' });
+      expect(emAndamento.status).toBe(503);
+      expect(emAndamento.body).not.toHaveProperty('result');
       expect(stripe.retrieved.length).toBe(consultas);
       expect(await statusDe(orderId)).toEqual({ pedido: 'PENDENTE', pagamento: 'PENDENTE' });
 

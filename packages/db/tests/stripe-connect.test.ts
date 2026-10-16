@@ -505,6 +505,10 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
       pool
         .query<{ token: string | null }>('SELECT app.record_connect_webhook_event($1, $2, $3) AS token', [id, type, account])
         .then((r) => r.rows[0]!.token);
+    const concluido = (pool: DbPool, id: string) =>
+      pool
+        .query<{ ok: boolean }>('SELECT app.connect_webhook_event_processed($1) AS ok', [id])
+        .then((r) => r.rows[0]!.ok);
     const concluir = (pool: DbPool, id: string) =>
       pool
         .query<{ ok: boolean }>('SELECT app.finish_connect_webhook_event($1) AS ok', [id])
@@ -518,8 +522,10 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
       const id = evt();
       const t1 = await registrar(app, id);
       expect(t1).toMatch(/^[0-9a-f-]{36}$/);
-      // Outra entrega simultanea enquanto a primeira processa: nao reivindica (lease de 60 s).
+      // Outra entrega simultanea enquanto a primeira processa: nao reivindica (lease de 60 s) e
+      // o evento NAO consta como concluido (a API responde 503 para a Stripe reenviar).
       expect(await registrar(worker, id)).toBeNull();
+      expect(await concluido(app, id)).toBe(false);
       // A primeira falhou e devolveu a reivindicacao: o reenvio da Stripe processa.
       expect(await devolver(id, t1!)).toBe(true);
       const t2 = await registrar(app, id);
@@ -532,6 +538,8 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
       expect(t3).not.toBeNull();
       expect(await concluir(app, id)).toBe(true);
       // Concluido: nem devolver reabre.
+      expect(await concluido(app, id)).toBe(true);
+      expect(await concluido(worker, id)).toBe(true);
       expect(await devolver(id, t3!)).toBe(false);
       expect(await registrar(app, id)).toBeNull();
       expect(await registrar(worker, id)).toBeNull();
@@ -593,9 +601,10 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
                 has_function_privilege('app_user', p.oid, 'EXECUTE') AS u,
                 has_function_privilege('app_worker', p.oid, 'EXECUTE') AS w
            FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-          WHERE n.nspname = 'app' AND p.proname IN ('record_connect_webhook_event','finish_connect_webhook_event')`,
+          WHERE n.nspname = 'app'
+            AND p.proname IN ('record_connect_webhook_event','connect_webhook_event_processed','finish_connect_webhook_event')`,
       );
-      expect(rows).toHaveLength(2);
+      expect(rows).toHaveLength(3);
       for (const r of rows) {
         expect(r).toMatchObject({ pub: false, u: true, w: true, definer: true });
         expect(r.cfg).toContain('search_path=public, pg_temp');

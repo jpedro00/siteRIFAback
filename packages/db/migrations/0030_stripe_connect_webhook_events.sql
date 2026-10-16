@@ -7,10 +7,12 @@
 --   * evento novo, ou gravado mas nunca concluido (o processamento falhou e a Stripe reenviou)
 --     -> processa;
 --   * evento ja concluido -> nada a fazer (200 sem efeito);
---   * evento em andamento (outra entrega o reivindicou ha menos de 60 s) -> nada a fazer agora (200
---     sem trabalho): a primeira entrega cuida dele. Se ela falhar, devolve a SUA reivindicacao
---     (`release_connect_webhook_event`, pelo token) e responde 5xx; se morrer no meio, o lease vence em 60 s.
---     Em ambos os casos o reenvio da Stripe processa.
+--   * evento em andamento (outra entrega o reivindicou ha menos de 60 s) -> 503 sem trabalho, para
+--     a Stripe reenviar depois (responder 200 faria a Stripe parar de reenviar, e se a primeira
+--     entrega falhasse o evento se perderia: `account.updated` e `charge.refunded` nao sao
+--     conciliados pelo worker). `connect_webhook_event_processed` distingue os dois casos. Se a
+--     primeira falhar, devolve a SUA reivindicacao (`release_connect_webhook_event`, pelo token) e
+--     responde 5xx; se morrer no meio, o lease vence em 60 s. Em ambos os casos o reenvio processa.
 -- O efeito em si tambem e idempotente (o estado da conta e RELIDO da Stripe; o pagamento passa
 -- por `app.apply_psp_payment`, que trava a linha); o lease so evita a consulta dobrada a Stripe.
 --
@@ -83,6 +85,19 @@ BEGIN
 END;
 $$;
 
+-- O evento ja foi CONCLUIDO? Lido quando `record_connect_webhook_event` devolve NULL, para
+-- separar "ja concluido" (200 duplicate) de "outra entrega em andamento" (503: a Stripe reenvia).
+CREATE FUNCTION app.connect_webhook_event_processed(p_event_id text)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  SELECT EXISTS (SELECT 1 FROM public.stripe_connect_webhook_events
+                  WHERE event_id = p_event_id AND processed_at IS NOT NULL);
+$$;
+
 -- Marca o evento como concluido. TRUE = marcou agora; FALSE = desconhecido ou ja concluido.
 CREATE FUNCTION app.finish_connect_webhook_event(p_event_id text)
 RETURNS boolean
@@ -124,6 +139,7 @@ $$;
 
 REVOKE EXECUTE ON FUNCTION
   app.record_connect_webhook_event(text, text, text),
+  app.connect_webhook_event_processed(text),
   app.release_connect_webhook_event(text, uuid),
   app.finish_connect_webhook_event(text),
   app.purge_connect_webhook_events(integer)
@@ -131,6 +147,7 @@ FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION
   app.record_connect_webhook_event(text, text, text),
+  app.connect_webhook_event_processed(text),
   app.release_connect_webhook_event(text, uuid),
   app.finish_connect_webhook_event(text)
 TO app_user, app_worker;

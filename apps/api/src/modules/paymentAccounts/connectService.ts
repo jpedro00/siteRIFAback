@@ -112,8 +112,9 @@ class RetryLater extends Error {}
  *
  *  1. ASSINATURA sobre o corpo bruto (401 sem nenhum efeito se nao confere);
  *  2. evento de outro modo (live x teste) ou de tipo que nao tratamos: 200 `ignored`, nada gravado;
- *  3. GRAVA e REIVINDICA o `event.id` (idempotencia + lease de 60 s). Ja concluido, ou outra
- *     entrega em andamento: 200 `duplicate`, nada mais (a outra cuida dele);
+ *  3. GRAVA e REIVINDICA o `event.id` (idempotencia + lease de 60 s). Ja concluido: 200
+ *     `duplicate`, nada mais. Outra entrega em andamento: 503 sem trabalho, para a Stripe
+ *     reenviar depois (se a outra falhar, o reenvio ainda processa);
  *  4. processa — RELENDO na Stripe (RN06): o corpo do aviso nunca vira estado;
  *  5. so entao marca como concluido. Falha: a reivindicacao e devolvida e o evento continua
  *     pendente (transitoria = 503), para o reenvio da Stripe rodar de novo (o efeito em si e
@@ -152,7 +153,17 @@ export async function handleConnectWebhook(
     ]);
     return rows[0]!.token;
   });
-  if (token === null) return 'duplicate';
+  if (token === null) {
+    // Ja concluido: 200 duplicate. Outra entrega em andamento: 503, para a Stripe reenviar depois
+    // (um 200 aqui faria a Stripe parar; se a primeira falhasse, o evento se perderia).
+    const concluido = await withoutContext(deps.pool, async (client) => {
+      const { rows } = await client.query<{ done: boolean }>('SELECT app.connect_webhook_event_processed($1) AS done', [event.id]);
+      return rows[0]?.done === true;
+    });
+    if (concluido) return 'duplicate';
+    log.warn('stripe_connect.webhook_in_flight', { event_id: event.id, type: event.type });
+    throw new ApiError('PAYMENT_PROVIDER_UNAVAILABLE');
+  }
 
   let result: Exclude<ConnectWebhookResult, 'duplicate'>;
   try {
