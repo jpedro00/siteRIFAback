@@ -727,6 +727,144 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
     });
   });
 
+  describe('0032 · estorno que FALHOU depois de ESTORNADO (record_psp_refund_failed)', () => {
+    /** Pagamento STRIPE ja ESTORNADO (o estorno foi aceito; agora a Stripe diz que falhou). */
+    async function estornado(provider: 'STRIPE' | 'MERCADO_PAGO' = 'STRIPE') {
+      const tenantId = await tenant();
+      const { accountId } = await conta(tenantId, { provider, charges: true });
+      await pagamento(tenantId, { provider, accountId });
+      const { rows } = await owner.query<{ id: string; order_id: string; provider_payment_id: string }>(
+        `UPDATE payments SET status = 'ESTORNADO', paid_at = now() - interval '1 hour', needs_manual_refund = true,
+                refund_reason = 'teste'
+          WHERE tenant_id = $1 RETURNING id, order_id, provider_payment_id`,
+        [tenantId],
+      );
+      return { tenantId, accountId, ...rows[0]! };
+    }
+    type Pg = Awaited<ReturnType<typeof estornado>>;
+    const registrar = (
+      p: Pg,
+      o: { tenantId?: string; accountId?: string | null; refundId?: string; reason?: string | null; provider?: string } = {},
+    ) =>
+      comoTenant(o.tenantId ?? p.tenantId, (c) =>
+        c
+          .query<{ r: string }>('SELECT app.record_psp_refund_failed($1, $2, $3::uuid, $4, $5, $6) AS r', [
+            o.provider ?? 'STRIPE',
+            p.provider_payment_id,
+            o.accountId === undefined ? p.accountId : o.accountId,
+            o.refundId ?? 're_fake1',
+            o.reason === undefined ? 'expired_or_canceled_card' : o.reason,
+            1000,
+          ])
+          .then((r) => r.rows[0]!.r),
+      );
+    const abertas = async (paymentId: string) =>
+      (
+        await owner.query<{ kind: string; detail: Record<string, unknown>; order_id: string; tenant_id: string }>(
+          `SELECT kind, detail, order_id, tenant_id FROM payment_reconciliation_issues WHERE payment_id = $1 AND resolved_at IS NULL`,
+          [paymentId],
+        )
+      ).rows;
+    const statusDo = async (id: string) =>
+      (await owner.query<{ s: string }>('SELECT status::text AS s FROM payments WHERE id = $1', [id])).rows[0]!.s;
+
+    it('abre UMA divergencia REFUND_FAILED (sem dado pessoal) e NAO muda o status (ESTORNADO e terminal)', async () => {
+      const p = await estornado();
+      expect(await registrar(p)).toBe('opened');
+      expect(await registrar(p)).toBe('already_open');
+      expect(await registrar(p, { refundId: 're_fake2', reason: null })).toBe('already_open');
+      const i = await abertas(p.id);
+      expect(i).toHaveLength(1);
+      expect(i[0]).toEqual({
+        kind: 'REFUND_FAILED',
+        detail: { refundId: 're_fake1', failureReason: 'expired_or_canceled_card', amountCents: 1000 },
+        order_id: p.order_id,
+        tenant_id: p.tenantId,
+      });
+      expect(await statusDo(p.id)).toBe('ESTORNADO');
+      const { rows: aud } = await owner.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM audit_events WHERE action = 'payment.refund_failed' AND target_id = $1`,
+        [p.id],
+      );
+      expect(aud[0]!.n).toBe(1);
+    });
+
+    it('a conciliacao local nao fecha a divergencia (so o operador resolve)', async () => {
+      const p = await estornado();
+      await registrar(p);
+      await worker.query("SELECT app.worker_reconcile_local(interval '7 days')");
+      expect((await abertas(p.id)).filter((i) => i.kind === 'REFUND_FAILED')).toHaveLength(1);
+    });
+
+    it('resolvida pelo operador, uma nova falha reabre (uma aberta por vez)', async () => {
+      const p = await estornado();
+      await registrar(p);
+      await owner.query(`UPDATE payment_reconciliation_issues SET resolved_at = now() WHERE payment_id = $1`, [p.id]);
+      expect(await registrar(p, { refundId: 're_fake3' })).toBe('opened');
+      expect(await abertas(p.id)).toHaveLength(1);
+    });
+
+    it('outra comunidade (contexto) ou pagamento desconhecido: unknown_payment, nada aberto', async () => {
+      const p = await estornado();
+      const outra = await tenant();
+      expect(await registrar(p, { tenantId: outra })).toBe('unknown_payment');
+      expect(
+        await registrar({ ...p, provider_payment_id: 'pi_naoexiste' }),
+      ).toBe('unknown_payment');
+      expect(await registrar(p, { provider: 'MERCADO_PAGO' })).toBe('unknown_payment');
+      expect(await abertas(p.id)).toHaveLength(0);
+    });
+
+    it('conta da consulta diferente da conta do pagamento: mismatch, nada aberto', async () => {
+      const p = await estornado();
+      const outra = await conta(await tenant(), { charges: true });
+      expect(await registrar(p, { accountId: outra.accountId })).toBe('mismatch');
+      expect(await registrar(p, { accountId: null })).toBe('mismatch');
+      expect(await abertas(p.id)).toHaveLength(0);
+    });
+
+    it('formato: refundId re_/pyr_ obrigatorio; failure_reason que nao e codigo vira null', async () => {
+      const p = await estornado();
+      await expect(registrar(p, { refundId: 'nao-e-refund' })).rejects.toMatchObject({ code: '22023' });
+      expect(await registrar(p, { refundId: 'pyr_fake1', reason: 'Conta 1234-5 de Fulano' })).toBe('opened');
+      expect((await abertas(p.id))[0]!.detail).toEqual({ refundId: 'pyr_fake1', failureReason: null, amountCents: 1000 });
+    });
+
+    it('a constraint de tipos aceita REFUND_FAILED e continua recusando tipo desconhecido', async () => {
+      const p = await estornado();
+      await expect(
+        owner.query(`INSERT INTO payment_reconciliation_issues (tenant_id, payment_id, kind) VALUES ($1, $2, 'QUALQUER_COISA')`, [
+          p.tenantId,
+          p.id,
+        ]),
+      ).rejects.toMatchObject({ code: '23514' });
+      await owner.query(`INSERT INTO payment_reconciliation_issues (tenant_id, payment_id, kind) VALUES ($1, $2, 'REFUND_FAILED')`, [
+        p.tenantId,
+        p.id,
+      ]);
+    });
+
+    it('a funcao da 0032 e SECURITY DEFINER, search_path fixo, nao publica; app_user/app_worker executam', async () => {
+      const { rows } = await owner.query<{ f: string; pub: boolean; u: boolean; w: boolean; definer: boolean; cfg: string[] | null }>(
+        `SELECT p.proname AS f, p.prosecdef AS definer, p.proconfig AS cfg,
+                has_function_privilege('public', p.oid, 'EXECUTE') AS pub,
+                has_function_privilege('app_user', p.oid, 'EXECUTE') AS u,
+                has_function_privilege('app_worker', p.oid, 'EXECUTE') AS w
+           FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'app' AND p.proname = 'record_psp_refund_failed'`,
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ pub: false, u: true, w: true, definer: true });
+      expect(rows[0]!.cfg).toContain('search_path=public, pg_temp');
+      // O runtime continua sem escrever a tabela diretamente.
+      const { rows: t } = await owner.query<{ u: boolean; w: boolean }>(
+        `SELECT has_table_privilege('app_user', 'public.payment_reconciliation_issues', 'INSERT,UPDATE,DELETE') AS u,
+                has_table_privilege('app_worker', 'public.payment_reconciliation_issues', 'INSERT,UPDATE,DELETE') AS w`,
+      );
+      expect(t[0]).toEqual({ u: false, w: false });
+    });
+  });
+
   describe('0031 · obrigacoes abertas da conta (payment_account_open_obligations)', () => {
     const obrigacoes = async (accountId: string) =>
       (await owner.query<{ n: number }>('SELECT app.payment_account_open_obligations($1) AS n', [accountId])).rows[0]!.n;

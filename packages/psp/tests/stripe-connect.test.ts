@@ -331,6 +331,61 @@ describe('StripeConnectGateway', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  describe('failedRefunds (estorno que falhou depois de aceito)', () => {
+    const refund = (over: Record<string, unknown> = {}) => ({
+      id: 're_1',
+      object: 'refund',
+      status: 'succeeded',
+      amount: 2500,
+      payment_intent: 'pi_1',
+      // Campos que NUNCA podem sair do gateway (dados do comprador / instrucoes).
+      destination_details: { pix: { bank: 'Banco X' } },
+      instructions_email: 'maria@example.com',
+      ...over,
+    });
+
+    it('confere a conta, lista os estornos DO PaymentIntent e devolve so os failed, sem dado pessoal', async () => {
+      const retrieve = vi.fn().mockResolvedValue(intent({ status: 'succeeded' }));
+      const list = vi.fn().mockResolvedValue({
+        data: [
+          refund({ id: 're_ok', status: 'succeeded' }),
+          refund({ id: 're_fail', status: 'failed', failure_reason: 'expired_or_canceled_card', amount: 2500 }),
+          refund({ id: 're_pend', status: 'pending' }),
+        ],
+      });
+      const out = await make({ paymentIntents: { retrieve }, refunds: { list } }).failedRefunds('pi_1');
+      expect(retrieve).toHaveBeenCalledWith('pi_1');
+      expect(list).toHaveBeenCalledWith({ payment_intent: 'pi_1', limit: 100 });
+      expect(out).toEqual([{ refundId: 're_fail', amountCents: 2500, failureReason: 'expired_or_canceled_card' }]);
+    });
+
+    it('failure_reason fora do formato de codigo (ou ausente) vira null', async () => {
+      const retrieve = vi.fn().mockResolvedValue(intent());
+      const list = vi.fn().mockResolvedValue({
+        data: [refund({ status: 'failed', failure_reason: 'Conta 1234-5 do Fulano' }), refund({ id: 're_2', status: 'failed' })],
+      });
+      const out = await make({ paymentIntents: { retrieve }, refunds: { list } }).failedRefunds('pi_1');
+      expect(out.map((r) => r.failureReason)).toEqual([null, null]);
+    });
+
+    it('PaymentIntent de outra conta: rejeita SEM listar estornos', async () => {
+      const retrieve = vi.fn().mockResolvedValue(intent({ transfer_data: { destination: 'acct_outra' } }));
+      const list = vi.fn();
+      await expect(make({ paymentIntents: { retrieve }, refunds: { list } }).failedRefunds('pi_1')).rejects.toBeInstanceOf(
+        PspRejectedError,
+      );
+      expect(list).not.toHaveBeenCalled();
+    });
+
+    it('classifica falhas da Stripe (5xx = transitorio)', async () => {
+      const retrieve = vi.fn().mockResolvedValue(intent());
+      const list = vi.fn().mockRejectedValue(Object.assign(new Error(`x ${KEY}`), { statusCode: 503 }));
+      const p = make({ paymentIntents: { retrieve }, refunds: { list } }).failedRefunds('pi_1');
+      await expect(p).rejects.toBeInstanceOf(PspUnavailableError);
+      await expect(p).rejects.not.toThrow(KEY);
+    });
+  });
+
   it('expires_at tem teto de agora + 1209600 s (14 dias)', async () => {
     vi.useFakeTimers({ now: new Date('2026-10-15T12:00:00Z') });
     const create = vi.fn().mockResolvedValue(intent());

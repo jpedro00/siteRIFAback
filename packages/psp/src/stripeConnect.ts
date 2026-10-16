@@ -5,6 +5,7 @@ import {
   PspUnauthorizedError,
   PspUnavailableError,
   type CreatePixChargeInput,
+  type PspFailedRefund,
   type PspGateway,
   type PspPayment,
   type PspPaymentMethod,
@@ -31,6 +32,8 @@ export interface StripeConnectOptions {
 }
 
 const REQUEST_TIMEOUT_MS = 10_000;
+/** `failure_reason` da Stripe e um codigo (`expired_or_canceled_card`, `lost_or_stolen_card`...). */
+const FAILURE_REASON = /^[a-z][a-z0-9_]{0,63}$/;
 const MIN_PIX_EXPIRES_SECONDS = 60;
 /** Teto da Stripe para o prazo do PIX (`expires_at` ate 14 dias no futuro). */
 const MAX_PIX_EXPIRES_SECONDS = 1_209_600;
@@ -266,6 +269,32 @@ export class StripeConnectGateway implements PspGateway {
         { payment_intent: providerPaymentId, refund_application_fee: true, reverse_transfer: true },
         { idempotencyKey },
       );
+    });
+  }
+
+  /**
+   * Estornos FALHADOS do PaymentIntent, relidos na Stripe (RN06). Mesma defesa do getPayment: o
+   * PaymentIntent tem de ser desta conta conectada, senao nem lista. So sai id, valor e o codigo
+   * do motivo — nada de `destination_details`/instrucoes (dados do comprador).
+   */
+  failedRefunds(providerPaymentId: string): Promise<readonly PspFailedRefund[]> {
+    return call(async () => {
+      this.#assertOwn(await this.#stripe.paymentIntents.retrieve(providerPaymentId));
+      // Um pagamento so e estornado por inteiro, uma vez: 100 cobre com folga (sem paginar).
+      const page = await this.#stripe.refunds.list({ payment_intent: providerPaymentId, limit: 100 });
+      const data: unknown = asRecord(page)['data'];
+      const out: PspFailedRefund[] = [];
+      for (const item of Array.isArray(data) ? (data as unknown[]) : []) {
+        const r = asRecord(item);
+        if (r['status'] !== 'failed' || typeof r['id'] !== 'string') continue;
+        const reason = r['failure_reason'];
+        out.push({
+          refundId: r['id'],
+          amountCents: typeof r['amount'] === 'number' ? r['amount'] : 0,
+          failureReason: typeof reason === 'string' && FAILURE_REASON.test(reason) ? reason : null,
+        });
+      }
+      return out;
     });
   }
 
