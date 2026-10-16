@@ -63,7 +63,12 @@ export function buildPaymentAccountHandlers(deps: AppDeps): Record<string, Reque
       const tenant = requireTenant(req);
       const session = requireSession(req);
       // So o provedor. Qualquer campo de token no corpo e ignorado pelo schema.
-      connectPaymentAccountRequestSchema.parse(req.body);
+      const { provider } = connectPaymentAccountRequestSchema.parse(req.body);
+      // Esta rota e o OAuth do Mercado Pago. O enum aceita STRIPE (e FAKE), mas a Stripe se
+      // cadastra por `connect-stripe`: qualquer outro provedor e recusado, sem iniciar nada.
+      if (provider !== 'MERCADO_PAGO') {
+        throw ApiError.badRequest(undefined, [{ path: 'provider', message: 'Use MERCADO_PAGO nesta rota.' }]);
+      }
       res.status(200).json(await connectPaymentAccount(deps, { tenantId: tenant.tenantId, userId: session.userId }));
     }),
 
