@@ -121,6 +121,79 @@ export class FakeStripe {
     },
   };
 
+  /** Cada `refunds.create` (parametros e opcoes), na ordem. */
+  readonly refundCalls: { params: Record<string, unknown>; opts: Record<string, unknown> | undefined }[] = [];
+  /** O proximo estorno falha com este erro (uma vez). */
+  failNextRefund: Error | null = null;
+  readonly #refundByKey = new Map<string, Record<string, unknown>>();
+
+  readonly refunds = {
+    /**
+     * Como a Stripe: mesma `idempotencyKey` devolve o MESMO estorno (sem estornar de novo); intent
+     * sem cobranca paga, ou cobranca ja estornada, e erro 400 (definitivo). O estorno vira o
+     * `latest_charge` do PaymentIntent para estornado (o que a consulta seguinte ve).
+     */
+    create: async (params: Record<string, unknown>, opts?: Record<string, unknown>) => {
+      this.refundCalls.push({ params, opts });
+      if (this.failNextRefund) {
+        const e = this.failNextRefund;
+        this.failNextRefund = null;
+        throw e;
+      }
+      const key = opts?.['idempotencyKey'];
+      if (typeof key === 'string' && this.#refundByKey.has(key)) return this.#refundByKey.get(key)!;
+      const id = String(params['payment_intent']);
+      const intent = this.#intentById.get(id);
+      if (!intent) {
+        throw Object.assign(new Error('No such payment_intent'), { type: 'StripeInvalidRequestError', statusCode: 404 });
+      }
+      if (intent['status'] !== 'succeeded') {
+        throw Object.assign(new Error('This PaymentIntent does not have a successful charge to refund.'), {
+          type: 'StripeInvalidRequestError',
+          statusCode: 400,
+        });
+      }
+      const charge = intent['latest_charge'] as Record<string, unknown> | undefined;
+      if (charge?.['refunded'] === true) {
+        throw Object.assign(new Error('Charge has already been refunded.'), {
+          type: 'StripeInvalidRequestError',
+          code: 'charge_already_refunded',
+          statusCode: 400,
+        });
+      }
+      this.markRefunded(id);
+      const refund = {
+        id: `re_${unique('r').replace(/[^A-Za-z0-9]/g, '')}`,
+        object: 'refund',
+        status: 'succeeded',
+        amount: intent['amount'],
+        payment_intent: id,
+      };
+      if (typeof key === 'string') this.#refundByKey.set(key, refund);
+      return refund;
+    },
+  };
+
+  /**
+   * A cobranca do PaymentIntent foi estornada NA STRIPE (pela plataforma ou pelo painel dela):
+   * `latest_charge` passa a dizer quanto foi devolvido. `amountRefunded` menor que o valor =
+   * estorno parcial.
+   */
+  markRefunded(id: string, amountRefunded?: number): void {
+    const intent = this.#intentById.get(id)!;
+    const amount = intent['amount'] as number;
+    const devolvido = amountRefunded ?? amount;
+    intent['latest_charge'] = {
+      id: `ch_${id.slice(3)}`,
+      object: 'charge',
+      created: (intent['created'] as number) + 60,
+      paid: true,
+      amount,
+      amount_refunded: devolvido,
+      refunded: devolvido >= amount,
+    };
+  }
+
   /** O criador termina o cadastro na Stripe. */
   ready(acct: string): void {
     const a = this.accountsById.get(acct)!;

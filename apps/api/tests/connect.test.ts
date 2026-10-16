@@ -561,6 +561,50 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · rotas e webhook ${hasTestDa
       expect(await statusDe(orderId)).toEqual({ pedido: 'PENDENTE', pagamento: 'PENDENTE' });
     });
 
+    it('charge.refunded de pagamento PAGO, estornado na Stripe: ESTORNADO uma vez so, mesmo entregue duas vezes', async () => {
+      const c = await novaComunidade('cn-ref-');
+      await cadastrarOk(c, true);
+      const { orderId, pi } = await compra(c);
+      stripe.setIntentStatus(pi, 'succeeded');
+      expect((await avisar(h, { type: 'payment_intent.succeeded', object: { id: pi } })).body.result).toBe('processed');
+      expect(await statusDe(orderId)).toEqual({ pedido: 'PAGO', pagamento: 'APROVADO' });
+
+      stripe.markRefunded(pi);
+      const id = evtId();
+      const corpo = { id: 'ch_fakeref1', object: 'charge', payment_intent: pi, refunded: true };
+      const consultas = stripe.retrieved.length;
+      const primeira = await avisar(h, { id, type: 'charge.refunded', object: corpo });
+      expect(primeira.status, JSON.stringify(primeira.body)).toBe(200);
+      expect(primeira.body).toEqual({ received: true, result: 'processed' });
+      // RN06: o aviso so disparou a CONSULTA; quem disse "estornado" foi a Stripe.
+      expect(stripe.retrieved.slice(consultas)).toEqual([pi]);
+      // O pedido nao muda (o ramo 'refunded' de apply_psp_payment so mexe no pagamento).
+      expect(await statusDe(orderId)).toEqual({ pedido: 'PAGO', pagamento: 'ESTORNADO' });
+
+      // Mesmo event.id de novo: duplicate. Outro event.id (reenvio como evento novo): consulta, no-op.
+      expect((await avisar(h, { id, type: 'charge.refunded', object: corpo })).body.result).toBe('duplicate');
+      expect((await avisar(h, { type: 'charge.refunded', object: corpo })).body.result).toBe('processed');
+      const { rows } = await h.owner.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM audit_events a JOIN payments p ON a.target_id = p.id::text
+          WHERE p.order_id = $1 AND a.action = 'payment.refunded'`,
+        [orderId],
+      );
+      expect(rows[0]!.n).toBe(1);
+      expect(await statusDe(orderId)).toEqual({ pedido: 'PAGO', pagamento: 'ESTORNADO' });
+    });
+
+    it('charge.refunded de estorno PARCIAL: o pagamento continua APROVADO', async () => {
+      const c = await novaComunidade('cn-rfp-');
+      await cadastrarOk(c, true);
+      const { orderId, pi } = await compra(c);
+      stripe.setIntentStatus(pi, 'succeeded');
+      await avisar(h, { type: 'payment_intent.succeeded', object: { id: pi } });
+      stripe.markRefunded(pi, 500);
+      const res = await avisar(h, { type: 'charge.refunded', object: { id: 'ch_fakeref2', object: 'charge', payment_intent: pi } });
+      expect(res.body.result).toBe('processed');
+      expect(await statusDe(orderId)).toEqual({ pedido: 'PAGO', pagamento: 'APROVADO' });
+    });
+
     it('pagamento desconhecido: 200 ignorado', async () => {
       const res = await avisar(h, { type: 'payment_intent.succeeded', object: { id: 'pi_naoexiste123' } });
       expect(res.status).toBe(200);
