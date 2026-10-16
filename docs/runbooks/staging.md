@@ -481,7 +481,8 @@ Cada endpoint tem o seu `whsec_...`: os dois vão em `STRIPE_CONNECT_WEBHOOK_SEC
 por vírgula. O aviso **não vale como verdade**: a API grava o `event.id` (idempotência; o mesmo
 evento duas vezes tem efeito uma vez), relê a conta na Stripe (`account.updated`) ou consulta o
 PaymentIntent pela conta conectada do pagamento antes de aplicar. Falha transitória responde
-503 e a Stripe reenvia.
+503 e a Stripe reenvia; a entrega que chega com o mesmo evento ainda em processamento por outra
+também responde 503 (só o evento já concluído responde 200 `duplicate`).
 
 Variáveis (API; o worker recebe só `CONNECT_ENABLED`):
 
@@ -497,7 +498,8 @@ PUBLIC_API_BASE_URL             = https://<api>.onrender.com
 
 1. Pré-requisitos fora do código: Connect habilitado na conta Stripe, PIX disponível para
    destination charges no Brasil, segmento aceito pela Stripe.
-2. Aplicar a migration `0030` (workflow **Migrar staging**) **antes** de subir o código.
+2. Aplicar as migrations `0027`–`0031` (workflow **Migrar staging**) **antes** de subir o
+   código — o código as exige mesmo com `CONNECT_ENABLED=false` (ver `stripe-connect.md`, §7).
 3. Staging em **modo teste**: criar a chave restrita de teste e os dois endpoints, preencher as
    variáveis, `CONNECT_ENABLED=true`, redeploy da API e do worker.
 4. Testar ponta a ponta: cadastro → volta ao painel → `refresh-stripe` → conta pode receber →

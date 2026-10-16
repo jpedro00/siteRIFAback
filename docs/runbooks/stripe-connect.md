@@ -101,13 +101,13 @@ Levantadas dos métodos do SDK realmente chamados em `packages/payment-accounts/
 ### Ordem de aplicação
 
 1. Pré-requisitos externos (§2).
-2. **Migrations 0027–0030 ANTES do código** (workflow *Migrar staging*, ver `staging.md`,
+2. **Migrations 0027–0031 ANTES do código** (workflow *Migrar staging*, ver `staging.md`,
    seção "Migrações"). Todas são aditivas.
 3. Variáveis (`CONNECT_ENABLED` ainda `false`), deploy do código, conferir que nada mudou.
 4. Só então o roteiro da §4 (liga `CONNECT_ENABLED=true` no staging).
 
 > **AVISO — banco de staging sem backup.** O banco de staging é o projeto Supabase **`RIFAS`** e,
-> por decisão registrada do dono do projeto, **não tem backup**. As migrations 0027–0030 só
+> por decisão registrada do dono do projeto, **não tem backup**. As migrations 0027–0031 só
 > foram aplicadas até hoje no **banco de teste local**. **Peça confirmação explícita do dono
 > antes de aplicar.** Sugestão (não imposição): um `pg_dump` manual antes de migrar, ao menos
 > das tabelas `payments`, `plans`, `billing_settings` e `payment_provider_authorizations`.
@@ -210,11 +210,8 @@ Ao final, preencha as respostas da §5.
 
 Do ledger (`.superpowers/sdd/2026-10-15-stripe-connect-recebimento/progress.md`):
 
-- `refund.failed` depois de o pagamento estar `ESTORNADO` não é tratado (falta registrar
-  divergência de conciliação).
 - Os retries do estorno automático param no limite da fila (5) e uma conta revogada consome as
   tentativas; depois disso o caso fica para o operador (`needs_manual_refund` segue ligado).
-- Sem *throttle* nas rotas `connect-stripe` e `refresh-stripe` (não há middleware reutilizável).
 - A limpeza de eventos de webhook (`limpar-stripe-eventos`) não é feita em lotes.
 - Estorno de pagamento **APROVADO no Mercado Pago continua manual**, e `ESTORNADO` não é
   terminal para o Mercado Pago.
@@ -228,6 +225,29 @@ Do ledger (`.superpowers/sdd/2026-10-15-stripe-connect-recebimento/progress.md`)
 - PaymentIntents órfãos (criados mas nunca gravados) expiram sozinhos pelo prazo do PIX; não há
   job de cancelamento. Pelo mesmo motivo, ao liberar uma reserva o PaymentIntent não é
   cancelado: um pagamento tardio vira `refund_required`.
+
+**Adiadas por decisão, com o portão de cada uma:**
+
+1. **Semântica de expiração do PIX na Stripe não verificada.** *Portão: homologação (§4, passo
+   10, e §5, pergunta 2).* Confirmar em que estado fica um PaymentIntent PIX vencido. O código
+   assume `canceled` com `cancellation_reason: automatic` (→ `EXPIRADO`). Se ele ficar em
+   `requires_payment_method`, o worker libera o pedido mas o pagamento continua `PENDENTE` para
+   sempre — e um `PENDENTE` é obrigação aberta, que **impede a conta de sair de
+   `DISCONNECTING`**. `processing` é mapeado para `PENDENTE` e também é liberado: um sucesso
+   tardio vira `refund_required`. Correções possíveis: chamar `paymentIntents.cancel` a partir do
+   `expirar-pix` antes de liberar, ou mapear `requires_payment_method` depois do prazo para
+   `EXPIRADO`.
+2. **`refund.failed` / `charge.refund.updated` não são tratados depois de `ESTORNADO`.**
+   *Portão: OBRIGATÓRIO antes de produção.* Um estorno que falha depois de o pagamento já estar
+   `ESTORNADO` passa despercebido (falta registrar divergência de conciliação). Abrir uma issue
+   de conciliação e resolver antes do go-live.
+3. **Sem *throttle* por comunidade em `connect-stripe` e `refresh-stripe`.** *Portão: aceitar o
+   risco ou resolver antes de produção (checklist, item 12).* O limite de requisições da Stripe
+   é por **chave da plataforma**: uma única comunidade chamando essas rotas em rajada pode
+   degradar o checkout de todas. Não há middleware reutilizável hoje.
+4. **Sem botão de desconectar Stripe no painel.** *Portão: decisão de produto.* A desconexão
+   genérica do backend (`POST /api/tenant/payment-accounts/{id}/disconnect`) funciona para linhas
+   `STRIPE`; falta só a interface.
 
 ## 7. Rollback
 
@@ -253,11 +273,30 @@ reservados não são liberados até alguém resolver o pagamento. Como proceder:
 Com a API desligada, o webhook responde 404 e a Stripe reenvia por um tempo; o worker ainda
 concilia por consulta enquanto estiver ligado.
 
-**Reverter código:** redeploy do commit anterior. As migrations 0027–0030 são **aditivas**:
+**Requisito obrigatório: o código desta branch exige as migrations 0027–0031 mesmo com
+`CONNECT_ENABLED=false`.** O job `limpar-stripe-eventos` do worker chama
+`app.purge_connect_webhook_events` (0030) e a leitura das contas de recebimento lê as colunas
+novas (`charges_enabled`, `payouts_enabled`, `requirements_due`, 0028) incondicionalmente. Subir o
+código antes das migrations quebra o worker e a tela de recebimentos, com o Connect ligado ou
+não.
+
+**Reverter código:** redeploy do commit anterior. As migrations 0027–0031 são **aditivas**:
 colunas e tabelas novas ficam sem uso. Ressalvas: o valor `STRIPE` do enum `payment_provider`
 **não se remove**; a constraint `payments_provider_known` passou a aceitar `STRIPE`, e voltar à
-antiga só é possível sem nenhuma linha `STRIPE` em `payments`. Código antigo diante de linhas
-`STRIPE` pode não saber lê-las; por isso desligue e esvazie (acima) antes de reverter.
+antiga só é possível sem nenhuma linha `STRIPE` em `payments`.
+
+> **ARMADILHA — código anterior trata linhas `STRIPE` como Mercado Pago.** O worker anterior a
+> esta branch manda **toda** linha de `payments` pelo resolvedor do Mercado Pago: a
+> `conciliacao` antiga varre `PENDENTE`/`EXPIRADO`/`CANCELADO` dos **últimos 3 dias** e o
+> `expirar-pix` antigo varre **todo** `PENDENTE`. Uma linha `STRIPE` nesses estados seria
+> consultada no Mercado Pago com o id de um PaymentIntent. **Antes de reverter o código, exija:
+> nenhum pagamento `STRIPE` criado nos últimos 3 dias e nenhum `STRIPE` `PENDENTE`.**
+> ```sql
+> SELECT count(*) FILTER (WHERE created_at > now() - interval '3 days') AS ultimos_3_dias,
+>        count(*) FILTER (WHERE status = 'PENDENTE') AS pendentes
+>   FROM payments WHERE provider = 'STRIPE';
+> ```
+> Os dois precisam ser `0`. Sem isso, desligue o Connect (acima) e espere a janela passar.
 
 ## 8. Checklist de go-live
 
@@ -269,7 +308,7 @@ antiga só é possível sem nenhuma linha `STRIPE` em `payments`. Código antigo
 | 4 | Decisão sobre estorno/disputa registrada | [ ] |
 | 5 | Chaves antigas rotacionadas; nenhuma chave em repositório ou chat | [ ] |
 | 6 | Dono confirmou migrations no banco `RIFAS` (sem backup); dump manual feito, se desejado | [ ] |
-| 7 | Migrations 0027–0030 aplicadas, antes do código | [ ] |
+| 7 | Migrations 0027–0031 aplicadas, antes do código | [ ] |
 | 8 | Roteiro da §4 completo em modo teste; respostas da §5 anotadas | [ ] |
 | 9 | Chave **live** restrita criada; permissões da §3 conferidas | [ ] |
 | 10 | Dois endpoints live criados; dois `whsec_` em `STRIPE_CONNECT_WEBHOOK_SECRET` | [ ] |
