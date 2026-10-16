@@ -115,6 +115,34 @@ function isFullyRefunded(charge: Record<string, unknown>): boolean {
   return typeof amount === 'number' && amount > 0 && typeof refunded === 'number' && refunded >= amount;
 }
 
+/** Campos com segredo ou dado pessoal do pagador: nunca vao para `payments.raw`. */
+const INTENT_SENSIVEIS = ['client_secret', 'receipt_email', 'shipping', 'next_action'] as const;
+const CHARGE_SENSIVEIS = [
+  'billing_details',
+  'payment_method_details',
+  'receipt_email',
+  'receipt_url',
+  'receipt_number',
+  'shipping',
+] as const;
+
+/**
+ * Copia do PaymentIntent para guardar em `payments.raw`: sem `client_secret`, sem dados do
+ * pagador da cobranca (`billing_details`, `payment_method_details`, recibo) e sem o QR do PIX
+ * (`next_action`, que no PIX so traz `pix_display_qr_code` — o copia-e-cola ja tem coluna
+ * propria). Ficam ids, estado, valores, moeda, metadata, destino e taxa.
+ */
+function sanitizeIntent(intent: unknown): Record<string, unknown> {
+  const copia: Record<string, unknown> = { ...asRecord(intent) };
+  for (const campo of INTENT_SENSIVEIS) delete copia[campo];
+  if (typeof copia['latest_charge'] === 'object' && copia['latest_charge'] !== null) {
+    const charge: Record<string, unknown> = { ...asRecord(copia['latest_charge']) };
+    for (const campo of CHARGE_SENSIVEIS) delete charge[campo];
+    copia['latest_charge'] = charge;
+  }
+  return copia;
+}
+
 function toPayment(intent: unknown): PspPayment {
   const pi = asRecord(intent);
   const id = pi['id'];
@@ -142,7 +170,7 @@ function toPayment(intent: unknown): PspPayment {
     copyPaste: typeof pix['data'] === 'string' ? (pix['data'] as string) : null,
     // A Stripe entrega a imagem por URL (`image_url_png`), nao em base64.
     qrCodeBase64: null,
-    raw: intent,
+    raw: sanitizeIntent(intent),
   };
 }
 

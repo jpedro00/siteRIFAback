@@ -154,6 +154,62 @@ describe('StripeConnectGateway', () => {
     expect((create.mock.calls[0] as any)[0].payment_method_options.pix.expires_at).toBe(Math.floor(Date.now() / 1000) + 60);
   });
 
+  describe('raw sanitizado (vai para payments.raw)', () => {
+    const sensivel = intent({
+      client_secret: 'pi_1_secret_abc',
+      status: 'succeeded',
+      currency: 'brl',
+      application_fee_amount: 125,
+      receipt_email: 'comprador@exemplo.test',
+      latest_charge: {
+        id: 'ch_1',
+        object: 'charge',
+        status: 'succeeded',
+        amount: 2500,
+        amount_refunded: 0,
+        created: 1_800_000_100,
+        refunded: false,
+        billing_details: { name: 'Fulano', email: 'comprador@exemplo.test', phone: '+5511999999999', address: null },
+        payment_method_details: { type: 'pix', pix: { bank_transaction_id: 'E123' } },
+        receipt_email: 'comprador@exemplo.test',
+        receipt_url: 'https://pay.stripe.com/receipts/x',
+        receipt_number: '1234',
+        shipping: null,
+      },
+    });
+
+    const conferir = (raw: unknown) => {
+      const json = JSON.stringify(raw);
+      for (const proibido of ['client_secret', 'billing_details', 'payment_method_details', 'receipt_', 'pix_display_qr_code', 'comprador@', '000201PIX']) {
+        expect(json).not.toContain(proibido);
+      }
+      expect(raw).toMatchObject({
+        id: 'pi_1',
+        status: 'succeeded',
+        amount: 2500,
+        currency: 'brl',
+        metadata: { order_id: 'ord-1' },
+        transfer_data: { destination: ACCT },
+        application_fee_amount: 125,
+        latest_charge: { id: 'ch_1', status: 'succeeded', amount: 2500 },
+      });
+    };
+
+    it('getPayment: sem client_secret, dados do pagador nem QR', async () => {
+      const p = await make({ paymentIntents: { retrieve: vi.fn().mockResolvedValue(sensivel) } }).getPayment('pi_1');
+      conferir(p.raw);
+      expect(p.status).toBe('APROVADO');
+    });
+
+    it('createPixCharge: o QR segue em copyPaste, mas nao no raw', async () => {
+      const create = vi.fn().mockResolvedValue({ ...intent({ client_secret: 'pi_1_secret_abc' }) });
+      const p = await make({ paymentIntents: { create } }).createPixCharge(input);
+      expect(p.copyPaste).toBe('000201PIX');
+      expect(JSON.stringify(p.raw)).not.toContain('client_secret');
+      expect(JSON.stringify(p.raw)).not.toContain('000201PIX');
+    });
+  });
+
   it('getPayment mapeia estados', async () => {
     const cases: [Record<string, unknown>, string][] = [
       [{ status: 'succeeded' }, 'APROVADO'],
