@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createPool, type DbPool } from '@clubedarifa/db';
 import { createConnectRuntime, type ConnectRuntime } from '@clubedarifa/payment-accounts';
 import { FakeStripe } from '@clubedarifa/payment-accounts/testing';
-import { conciliacao, expirarPix, finalizarDesconexoesPagamento } from '../src/jobs/definitions.js';
+import { conciliacao, expirarPix, finalizarDesconexoesPagamento, limparStripeEventos } from '../src/jobs/definitions.js';
 import type { JobContext } from '../src/jobs/types.js';
 import { hasDb, openBench, seedDraw, seedPendingOrder, seedTenant, silentLog, skipReason, unique, type Bench } from './helpers/seed.js';
 
@@ -190,6 +190,46 @@ describe.skipIf(!hasDb || APP_URL === '')(`Jobs com pagamentos Stripe Connect ${
 
       expect(await finalizarDesconexoesPagamento.run(ctx)).toBeGreaterThanOrEqual(1);
       expect(await st()).toBe('DISCONNECTED');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('limpar-stripe-eventos tambem limpa os eventos do webhook Connect', () => {
+    it('apaga so o processado alem da retencao; o nao processado fica, por mais antigo que seja', async () => {
+      const id = () => unique('evt_').replace(/[^A-Za-z0-9_]/g, '');
+      const velho = id();
+      const recente = id();
+      const pendente = id();
+      await bench.owner.query(
+        `INSERT INTO stripe_connect_webhook_events (event_id, type, received_at, processed_at) VALUES
+           ($1, 'account.updated', now() - interval '40 days', now() - interval '31 days'),
+           ($2, 'account.updated', now() - interval '40 days', now() - interval '29 days'),
+           ($3, 'account.updated', now() - interval '400 days', NULL)`,
+        [velho, recente, pendente],
+      );
+
+      expect(await limparStripeEventos.run(ctx)).toBeGreaterThanOrEqual(1);
+
+      const { rows } = await bench.owner.query<{ event_id: string }>(
+        'SELECT event_id FROM stripe_connect_webhook_events WHERE event_id = ANY($1::text[])',
+        [[velho, recente, pendente]],
+      );
+      expect(rows.map((r) => r.event_id).sort()).toEqual([recente, pendente].sort());
+    });
+
+    it('so o worker purga: outro papel chamando a funcao nao apaga nada', async () => {
+      const velho = unique('evt_').replace(/[^A-Za-z0-9_]/g, '');
+      await bench.owner.query(
+        `INSERT INTO stripe_connect_webhook_events (event_id, type, received_at, processed_at)
+         VALUES ($1, 'account.updated', now() - interval '40 days', now() - interval '35 days')`,
+        [velho],
+      );
+      // O papel da API nem tem EXECUTE; o dono (fora do `app_worker`) cai na guarda e nao apaga.
+      await expect(appPool.query('SELECT app.purge_connect_webhook_events(30)')).rejects.toThrow(/permission denied/);
+      const { rows } = await bench.owner.query<{ n: number }>('SELECT app.purge_connect_webhook_events(30) AS n');
+      expect(rows[0]!.n).toBe(0);
+      const { rows: ainda } = await bench.owner.query('SELECT 1 FROM stripe_connect_webhook_events WHERE event_id = $1', [velho]);
+      expect(ainda).toHaveLength(1);
     });
   });
 });

@@ -10,7 +10,11 @@ import {
 import type { DbPool } from '@clubedarifa/db';
 import { processDueStripeEvents } from '@clubedarifa/billing';
 import { finalizePaymentDisconnections } from '@clubedarifa/payment-accounts';
-import { STRIPE_EVENT_PAYLOAD_RETENTION_DAYS, STRIPE_EVENT_ROW_RETENTION_DAYS } from '@clubedarifa/shared';
+import {
+  STRIPE_CONNECT_EVENT_RETENTION_DAYS,
+  STRIPE_EVENT_PAYLOAD_RETENTION_DAYS,
+  STRIPE_EVENT_ROW_RETENTION_DAYS,
+} from '@clubedarifa/shared';
 import type { JobContext, JobDefinition } from './types.js';
 
 /**
@@ -476,7 +480,12 @@ export const limparStripeEventos: JobDefinition = {
       'SELECT * FROM app.purge_stripe_events($1, $2)',
       [STRIPE_EVENT_PAYLOAD_RETENTION_DAYS, STRIPE_EVENT_ROW_RETENTION_DAYS],
     );
-    return rows[0]!.payloads_cleared + rows[0]!.rows_deleted;
+    // Eventos do webhook Connect (recebimentos dos criadores): mesma regra, so o concluido sai.
+    // Roda com o Connect ligado ou nao: desligado, a tabela so tem o que sobrou de quando estava.
+    const { rows: connect } = await pool.query<{ n: number }>('SELECT app.purge_connect_webhook_events($1) AS n', [
+      STRIPE_CONNECT_EVENT_RETENTION_DAYS,
+    ]);
+    return rows[0]!.payloads_cleared + rows[0]!.rows_deleted + connect[0]!.n;
   },
 };
 

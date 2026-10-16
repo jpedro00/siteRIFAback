@@ -8,7 +8,7 @@
     "src/permissions",
     "src/constants"
   ],
-  "digest": "bc6f35b4125b890bd8611c8bd725bb23186be2e8acdc02525b5fd8c7c0160c25",
+  "digest": "bb9723ef953bc4dbe21d22f4e3b1886cdf9aeedfdeb74953138e15a24afd6ade",
   "files": {
     "src/contracts/billing.ts": "c30a8e15c260a21c5b3fc9a7d57c07d06a75d4655fcf0c23418df3b1f64db667",
     "src/contracts/client.ts": "05f283a80fb4d0b3099af93071616f0b62ba294ed648c9a1f20e365abfe87ef6",
@@ -30,7 +30,7 @@
     "src/permissions/matrix.ts": "7c4f06c8fc9ee09c152ad33016f5e38ebf682dac55abb686fd322072ba8befee",
     "src/permissions/permissions.ts": "2945b9cb07df16ec433ded599c9d6253f57969d7b94af6944ca553ad04dd10c3",
     "src/permissions/roles.ts": "fd2a99e7f76a0397ebe97c4794d0e8e1f89e9a8e4dbc05ff166c21c48e3e6dcd",
-    "src/constants/billing.ts": "81599e2754b646ae85537d12f8e401f17b433542a914ec9d1eb0ffa97e67f14e",
+    "src/constants/billing.ts": "c3f6e2ad401346f6fa578185f15d4b60d30bfa2e298930f0c57c59638b51fb77",
     "src/constants/grid.ts": "f4e6315bc29e8095e0f20d7c48bd36bcf3e36d76d579a76f1502c03132fc9e9b",
     "src/constants/index.ts": "f833d3fb192b25442d38fc1d68a6914cfd644196963dd2da94fbea4ae886b31b",
     "src/constants/invitation.ts": "5d99566815eaf938411e77ccc568eb748ddd4c52ceb2be20646566ed2263b553",

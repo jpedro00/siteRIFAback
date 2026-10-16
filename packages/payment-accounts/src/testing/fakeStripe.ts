@@ -57,6 +57,8 @@ export class FakeStripe {
   failNextRetrieve: Error | null = null;
   /** A proxima consulta DESTE PaymentIntent falha com o erro (uma vez), sem afetar os outros. */
   readonly failNextRetrieveOf = new Map<string, Error>();
+  /** Atraso de cada consulta de PaymentIntent (para provar entregas simultaneas). */
+  retrieveDelayMs = 0;
   readonly #paramsByKey = new Map<string, string>();
 
   readonly paymentIntents = {
@@ -100,6 +102,7 @@ export class FakeStripe {
     },
     retrieve: async (id: string, _opts?: Record<string, unknown>) => {
       this.retrieved.push(id);
+      if (this.retrieveDelayMs > 0) await new Promise((r) => setTimeout(r, this.retrieveDelayMs));
       if (this.failNextRetrieve) {
         const e = this.failNextRetrieve;
         this.failNextRetrieve = null;

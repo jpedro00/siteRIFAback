@@ -425,6 +425,59 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · rotas e webhook ${hasTestDa
       expect(await eventoGravado(id)).toEqual({ processed: true });
     });
 
+    it('duas entregas SIMULTANEAS do mesmo event.id: uma processa, a outra responde 200 sem trabalho', async () => {
+      const c = await novaComunidade('cn-par-');
+      await cadastrarOk(c, true);
+      const { orderId, pi } = await compra(c);
+      stripe.setIntentStatus(pi, 'succeeded');
+      const id = evtId();
+      const consultas = stripe.retrieved.filter((x) => x === pi).length;
+
+      // Consulta lenta: a segunda entrega chega com a primeira ainda em andamento.
+      stripe.retrieveDelayMs = 300;
+      let respostas;
+      try {
+        respostas = await Promise.all([
+          avisar(h, { id, type: 'payment_intent.succeeded', object: { id: pi } }),
+          avisar(h, { id, type: 'payment_intent.succeeded', object: { id: pi } }),
+        ]);
+      } finally {
+        stripe.retrieveDelayMs = 0;
+      }
+      for (const r of respostas) expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(respostas.map((r) => r.body.result).sort()).toEqual(['duplicate', 'processed']);
+      expect(stripe.retrieved.filter((x) => x === pi).length - consultas).toBe(1);
+      expect(await pagamentosConfirmados(orderId)).toBe(1);
+      expect(await eventoGravado(id)).toEqual({ processed: true });
+    });
+
+    it('lease: evento reivindicado ha pouco nao e reprocessado; lease vencido (>60s) e', async () => {
+      const c = await novaComunidade('cn-lease-');
+      await cadastrarOk(c, true);
+      const { orderId, pi } = await compra(c);
+      stripe.setIntentStatus(pi, 'succeeded');
+      const id = evtId();
+      // Outra entrega reivindicou agora e ainda nao terminou.
+      await h.owner.query(
+        `INSERT INTO stripe_connect_webhook_events (event_id, type, claimed_at) VALUES ($1, 'payment_intent.succeeded', now())`,
+        [id],
+      );
+      const consultas = stripe.retrieved.length;
+      const emAndamento = await avisar(h, { id, type: 'payment_intent.succeeded', object: { id: pi } });
+      expect(emAndamento.status).toBe(200);
+      expect(emAndamento.body).toEqual({ received: true, result: 'duplicate' });
+      expect(stripe.retrieved.length).toBe(consultas);
+      expect(await statusDe(orderId)).toEqual({ pedido: 'PENDENTE', pagamento: 'PENDENTE' });
+
+      // Aquela entrega morreu no meio: passado o lease, o reenvio da Stripe processa.
+      await h.owner.query(`UPDATE stripe_connect_webhook_events SET claimed_at = now() - interval '61 seconds' WHERE event_id = $1`, [id]);
+      const reenvio = await avisar(h, { id, type: 'payment_intent.succeeded', object: { id: pi } });
+      expect(reenvio.body).toEqual({ received: true, result: 'processed' });
+      expect(await pagamentosConfirmados(orderId)).toBe(1);
+      expect(await statusDe(orderId)).toEqual({ pedido: 'PAGO', pagamento: 'APROVADO' });
+      expect(await eventoGravado(id)).toEqual({ processed: true });
+    });
+
     it('falha transitoria da Stripe: 503 e o evento fica reprocessavel; o reenvio conclui', async () => {
       const c = await novaComunidade('cn-retry-');
       await cadastrarOk(c, true);

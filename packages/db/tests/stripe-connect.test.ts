@@ -489,12 +489,23 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
         .query<{ ok: boolean }>('SELECT app.finish_connect_webhook_event($1) AS ok', [id])
         .then((r) => r.rows[0]!.ok);
 
-    it('primeira vez: true; repetido sem concluir: true (retry); depois de concluido: false', async () => {
+    it('primeira vez: true; em andamento (lease): false; devolvido ou lease vencido: true; concluido: false', async () => {
       const id = evt();
       expect(await registrar(app, id)).toBe(true);
-      // O processamento falhou antes de concluir: a Stripe reenvia e o evento roda de novo.
+      // Outra entrega simultanea enquanto a primeira processa: nao reivindica (lease de 60 s).
+      expect(await registrar(worker, id)).toBe(false);
+      // A primeira falhou e devolveu a reivindicacao: o reenvio da Stripe processa.
+      const devolver = (eventId: string) =>
+        app.query<{ ok: boolean }>('SELECT app.release_connect_webhook_event($1) AS ok', [eventId]).then((r) => r.rows[0]!.ok);
+      expect(await devolver(id)).toBe(true);
+      expect(await registrar(app, id)).toBe(true);
+      // Morreu no meio sem devolver: so depois de vencer o lease.
+      expect(await registrar(app, id)).toBe(false);
+      await owner.query(`UPDATE stripe_connect_webhook_events SET claimed_at = now() - interval '61 seconds' WHERE event_id = $1`, [id]);
       expect(await registrar(app, id)).toBe(true);
       expect(await concluir(app, id)).toBe(true);
+      // Concluido: nem devolver reabre.
+      expect(await devolver(id)).toBe(false);
       expect(await registrar(app, id)).toBe(false);
       expect(await registrar(worker, id)).toBe(false);
       // Concluir de novo nao muda nada.

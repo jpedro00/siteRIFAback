@@ -112,10 +112,12 @@ class RetryLater extends Error {}
  *
  *  1. ASSINATURA sobre o corpo bruto (401 sem nenhum efeito se nao confere);
  *  2. evento de outro modo (live x teste) ou de tipo que nao tratamos: 200 `ignored`, nada gravado;
- *  3. GRAVA o `event.id` (idempotencia). Ja concluido: 200 `duplicate`, nada mais;
+ *  3. GRAVA e REIVINDICA o `event.id` (idempotencia + lease de 60 s). Ja concluido, ou outra
+ *     entrega em andamento: 200 `duplicate`, nada mais (a outra cuida dele);
  *  4. processa — RELENDO na Stripe (RN06): o corpo do aviso nunca vira estado;
- *  5. so entao marca como concluido. Falha transitoria: 503 e o evento continua pendente, para o
- *     reenvio da Stripe rodar de novo (o efeito em si e idempotente).
+ *  5. so entao marca como concluido. Falha: a reivindicacao e devolvida e o evento continua
+ *     pendente (transitoria = 503), para o reenvio da Stripe rodar de novo (o efeito em si e
+ *     idempotente).
  */
 export async function handleConnectWebhook(
   deps: AppDeps,
@@ -155,6 +157,11 @@ export async function handleConnectWebhook(
   try {
     result = event.type === 'account.updated' ? await onAccountUpdated(connect, event) : await onPaymentEvent(deps, connect, event);
   } catch (error) {
+    // Falhou: devolve a reivindicacao (lease) para o reenvio da Stripe poder processar ja. Se nem
+    // isso der, o lease vence sozinho em 60 s.
+    await withoutContext(deps.pool, (client) => client.query('SELECT app.release_connect_webhook_event($1)', [event.id])).catch(
+      () => undefined,
+    );
     if (error instanceof RetryLater) {
       log.warn('stripe_connect.webhook_retry', { event_id: event.id, type: event.type });
       throw new ApiError('PAYMENT_PROVIDER_UNAVAILABLE');
