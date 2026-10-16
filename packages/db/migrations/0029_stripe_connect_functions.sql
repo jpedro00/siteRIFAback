@@ -208,8 +208,8 @@ TO app_user, app_worker;
 --   * APROVADO + a Stripe diz ESTORNADO (consultado, RN06) -> ESTORNADO, `refunded`, auditado;
 --   * ESTORNADO e terminal: qualquer consulta posterior (webhook repetido, consulta velha que
 --     ainda diz aprovado) e `already_processed`, sem segunda auditoria.
--- O pedido nao muda (como no ramo ESTORNADO que ja existia). Se o pagamento estornado era o que
--- pagou o pedido, a conciliacao local abre ORDER_PAID_PAYMENT_NOT_APPROVED para o operador.
+-- O pedido nao muda (como no ramo ESTORNADO que ja existia). Se o estorno nao veio do nosso fluxo
+-- e o pagamento era o que pagou o pedido, abre ja ORDER_PAID_PAYMENT_NOT_APPROVED para o operador.
 -- Mercado Pago (e o FAKE) seguem EXATAMENTE como antes: o estorno deles e manual.
 -- CREATE OR REPLACE: a assinatura nao muda, entao os GRANTs da 0019 continuam valendo.
 -- ---------------------------------------------------------------------------
@@ -290,6 +290,19 @@ BEGIN
     INSERT INTO public.audit_events
       (tenant_id, actor_user_id, actor_type, action, target_type, target_id)
     VALUES (pay.tenant_id, NULL, 'SYSTEM', 'payment.refunded', 'payment', pay.id::text);
+    -- Estorno STRIPE que NAO saiu do nosso fluxo (painel da Stripe, contestacao) de um pagamento
+    -- que pagou o pedido: o pedido e os numeros continuam PAGO (nada muda sozinho), mas a
+    -- divergencia abre AGORA para o operador — a conciliacao local so olha os ultimos 7 dias.
+    -- Mesmo INSERT (e mesmo detail) de worker_reconcile_local; ON CONFLICT nao duplica.
+    IF pay.provider = 'STRIPE' AND pay.status = 'APROVADO' AND NOT pay.needs_manual_refund
+       AND EXISTS (SELECT 1 FROM public.orders o WHERE o.id = pay.order_id AND o.status = 'PAGO')
+       AND NOT EXISTS (SELECT 1 FROM public.payments q
+                        WHERE q.order_id = pay.order_id AND q.id <> pay.id AND q.status = 'APROVADO') THEN
+      INSERT INTO public.payment_reconciliation_issues (tenant_id, payment_id, order_id, kind, detail)
+      VALUES (pay.tenant_id, pay.id, pay.order_id, 'ORDER_PAID_PAYMENT_NOT_APPROVED',
+              jsonb_build_object('paymentStatus', 'ESTORNADO', 'amountCents', pay.amount_cents))
+      ON CONFLICT (payment_id, kind) WHERE resolved_at IS NULL DO NOTHING;
+    END IF;
     RETURN 'refunded';
   END IF;
 

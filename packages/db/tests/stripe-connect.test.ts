@@ -636,6 +636,61 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
       expect((await estado(p.id)).s).toBe('ESTORNADO');
     });
 
+    const issues = async (paymentId: string) =>
+      (
+        await owner.query<{ kind: string; detail: Record<string, unknown> }>(
+          'SELECT kind, detail FROM payment_reconciliation_issues WHERE payment_id = $1 AND resolved_at IS NULL',
+          [paymentId],
+        )
+      ).rows;
+    /** O pagamento PAGOU o pedido, ha mais de 7 dias (fora da janela da conciliacao local). */
+    async function pagouOPedidoHaTempo(p: Awaited<ReturnType<typeof aprovado>>) {
+      await owner.query(`UPDATE orders SET status = 'PAGO', paid_at = now() - interval '10 days' WHERE id = $1`, [p.order_id]);
+      await owner.query(`UPDATE payments SET created_at = now() - interval '10 days' WHERE id = $1`, [p.id]);
+    }
+    const statusPedido = async (orderId: string) =>
+      (await owner.query<{ s: string }>('SELECT status::text AS s FROM orders WHERE id = $1', [orderId])).rows[0]!.s;
+
+    it('estorno FORA da plataforma de pagamento que pagou o pedido: abre ORDER_PAID_PAYMENT_NOT_APPROVED (uma vez), pedido intocado', async () => {
+      const p = await aprovado('STRIPE');
+      await pagouOPedidoHaTempo(p);
+      expect(await aplicar(p, 'STRIPE', 'ESTORNADO')).toBe('refunded');
+      const abertas = await issues(p.id);
+      expect(abertas).toHaveLength(1);
+      expect(abertas[0]).toMatchObject({
+        kind: 'ORDER_PAID_PAYMENT_NOT_APPROVED',
+        detail: { paymentStatus: 'ESTORNADO', amountCents: 1000 },
+      });
+      expect(await statusPedido(p.order_id)).toBe('PAGO');
+      // Repetir (webhook reentregue) nao duplica.
+      expect(await aplicar(p, 'STRIPE', 'ESTORNADO')).toBe('already_processed');
+      expect(await issues(p.id)).toHaveLength(1);
+      // A conciliacao local tambem nao duplica.
+      await worker.query("SELECT app.worker_reconcile_local(interval '7 days')");
+      expect((await issues(p.id)).filter((i) => i.kind === 'ORDER_PAID_PAYMENT_NOT_APPROVED')).toHaveLength(1);
+    });
+
+    it('estorno iniciado pelo NOSSO fluxo (needs_manual_refund): nenhuma divergencia nova', async () => {
+      const p = await aprovado('STRIPE');
+      await owner.query(`UPDATE payments SET needs_manual_refund = true, refund_reason = 'teste' WHERE id = $1`, [p.id]);
+      expect(await aplicar(p, 'STRIPE', 'ESTORNADO')).toBe('refunded');
+      expect(await issues(p.id)).toHaveLength(0);
+    });
+
+    it('MERCADO_PAGO aprovado + ESTORNADO consultado: already_processed (inalterado)', async () => {
+      const tenantId = await tenant();
+      const { accountId } = await conta(tenantId, { provider: 'MERCADO_PAGO' });
+      await pagamento(tenantId, { provider: 'MERCADO_PAGO', accountId });
+      const { rows } = await owner.query<{ id: string; order_id: string; provider_payment_id: string }>(
+        `UPDATE payments SET status = 'APROVADO', paid_at = now() WHERE tenant_id = $1 RETURNING id, order_id, provider_payment_id`,
+        [tenantId],
+      );
+      const p = { tenantId, accountId, ...rows[0]! };
+      expect(await aplicar(p, 'MERCADO_PAGO', 'ESTORNADO')).toBe('already_processed');
+      expect((await estado(p.id)).s).toBe('APROVADO');
+      expect(await issues(p.id)).toHaveLength(0);
+    });
+
     it('outros provedores seguem como antes: aprovado + ESTORNADO e already_processed', async () => {
       const p = await aprovado('FAKE');
       expect(await aplicar(p, 'FAKE', 'ESTORNADO')).toBe('already_processed');
