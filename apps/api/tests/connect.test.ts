@@ -231,6 +231,24 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · rotas e webhook ${hasTestDa
 
   // -------------------------------------------------------------------------
   describe('desligado (CONNECT_ENABLED=false)', () => {
+    it('meios de pagamento sem nenhum provedor ligado: NO_ACCOUNT, nada ligado, mesmo com preferencia do criador gravada', async () => {
+      const c = await novaComunidade('cn-pm-off-', off);
+      await off.owner.query(
+        `INSERT INTO tenant_payment_preferences (tenant_id, disabled_methods) VALUES ($1, '{PIX}')`,
+        [c.tenantId],
+      );
+      const res = await request(off.app).get('/api/tenant/payment-methods').set('Cookie', c.cookie).set('x-tenant-slug', c.slug);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: 'NO_ACCOUNT', provider: null, accountId: null });
+      // Sem provedor nada e reportado: o PIX fica desligado por isso (a preferencia so vale para o reportado).
+      expect(res.body.methods.find((m: { kind: string }) => m.kind === 'PIX')).toEqual({
+        kind: 'PIX',
+        providerReported: false,
+        enabled: false,
+        reason: 'NOT_REPORTED_BY_PROVIDER',
+      });
+    });
+
     it('as tres rotas respondem 404 e nada e gravado', async () => {
       const c = await novaComunidade('cn-off-', off);
       expect((await post(off, '/api/tenant/payment-accounts/connect-stripe', c.cookie, c.slug)).status).toBe(404);

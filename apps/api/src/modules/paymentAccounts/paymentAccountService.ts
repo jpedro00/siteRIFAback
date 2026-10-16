@@ -230,7 +230,7 @@ export async function getPaymentMethods(
   // Mercado Pago so conta com o OAuth habilitado; o Connect, se ligado.
   const mercadoPago = deps.paymentAccounts?.enabled === true ? deps.paymentAccounts : null;
   if (!mercadoPago && !deps.connect) {
-    return { status: 'NO_ACCOUNT', provider: null, accountId: null, methods: resolvePaymentMethods(new Set()), checkedAt };
+    return { status: 'NO_ACCOUNT', provider: null, accountId: null, methods: resolvePaymentMethods(new Set(), desligados), checkedAt };
   }
 
   // O provedor que atende e o MESMO da cobranca: com os dois ligados, a conta conectada mais

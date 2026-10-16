@@ -2,6 +2,7 @@ import {
   PaymentAccountUnavailableError,
   PaymentsNotConfiguredError,
   PspRejectedError,
+  PspUnauthorizedError,
   PspUnavailableError,
   type PspGatewayResolver,
   type PspPayment,
@@ -222,6 +223,18 @@ function resolvedorDoProvedor(ctx: Pick<JobContext, 'paymentAccounts' | 'connect
   return ctx.paymentAccounts?.resolver ?? null;
 }
 
+/**
+ * Os provedores que este worker CONSEGUE consultar (o de cada resolvedor ligado). As varreduras
+ * so trazem pagamentos deles: uma fila cheia de pagamentos de um provedor desligado nao pode
+ * esconder os do provedor ligado (o LIMIT pegaria so os que nao da para consultar).
+ */
+function provedoresConsultaveis(ctx: Pick<JobContext, 'paymentAccounts' | 'connect'>): string[] {
+  const lista: string[] = [];
+  if (ctx.paymentAccounts) lista.push(ctx.paymentAccounts.resolver.provider);
+  if (ctx.connect) lista.push(ctx.connect.resolver.provider);
+  return lista;
+}
+
 /** Algum provedor de recebimento ligado neste worker? */
 const temRecebimentos = (ctx: Pick<JobContext, 'paymentAccounts' | 'connect'>): boolean =>
   ctx.paymentAccounts != null || ctx.connect != null;
@@ -287,8 +300,10 @@ export const expirarPix: JobDefinition = {
          JOIN orders o ON o.id = p.order_id
         WHERE p.status = 'PENDENTE' AND o.status = 'PENDENTE'
           AND p.expires_at < now() - ${FOLGA_PIX}
+          AND p.provider = ANY($1::text[])
         ORDER BY p.expires_at
         LIMIT 100`,
+      [provedoresConsultaveis(ctx)],
     );
 
     for (const pagamento of vencidos) {
@@ -309,8 +324,11 @@ export const expirarPix: JobDefinition = {
         if (
           error instanceof PspUnavailableError ||
           error instanceof PspRejectedError ||
+          error instanceof PspUnauthorizedError ||
           error instanceof PaymentAccountUnavailableError
         ) {
+          // 401 (credencial recusada) entra aqui tambem: um pagamento nao trava os outros. A
+          // mensagem e fixa, sem a chave.
           log.warn('PSP nao respondeu a consulta; nada liberado', {
             ...campos,
             error: error.message,
@@ -387,7 +405,9 @@ export const conciliacao: JobDefinition = {
       `SELECT id, tenant_id, provider, provider_payment_id, payment_account_id FROM payments
         WHERE status IN ('PENDENTE', 'EXPIRADO', 'CANCELADO')
           AND created_at >= now() - interval '3 days'
+          AND provider = ANY($1::text[])
         ORDER BY created_at DESC LIMIT 200`,
+      [provedoresConsultaveis(ctx)],
     );
     for (const pagamento of abertos) {
       try {
@@ -407,6 +427,7 @@ export const conciliacao: JobDefinition = {
         if (
           error instanceof PspUnavailableError ||
           error instanceof PspRejectedError ||
+          error instanceof PspUnauthorizedError ||
           error instanceof PaymentAccountUnavailableError
         ) {
           log.warn('conciliacao: PSP nao respondeu para um pagamento', {

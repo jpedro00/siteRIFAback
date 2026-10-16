@@ -143,23 +143,24 @@ export async function handleConnectWebhook(
   }
   if (!HANDLED.has(event.type)) return 'ignored';
 
-  const pendente = await withoutContext(deps.pool, async (client) => {
-    const { rows } = await client.query<{ novo: boolean }>('SELECT app.record_connect_webhook_event($1, $2, $3) AS novo', [
+  // Token da reivindicacao (lease de 60 s) desta entrega; null = concluido ou outra em andamento.
+  const token = await withoutContext(deps.pool, async (client) => {
+    const { rows } = await client.query<{ token: string | null }>('SELECT app.record_connect_webhook_event($1, $2, $3) AS token', [
       event.id,
       event.type,
       event.account,
     ]);
-    return rows[0]!.novo;
+    return rows[0]!.token;
   });
-  if (!pendente) return 'duplicate';
+  if (token === null) return 'duplicate';
 
   let result: Exclude<ConnectWebhookResult, 'duplicate'>;
   try {
     result = event.type === 'account.updated' ? await onAccountUpdated(connect, event) : await onPaymentEvent(deps, connect, event);
   } catch (error) {
-    // Falhou: devolve a reivindicacao (lease) para o reenvio da Stripe poder processar ja. Se nem
-    // isso der, o lease vence sozinho em 60 s.
-    await withoutContext(deps.pool, (client) => client.query('SELECT app.release_connect_webhook_event($1)', [event.id])).catch(
+    // Falhou: devolve a SUA reivindicacao (pelo token) para o reenvio da Stripe poder processar ja.
+    // Se o lease ja venceu e outra entrega o pegou, nada muda. Se nem isso der, vence em 60 s.
+    await withoutContext(deps.pool, (client) => client.query('SELECT app.release_connect_webhook_event($1, $2::uuid)', [event.id, token])).catch(
       () => undefined,
     );
     if (error instanceof RetryLater) {

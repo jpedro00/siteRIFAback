@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createPool, type DbPool } from '@clubedarifa/db';
 import { createConnectRuntime, type ConnectRuntime } from '@clubedarifa/payment-accounts';
-import { FakeStripe } from '@clubedarifa/payment-accounts/testing';
+import { FakeStripe, staticPaymentAccountsRuntime } from '@clubedarifa/payment-accounts/testing';
+import { FakePsp } from '@clubedarifa/psp/testing';
 import { conciliacao, expirarPix, finalizarDesconexoesPagamento, limparStripeEventos } from '../src/jobs/definitions.js';
 import type { JobContext } from '../src/jobs/types.js';
 import { hasDb, openBench, seedDraw, seedPendingOrder, seedTenant, silentLog, skipReason, unique, type Bench } from './helpers/seed.js';
@@ -230,6 +231,103 @@ describe.skipIf(!hasDb || APP_URL === '')(`Jobs com pagamentos Stripe Connect ${
       expect(rows[0]!.n).toBe(0);
       const { rows: ainda } = await bench.owner.query('SELECT 1 FROM stripe_connect_webhook_events WHERE event_id = $1', [velho]);
       expect(ainda).toHaveLength(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('chave da Stripe recusada (401) num pagamento nao trava o ciclo', () => {
+    const erro401 = () => Object.assign(new Error('Invalid API Key'), { type: 'StripeAuthenticationError', statusCode: 401 });
+
+    it('expirar-pix: o pagamento com 401 fica como esta; os seguintes e a etapa sem cobranca seguem', async () => {
+      const c = await comunidade();
+      const falha = await pedidoComPix(c);
+      const ok = await pedidoComPix(c);
+      // O que falha vem PRIMEIRO na fila de vencidos.
+      await bench.owner.query(`UPDATE payments SET expires_at = now() - interval '2 days' WHERE id = $1`, [falha.paymentId]);
+      // Pedido sem cobranca com reserva vencida (etapa 2 do job).
+      const semCobranca = await seedPendingOrder(bench.owner, c.tenantId, await seedDraw(bench.owner, c.tenantId), [1], { payment: false });
+      stripe.failNextRetrieveOf.set(falha.pi, erro401());
+
+      await expect(expirarPix.run(ctx)).resolves.toBeGreaterThanOrEqual(2);
+
+      expect(consultas(falha.pi)).toBe(1);
+      expect(await statusPedido(falha.orderId)).toBe('PENDENTE');
+      expect(await statusPedido(ok.orderId)).toBe('CANCELADO');
+      expect(await statusPedido(semCobranca.orderId)).toBe('CANCELADO');
+    });
+
+    it('conciliacao: o pagamento com 401 e pulado; o seguinte ainda e curado', async () => {
+      const c = await comunidade();
+      const curar = await pedidoComPix(c);
+      const falha = await pedidoComPix(c); // mais novo: vem antes (created_at DESC)
+      await bench.owner.query(`UPDATE payments SET expires_at = now() + interval '20 minutes' WHERE id = ANY($1::uuid[])`, [
+        [curar.paymentId, falha.paymentId],
+      ]);
+      stripe.setIntentStatus(curar.pi, 'succeeded');
+      stripe.setIntentStatus(falha.pi, 'succeeded');
+      stripe.failNextRetrieveOf.set(falha.pi, erro401());
+
+      await expect(conciliacao.run(ctx)).resolves.toBeGreaterThanOrEqual(0);
+
+      expect(await statusPedido(curar.orderId)).toBe('PAGO');
+      expect(await statusPedido(falha.orderId)).toBe('PENDENTE');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('cada worker so olha os pagamentos dos provedores que consegue consultar', () => {
+    /** `n` pedidos com PIX vencido HA UM DIA (vem antes de tudo) de um provedor, para encher a fila. */
+    async function encher(tenantId: string, n: number, provider: string, accountId: string | null): Promise<string[]> {
+      const draw = await seedDraw(bench.owner, tenantId, { total: 1000 });
+      const ids: string[] = [];
+      for (let i = 1; i <= n; i += 1) {
+        const pedido = await seedPendingOrder(bench.owner, tenantId, draw, [i], { payment: false });
+        const { rows } = await bench.owner.query<{ id: string }>(
+          `INSERT INTO payments (tenant_id, order_id, provider, provider_payment_id, status, idempotency_key, amount_cents,
+                                 expires_at, payment_account_id)
+           VALUES ($1, $2, $3, $4, 'PENDENTE', $5, 1000, now() - interval '1 day', $6) RETURNING id`,
+          [tenantId, pedido.orderId, provider, unique('velho-'), pedido.orderId, accountId],
+        );
+        ids.push(rows[0]!.id);
+      }
+      return ids;
+    }
+    /** Tira o enchimento do caminho dos outros testes (nem vencido pendente, nem recente). */
+    const esvaziar = (ids: string[]) =>
+      bench.owner.query(`UPDATE payments SET status = 'CANCELADO', created_at = now() - interval '10 days' WHERE id = ANY($1::uuid[])`, [ids]);
+
+    it('so Connect: 100+ PIX vencidos de outro provedor na frente nao impedem o STRIPE', async () => {
+      const c = await comunidade();
+      const p = await pedidoComPix(c);
+      const outros = await encher(c.tenantId, 105, 'FAKE', null);
+      try {
+        await expirarPix.run(ctx);
+        expect(consultas(p.pi)).toBe(1);
+        expect(await statusPedido(p.orderId)).toBe('CANCELADO');
+      } finally {
+        await esvaziar(outros);
+      }
+    });
+
+    it('so Mercado Pago (ou o PSP falso): 100+ PIX STRIPE vencidos na frente nao impedem os dele', async () => {
+      const c = await comunidade();
+      const psp = new FakePsp();
+      const soMp: JobContext = { pool: bench.worker, log: silentLog, paymentAccounts: staticPaymentAccountsRuntime(psp), connect: null };
+      const draw = await seedDraw(bench.owner, c.tenantId);
+      const alvo = await seedPendingOrder(bench.owner, c.tenantId, draw, [1]);
+      await psp.createPixCharge({
+        idempotencyKey: alvo.orderId, amountCents: 1000, description: 'x', externalReference: alvo.orderId,
+        payerEmail: null, payerName: 'M', expiresAt: new Date(), notificationUrl: null,
+      });
+      await bench.owner.query('UPDATE payments SET provider_payment_id = $2 WHERE id = $1', [alvo.paymentId, psp.idDoPedido(alvo.orderId)]);
+      const { paymentAccountId } = await workerConnect.resolver.forTenant(c.tenantId);
+      const stripes = await encher(c.tenantId, 105, 'STRIPE', paymentAccountId);
+      try {
+        await expirarPix.run(soMp);
+        expect(await statusPedido(alvo.orderId)).toBe('CANCELADO');
+      } finally {
+        await esvaziar(stripes);
+      }
     });
   });
 });

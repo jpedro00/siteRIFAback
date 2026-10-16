@@ -480,34 +480,41 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
   });
   describe('0030 · eventos do webhook Connect (idempotencia por event_id)', () => {
     const evt = () => unique('evt_').replace(/[^A-Za-z0-9_]/g, '');
+    /** Reivindica: devolve o TOKEN da reivindicacao (uuid) ou null (concluido / outra em andamento). */
     const registrar = (pool: DbPool, id: string, type = 'account.updated', account: string | null = 'acct_teste123') =>
       pool
-        .query<{ novo: boolean }>('SELECT app.record_connect_webhook_event($1, $2, $3) AS novo', [id, type, account])
-        .then((r) => r.rows[0]!.novo);
+        .query<{ token: string | null }>('SELECT app.record_connect_webhook_event($1, $2, $3) AS token', [id, type, account])
+        .then((r) => r.rows[0]!.token);
     const concluir = (pool: DbPool, id: string) =>
       pool
         .query<{ ok: boolean }>('SELECT app.finish_connect_webhook_event($1) AS ok', [id])
         .then((r) => r.rows[0]!.ok);
+    const devolver = (id: string, token: string) =>
+      app.query<{ ok: boolean }>('SELECT app.release_connect_webhook_event($1, $2::uuid) AS ok', [id, token]).then((r) => r.rows[0]!.ok);
+    const vencerLease = (id: string) =>
+      owner.query(`UPDATE stripe_connect_webhook_events SET claimed_at = now() - interval '61 seconds' WHERE event_id = $1`, [id]);
 
-    it('primeira vez: true; em andamento (lease): false; devolvido ou lease vencido: true; concluido: false', async () => {
+    it('primeira vez: token; em andamento (lease): null; devolvido ou lease vencido: token novo; concluido: null', async () => {
       const id = evt();
-      expect(await registrar(app, id)).toBe(true);
+      const t1 = await registrar(app, id);
+      expect(t1).toMatch(/^[0-9a-f-]{36}$/);
       // Outra entrega simultanea enquanto a primeira processa: nao reivindica (lease de 60 s).
-      expect(await registrar(worker, id)).toBe(false);
+      expect(await registrar(worker, id)).toBeNull();
       // A primeira falhou e devolveu a reivindicacao: o reenvio da Stripe processa.
-      const devolver = (eventId: string) =>
-        app.query<{ ok: boolean }>('SELECT app.release_connect_webhook_event($1) AS ok', [eventId]).then((r) => r.rows[0]!.ok);
-      expect(await devolver(id)).toBe(true);
-      expect(await registrar(app, id)).toBe(true);
+      expect(await devolver(id, t1!)).toBe(true);
+      const t2 = await registrar(app, id);
+      expect(t2).not.toBeNull();
+      expect(t2).not.toBe(t1);
       // Morreu no meio sem devolver: so depois de vencer o lease.
-      expect(await registrar(app, id)).toBe(false);
-      await owner.query(`UPDATE stripe_connect_webhook_events SET claimed_at = now() - interval '61 seconds' WHERE event_id = $1`, [id]);
-      expect(await registrar(app, id)).toBe(true);
+      expect(await registrar(app, id)).toBeNull();
+      await vencerLease(id);
+      const t3 = await registrar(app, id);
+      expect(t3).not.toBeNull();
       expect(await concluir(app, id)).toBe(true);
       // Concluido: nem devolver reabre.
-      expect(await devolver(id)).toBe(false);
-      expect(await registrar(app, id)).toBe(false);
-      expect(await registrar(worker, id)).toBe(false);
+      expect(await devolver(id, t3!)).toBe(false);
+      expect(await registrar(app, id)).toBeNull();
+      expect(await registrar(worker, id)).toBeNull();
       // Concluir de novo nao muda nada.
       expect(await concluir(app, id)).toBe(false);
       const { rows } = await owner.query<{ n: number; type: string; account: string | null; done: boolean }>(
@@ -518,11 +525,26 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
       expect(rows).toEqual([{ n: 1, type: 'account.updated', account: 'acct_teste123', done: true }]);
     });
 
+    it('devolver e do DONO do lease: quem perdeu o lease (vencido e reivindicado por outro) nao derruba o novo', async () => {
+      const id = evt();
+      const antigo = await registrar(app, id);
+      await vencerLease(id);
+      const novo = await registrar(worker, id);
+      expect(novo).not.toBeNull();
+      // A entrega antiga, lenta, falha agora e tenta devolver: nao e mais dela.
+      expect(await devolver(id, antigo!)).toBe(false);
+      // O lease da nova continua vivo: uma terceira entrega nao reivindica.
+      expect(await registrar(app, id)).toBeNull();
+      // E a nova ainda devolve o seu.
+      expect(await devolver(id, novo!)).toBe(true);
+      expect(await registrar(app, id)).not.toBeNull();
+    });
+
     it('formato: event_id evt_, conta acct_ (ou nula), tipo curto', async () => {
       await expect(registrar(app, 'nao-e-evento')).rejects.toThrow();
       await expect(registrar(app, evt(), 'account.updated', 'conta-qualquer')).rejects.toThrow();
       await expect(registrar(app, evt(), 'x'.repeat(201))).rejects.toThrow();
-      expect(await registrar(app, evt(), 'payment_intent.succeeded', null)).toBe(true);
+      expect(await registrar(app, evt(), 'payment_intent.succeeded', null)).not.toBeNull();
     });
 
     it('runtime nao le nem escreve a tabela diretamente; RLS ligada', async () => {
