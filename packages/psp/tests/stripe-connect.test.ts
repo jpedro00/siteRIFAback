@@ -162,6 +162,46 @@ describe('StripeConnectGateway', () => {
     expect(pend.paidAt).toBeNull();
   });
 
+  describe('estorno no latest_charge', () => {
+    const consultar = (latest: Record<string, unknown> | string) =>
+      make({
+        paymentIntents: {
+          retrieve: vi.fn().mockResolvedValue(intent({ status: 'succeeded', latest_charge: latest })),
+        },
+      }).getPayment('pi_1');
+
+    it('cobranca estornada (refunded) vira ESTORNADO e mantem o paidAt do pagamento', async () => {
+      const p = await consultar({ created: 1_800_000_500, paid: true, refunded: true, amount: 2500, amount_refunded: 2500 });
+      expect(p.status).toBe('ESTORNADO');
+      expect(p.paidAt).toBe(new Date(1_800_000_500 * 1000).toISOString());
+    });
+
+    it('amount_refunded >= amount tambem e estorno total', async () => {
+      const p = await consultar({ created: 1_800_000_500, paid: true, refunded: false, amount: 2500, amount_refunded: 2500 });
+      expect(p.status).toBe('ESTORNADO');
+    });
+
+    it('estorno PARCIAL continua APROVADO (a plataforma nunca estorna em parte)', async () => {
+      const p = await consultar({ created: 1_800_000_500, paid: true, refunded: false, amount: 2500, amount_refunded: 1000 });
+      expect(p.status).toBe('APROVADO');
+      expect(p.paidAt).toBe(new Date(1_800_000_500 * 1000).toISOString());
+    });
+
+    it('latest_charge nao expandido (so o id) nao inventa estorno', async () => {
+      const p = await consultar('ch_1');
+      expect(p.status).toBe('APROVADO');
+    });
+
+    it('intent nao aprovado nunca vira ESTORNADO, mesmo com charge marcada', async () => {
+      const retrieve = vi.fn().mockResolvedValue(
+        intent({ status: 'requires_action', latest_charge: { refunded: true, amount: 2500, amount_refunded: 2500 } }),
+      );
+      const p = await make({ paymentIntents: { retrieve } }).getPayment('pi_1');
+      expect(p.status).toBe('PENDENTE');
+      expect(p.paidAt).toBeNull();
+    });
+  });
+
   it('getPayment recusa PaymentIntent de outra conta conectada', async () => {
     const retrieve = vi.fn().mockResolvedValue(intent({ transfer_data: { destination: 'acct_outra' } }));
     await expect(make({ paymentIntents: { retrieve } }).getPayment('pi_1')).rejects.toBeInstanceOf(PspRejectedError);

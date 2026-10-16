@@ -102,19 +102,36 @@ function mapStatus(status: unknown, cancellationReason: unknown): PspPaymentStat
   }
 }
 
+/**
+ * Estorno TOTAL da cobranca? O PaymentIntent estornado continua `succeeded`: quem diz e a charge
+ * (`refunded`, ou `amount_refunded >= amount`). Estorno PARCIAL nao conta: a plataforma so estorna
+ * por inteiro, e um parcial (feito fora dela) mantem o pagamento APROVADO — os numeros continuam
+ * pagos e a divergencia de valor fica para o operador, nunca vira ESTORNADO por engano.
+ */
+function isFullyRefunded(charge: Record<string, unknown>): boolean {
+  if (charge['refunded'] === true) return true;
+  const amount = charge['amount'];
+  const refunded = charge['amount_refunded'];
+  return typeof amount === 'number' && amount > 0 && typeof refunded === 'number' && refunded >= amount;
+}
+
 function toPayment(intent: unknown): PspPayment {
   const pi = asRecord(intent);
   const id = pi['id'];
   if (typeof id !== 'string' || id === '') {
     throw new PspRejectedError('Resposta da Stripe sem identificador de pagamento.');
   }
-  const status = mapStatus(pi['status'], pi['cancellation_reason']);
-  const pix = asRecord(asRecord(pi['next_action'])['pix_display_qr_code']);
   const charge = asRecord(pi['latest_charge']); // so vem como objeto quando expandido
+  const mapped = mapStatus(pi['status'], pi['cancellation_reason']);
+  // So um pagamento que FOI aprovado pode ter sido estornado.
+  const status: PspPaymentStatus = mapped === 'APROVADO' && isFullyRefunded(charge) ? 'ESTORNADO' : mapped;
+  const pix = asRecord(asRecord(pi['next_action'])['pix_display_qr_code']);
   const metadata = asRecord(pi['metadata']);
   const orderId = metadata['order_id'];
-  // paidAt: so existe se aprovado. Horario da cobranca paga; sem ela, o `created` do intent.
-  const paidAt = status === 'APROVADO' ? (iso(charge['created']) ?? iso(pi['created'])) : null;
+  // paidAt: so existe se foi pago (aprovado, ou aprovado e depois estornado). Horario da cobranca
+  // paga; sem ela, o `created` do intent.
+  const paid = status === 'APROVADO' || status === 'ESTORNADO';
+  const paidAt = paid ? (iso(charge['created']) ?? iso(pi['created'])) : null;
   return {
     providerPaymentId: id,
     status,
