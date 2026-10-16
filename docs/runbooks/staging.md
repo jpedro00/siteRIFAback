@@ -474,8 +474,11 @@ Connect ligado, produção exige chave live.
 
 - `account.updated` — endpoint de **eventos das contas conectadas** (*Connected accounts*);
 - `payment_intent.succeeded`, `payment_intent.payment_failed`, `payment_intent.canceled`,
-  `charge.refunded` — numa destination charge o PaymentIntent mora na conta da **plataforma**,
-  então esses chegam pelo endpoint de **eventos da sua conta** (*Your account*).
+  `charge.refunded`, `refund.failed`, `refund.updated` — numa destination charge o
+  PaymentIntent (e o estorno) mora na conta da **plataforma**, então esses chegam pelo endpoint
+  de **eventos da sua conta** (*Your account*). (`charge.refund.updated`, nome antigo, também é
+  aceito.) Estorno que falha abre a divergência `REFUND_FAILED`: ver
+  `docs/runbooks/stripe-connect.md` §6.
 
 Cada endpoint tem o seu `whsec_...`: os dois vão em `STRIPE_CONNECT_WEBHOOK_SECRET`, separados
 por vírgula. O aviso **não vale como verdade**: a API grava o `event.id` (idempotência; o mesmo
@@ -498,7 +501,7 @@ PUBLIC_API_BASE_URL             = https://<api>.onrender.com
 
 1. Pré-requisitos fora do código: Connect habilitado na conta Stripe, PIX disponível para
    destination charges no Brasil, segmento aceito pela Stripe.
-2. Aplicar as migrations `0027`–`0031` (workflow **Migrar staging**) **antes** de subir o
+2. Aplicar as migrations `0027`–`0032` (workflow **Migrar staging**) **antes** de subir o
    código — o código as exige mesmo com `CONNECT_ENABLED=false` (ver `stripe-connect.md`, §7).
 3. Staging em **modo teste**: criar a chave restrita de teste e os dois endpoints, preencher as
    variáveis, `CONNECT_ENABLED=true`, redeploy da API e do worker.

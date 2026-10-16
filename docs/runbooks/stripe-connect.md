@@ -86,6 +86,7 @@ Levantadas dos métodos do SDK realmente chamados em `packages/payment-accounts/
 | `paymentIntents.create` | PaymentIntents (escrita) |
 | `paymentIntents.retrieve` (com `expand: ['latest_charge']`) | PaymentIntents (leitura) |
 | `refunds.create` (`refund_application_fee`, `reverse_transfer`) | Refunds (escrita) |
+| `refunds.list` (`payment_intent`; estorno que falhou, webhook) | Refunds (leitura) |
 
 **Observações (a confirmar na homologação, §5):**
 
@@ -101,13 +102,13 @@ Levantadas dos métodos do SDK realmente chamados em `packages/payment-accounts/
 ### Ordem de aplicação
 
 1. Pré-requisitos externos (§2).
-2. **Migrations 0027–0031 ANTES do código** (workflow *Migrar staging*, ver `staging.md`,
+2. **Migrations 0027–0032 ANTES do código** (workflow *Migrar staging*, ver `staging.md`,
    seção "Migrações"). Todas são aditivas.
 3. Variáveis (`CONNECT_ENABLED` ainda `false`), deploy do código, conferir que nada mudou.
 4. Só então o roteiro da §4 (liga `CONNECT_ENABLED=true` no staging).
 
 > **AVISO — banco de staging sem backup.** O banco de staging é o projeto Supabase **`RIFAS`** e,
-> por decisão registrada do dono do projeto, **não tem backup**. As migrations 0027–0031 só
+> por decisão registrada do dono do projeto, **não tem backup**. As migrations 0027–0032 só
 > foram aplicadas até hoje no **banco de teste local**. **Peça confirmação explícita do dono
 > antes de aplicar.** Sugestão (não imposição): um `pg_dump` manual antes de migrar, ao menos
 > das tabelas `payments`, `plans`, `billing_settings` e `payment_provider_authorizations`.
@@ -121,7 +122,8 @@ Staging, chave `rk_test_`/`sk_test_`, nunca live. Cada passo traz o resultado es
 1. **Criar os dois endpoints de webhook** (Dashboard em modo teste → *Developers → Webhooks*),
    ambos com URL `{PUBLIC_API_BASE_URL}/api/webhooks/stripe-connect`:
    - Endpoint **"Your account"**: `payment_intent.succeeded`, `payment_intent.payment_failed`,
-     `payment_intent.canceled`, `charge.refunded`.
+     `payment_intent.canceled`, `charge.refunded`, `refund.failed`, `refund.updated`
+     (`charge.refund.updated`, nome antigo, também é tratado; não é preciso assinar os dois).
    - Endpoint **"Connected accounts"**: `account.updated`.
 
    Copie os dois `whsec_...` para `STRIPE_CONNECT_WEBHOOK_SECRET` (separados por vírgula).
@@ -205,6 +207,11 @@ Ao final, preencha as respostas da §5.
    `platform_fee_cents` até `amount_cents`). Permitir isso é **decisão de produto**.
 7. O `paymentTypeId` `bank_transfer` usado em `listPaymentMethods` é suposição do ledger:
    conferir a tradução na API e que a vitrine mostra o PIX da Stripe como esperado.
+8. **Eventos de estorno (`refund.failed`, `refund.updated`) no endpoint "Your account".** Em
+   *destination charge* o estorno é criado na conta da plataforma, então devem chegar por lá (e
+   não pelo "Connected accounts") — **confirmar** na homologação. Confirmar também como simular,
+   em modo teste, um estorno PIX que falha (se a Stripe oferecer) e que o `refunds.list` do
+   PaymentIntent mostra `status: failed` com um `failure_reason` em código.
 
 ## 6. Limitações conhecidas e pendências
 
@@ -237,10 +244,8 @@ Do ledger (`.superpowers/sdd/2026-10-15-stripe-connect-recebimento/progress.md`)
    tardio vira `refund_required`. Correções possíveis: chamar `paymentIntents.cancel` a partir do
    `expirar-pix` antes de liberar, ou mapear `requires_payment_method` depois do prazo para
    `EXPIRADO`.
-2. **`refund.failed` / `charge.refund.updated` não são tratados depois de `ESTORNADO`.**
-   *Portão: OBRIGATÓRIO antes de produção.* Um estorno que falha depois de o pagamento já estar
-   `ESTORNADO` passa despercebido (falta registrar divergência de conciliação). Abrir uma issue
-   de conciliação e resolver antes do go-live.
+2. ~~`refund.failed` / `charge.refund.updated` não são tratados depois de `ESTORNADO`~~ —
+   **implementado** (ver "Estorno que falhou depois de `ESTORNADO`", abaixo).
 3. **Sem *throttle* por comunidade em `connect-stripe` e `refresh-stripe`.** *Portão: aceitar o
    risco ou resolver antes de produção (checklist, item 12).* O limite de requisições da Stripe
    é por **chave da plataforma**: uma única comunidade chamando essas rotas em rajada pode
@@ -248,6 +253,49 @@ Do ledger (`.superpowers/sdd/2026-10-15-stripe-connect-recebimento/progress.md`)
 4. **Sem botão de desconectar Stripe no painel.** *Portão: decisão de produto.* A desconexão
    genérica do backend (`POST /api/tenant/payment-accounts/{id}/disconnect`) funciona para linhas
    `STRIPE`; falta só a interface.
+
+### Estorno que falhou depois de `ESTORNADO` (divergência `REFUND_FAILED`)
+
+Um estorno PIX pode falhar **depois** de a Stripe aceitá-lo (p.ex. a conta do comprador foi
+encerrada). Para a Stripe, `ESTORNADO` é terminal: o pagamento **continua `ESTORNADO`** e o
+código **não** tenta estornar de novo. O que acontece:
+
+- `refund.failed` / `refund.updated` / `charge.refund.updated` chegam ao webhook Connect
+  (endpoint "Your account", §4 passo 1; §5 pergunta 8). O corpo só identifica o PaymentIntent:
+  a API acha a comunidade/conta pelo nosso registro (`app.find_payment_route`), confere a conta
+  do evento, e **relê na Stripe** os estornos do PaymentIntent (`refunds.list`, depois de
+  conferir que o destino é a conta conectada do pagamento — RN06).
+- Havendo estorno `failed`, `app.record_psp_refund_failed` (migration **0032**) abre **uma**
+  divergência `REFUND_FAILED` por pagamento (evento repetido ou por outro tipo não duplica) e
+  audita `payment.refund_failed`. `detail` = `{refundId, failureReason, amountCents}`, sem dado
+  pessoal (`failureReason` é só o código da Stripe). Nenhum estorno `failed` na Stripe: `ignored`.
+- A divergência aparece no Console Super Admin → Financeiro → conciliação (mesmo com o
+  pagamento `ESTORNADO`) e na contagem de abertas da Saúde. A conciliação local **não** a fecha.
+
+**O que o operador faz:**
+
+1. No Dashboard da Stripe, abrir o estorno (`refundId` do `detail`) e o PaymentIntent; confirmar
+   que o estorno está `failed` e o motivo.
+2. Contatar o comprador (pelo pedido, no painel da comunidade) para combinar a devolução por
+   outro meio, ou criar um **novo** estorno pelo Dashboard se a Stripe permitir. Decisão de
+   quem arca: ver §2 (estorno/disputa).
+3. Registrar o que foi feito e marcar a divergência como *Resolvida manualmente* no Console
+   (status de revisão; fecha a divergência). Uma nova falha depois disso abre outra.
+
+Divergências abertas deste tipo (somente leitura):
+
+```sql
+SELECT i.id, i.tenant_id, left(i.order_id::text, 8) AS pedido, p.status AS pagamento,
+       i.detail->>'refundId' AS refund_id, i.detail->>'failureReason' AS motivo,
+       (i.detail->>'amountCents')::int AS valor_centavos, i.review_status, i.detected_at
+  FROM payment_reconciliation_issues i
+  JOIN payments p ON p.id = i.payment_id
+ WHERE i.kind = 'REFUND_FAILED' AND i.resolved_at IS NULL
+ ORDER BY i.detected_at;
+```
+
+> A `0032` troca a constraint `payment_recon_kind_known` (só acrescenta `REFUND_FAILED`). Reverter
+> o código deixa a função sem uso; voltar à constraint antiga só sem linhas `REFUND_FAILED`.
 
 ## 7. Rollback
 
@@ -273,14 +321,14 @@ reservados não são liberados até alguém resolver o pagamento. Como proceder:
 Com a API desligada, o webhook responde 404 e a Stripe reenvia por um tempo; o worker ainda
 concilia por consulta enquanto estiver ligado.
 
-**Requisito obrigatório: o código desta branch exige as migrations 0027–0031 mesmo com
+**Requisito obrigatório: o código desta branch exige as migrations 0027–0032 mesmo com
 `CONNECT_ENABLED=false`.** O job `limpar-stripe-eventos` do worker chama
 `app.purge_connect_webhook_events` (0030) e a leitura das contas de recebimento lê as colunas
 novas (`charges_enabled`, `payouts_enabled`, `requirements_due`, 0028) incondicionalmente. Subir o
 código antes das migrations quebra o worker e a tela de recebimentos, com o Connect ligado ou
 não.
 
-**Reverter código:** redeploy do commit anterior. As migrations 0027–0031 são **aditivas**:
+**Reverter código:** redeploy do commit anterior. As migrations 0027–0032 são **aditivas**:
 colunas e tabelas novas ficam sem uso. Ressalvas: o valor `STRIPE` do enum `payment_provider`
 **não se remove**; a constraint `payments_provider_known` passou a aceitar `STRIPE`, e voltar à
 antiga só é possível sem nenhuma linha `STRIPE` em `payments`.
@@ -308,7 +356,7 @@ antiga só é possível sem nenhuma linha `STRIPE` em `payments`.
 | 4 | Decisão sobre estorno/disputa registrada | [ ] |
 | 5 | Chaves antigas rotacionadas; nenhuma chave em repositório ou chat | [ ] |
 | 6 | Dono confirmou migrations no banco `RIFAS` (sem backup); dump manual feito, se desejado | [ ] |
-| 7 | Migrations 0027–0031 aplicadas, antes do código | [ ] |
+| 7 | Migrations 0027–0032 aplicadas, antes do código | [ ] |
 | 8 | Roteiro da §4 completo em modo teste; respostas da §5 anotadas | [ ] |
 | 9 | Chave **live** restrita criada; permissões da §3 conferidas | [ ] |
 | 10 | Dois endpoints live criados; dois `whsec_` em `STRIPE_CONNECT_WEBHOOK_SECRET` | [ ] |
