@@ -13,6 +13,7 @@ import {
   createHarness,
   currentCode,
   grantMembership,
+  grantPlatformRole,
   hasTestDatabase,
   loginAs,
   seedAccount,
@@ -605,6 +606,137 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · rotas e webhook ${hasTestDa
       const res = await avisar(h, { type: 'charge.refunded', object: { id: 'ch_fakeref2', object: 'charge', payment_intent: pi } });
       expect(res.body.result).toBe('processed');
       expect(await statusDe(orderId)).toEqual({ pedido: 'PAGO', pagamento: 'APROVADO' });
+    });
+
+    describe('estorno que FALHOU depois de ESTORNADO (refund.failed / refund.updated / charge.refund.updated)', () => {
+      /** Pago e estornado NA STRIPE, `charge.refunded` processado: pagamento ESTORNADO. */
+      async function estornado(prefixo: string) {
+        const c = await novaComunidade(prefixo);
+        const acct = await cadastrarOk(c, true);
+        const { orderId, pi } = await compra(c);
+        stripe.setIntentStatus(pi, 'succeeded');
+        await avisar(h, { type: 'payment_intent.succeeded', object: { id: pi } });
+        const refund = (await stripe.refunds.create({ payment_intent: pi })) as { id: string };
+        await avisar(h, { type: 'charge.refunded', object: { id: 'ch_x', object: 'charge', payment_intent: pi } });
+        expect(await statusDe(orderId)).toEqual({ pedido: 'PAGO', pagamento: 'ESTORNADO' });
+        return { c, acct, orderId, pi, refundId: refund.id };
+      }
+      const issues = async (orderId: string) =>
+        (
+          await h.owner.query<{ kind: string; detail: Record<string, unknown> }>(
+            `SELECT i.kind, i.detail FROM payment_reconciliation_issues i
+               WHERE i.order_id = $1 AND i.resolved_at IS NULL AND i.kind = 'REFUND_FAILED'`,
+            [orderId],
+          )
+        ).rows;
+      const corpoRefund = (pi: string, refundId: string, status: string) => ({
+        id: refundId,
+        object: 'refund',
+        status,
+        payment_intent: pi,
+        amount: 1999,
+      });
+
+      it('Stripe diz failed: UMA divergencia REFUND_FAILED, mesmo com o evento repetido e por tres tipos; status continua ESTORNADO', async () => {
+        const e = await estornado('cn-rff-');
+        stripe.setRefundStatus(e.refundId, 'failed', 'expired_or_canceled_card');
+        const id = evtId();
+        const listas = stripe.refundLists.length;
+
+        const primeira = await avisar(h, { id, type: 'refund.failed', object: corpoRefund(e.pi, e.refundId, 'failed') });
+        expect(primeira.status, JSON.stringify(primeira.body)).toBe(200);
+        expect(primeira.body).toEqual({ received: true, result: 'processed' });
+        // RN06: quem disse "falhou" foi a CONSULTA (refunds.list do PaymentIntent).
+        expect(stripe.refundLists.slice(listas)).toEqual([e.pi]);
+
+        expect((await avisar(h, { id, type: 'refund.failed', object: corpoRefund(e.pi, e.refundId, 'failed') })).body.result).toBe(
+          'duplicate',
+        );
+        for (const type of ['refund.updated', 'charge.refund.updated', 'refund.failed']) {
+          const res = await avisar(h, { type, object: corpoRefund(e.pi, e.refundId, 'failed') });
+          expect(res.body, type).toEqual({ received: true, result: 'processed' });
+        }
+
+        const abertas = await issues(e.orderId);
+        expect(abertas).toEqual([
+          { kind: 'REFUND_FAILED', detail: { refundId: e.refundId, failureReason: 'expired_or_canceled_card', amountCents: 1999 } },
+        ]);
+        expect(await statusDe(e.orderId)).toEqual({ pedido: 'PAGO', pagamento: 'ESTORNADO' });
+        // Nenhuma tentativa automatica de estornar de novo.
+        expect(stripe.refundCalls.filter((r) => r.params['payment_intent'] === e.pi)).toHaveLength(1);
+      });
+
+      it('o corpo NAO vale: diz failed mas a Stripe diz succeeded => ignorado, nenhuma divergencia', async () => {
+        const e = await estornado('cn-rfl-');
+        const res = await avisar(h, { type: 'refund.failed', object: { ...corpoRefund(e.pi, e.refundId, 'failed'), failure_reason: 'lost_or_stolen_card' } });
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ received: true, result: 'ignored' });
+        expect(await issues(e.orderId)).toEqual([]);
+      });
+
+      it('o corpo NAO vale: diz succeeded mas a Stripe diz failed => divergencia aberta', async () => {
+        const e = await estornado('cn-rfr-');
+        stripe.setRefundStatus(e.refundId, 'failed');
+        const res = await avisar(h, { type: 'refund.updated', object: corpoRefund(e.pi, e.refundId, 'succeeded') });
+        expect(res.body).toEqual({ received: true, result: 'processed' });
+        expect(await issues(e.orderId)).toEqual([
+          { kind: 'REFUND_FAILED', detail: { refundId: e.refundId, failureReason: null, amountCents: 1999 } },
+        ]);
+      });
+
+      it('aparece na conciliacao do Console (pagamento ESTORNADO nao some da lista)', async () => {
+        const e = await estornado('cn-rfv-');
+        stripe.setRefundStatus(e.refundId, 'failed', 'expired_or_canceled_card');
+        await avisar(h, { type: 'refund.failed', object: corpoRefund(e.pi, e.refundId, 'failed') });
+        const fin = await seedAccount(h.owner);
+        await grantPlatformRole(h.owner, { userId: fin.userId, role: 'PLATFORM_FINANCE' });
+        const res = await request(h.app).get('/api/platform/reconciliation').set('Cookie', await entrar(h, fin));
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        expect(res.body.byKind).toContainEqual({ kind: 'REFUND_FAILED', count: expect.any(Number) });
+        const item = res.body.issues.find((i: { reference: string; kind: string }) => i.reference === e.orderId.slice(0, 8) && i.kind === 'REFUND_FAILED');
+        expect(item).toMatchObject({ kind: 'REFUND_FAILED', paymentStatus: 'ESTORNADO', amountCents: 1999 });
+      });
+
+      it('evento de OUTRA conta conectada, ou PaymentIntent de outra conta: ignorado, sem divergencia', async () => {
+        const e = await estornado('cn-rfa-');
+        stripe.setRefundStatus(e.refundId, 'failed');
+        const listas = stripe.refundLists.length;
+        const outra = await avisar(h, { type: 'refund.failed', account: 'acct_deoutracomunidade3', object: corpoRefund(e.pi, e.refundId, 'failed') });
+        expect(outra.body).toEqual({ received: true, result: 'ignored' });
+        stripe.setIntentDestination(e.pi, 'acct_deoutracomunidade4');
+        const destino = await avisar(h, { type: 'refund.failed', object: corpoRefund(e.pi, e.refundId, 'failed') });
+        expect(destino.body).toEqual({ received: true, result: 'ignored' });
+        // Nem chegou a listar os estornos: a conta foi conferida antes.
+        expect(stripe.refundLists.length).toBe(listas);
+        expect(await issues(e.orderId)).toEqual([]);
+      });
+
+      it('pagamento desconhecido, ou que nao e STRIPE: ignorado', async () => {
+        const desconhecido = await avisar(h, { type: 'refund.failed', object: corpoRefund('pi_naoexiste456', 're_naoexiste1', 'failed') });
+        expect(desconhecido.body).toEqual({ received: true, result: 'ignored' });
+        const semPi = await avisar(h, { type: 'refund.failed', object: { id: 're_x1', object: 'refund', status: 'failed' } });
+        expect(semPi.body).toEqual({ received: true, result: 'ignored' });
+
+        const e = await estornado('cn-rfo-');
+        stripe.setRefundStatus(e.refundId, 'failed');
+        await h.owner.query(`UPDATE payments SET provider = 'FAKE' WHERE provider_payment_id = $1`, [e.pi]);
+        const outro = await avisar(h, { type: 'refund.failed', object: corpoRefund(e.pi, e.refundId, 'failed') });
+        expect(outro.body).toEqual({ received: true, result: 'ignored' });
+        expect(await issues(e.orderId)).toEqual([]);
+      });
+
+      it('falha transitoria ao listar os estornos: 503 e o reenvio abre a divergencia', async () => {
+        const e = await estornado('cn-rft-');
+        stripe.setRefundStatus(e.refundId, 'failed');
+        const id = evtId();
+        stripe.failNextRefundList = Object.assign(new Error('rede'), { type: 'StripeConnectionError' });
+        expect((await avisar(h, { id, type: 'refund.failed', object: corpoRefund(e.pi, e.refundId, 'failed') })).status).toBe(503);
+        expect(await eventoGravado(id)).toEqual({ processed: false });
+        expect(await issues(e.orderId)).toEqual([]);
+        const reenvio = await avisar(h, { id, type: 'refund.failed', object: corpoRefund(e.pi, e.refundId, 'failed') });
+        expect(reenvio.body).toEqual({ received: true, result: 'processed' });
+        expect(await issues(e.orderId)).toHaveLength(1);
+      });
     });
 
     it('pagamento desconhecido: 200 ignorado', async () => {

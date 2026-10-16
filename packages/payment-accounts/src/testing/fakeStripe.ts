@@ -172,9 +172,39 @@ export class FakeStripe {
         payment_intent: id,
       };
       if (typeof key === 'string') this.#refundByKey.set(key, refund);
+      this.#refundsById.set(refund.id, refund);
       return refund;
     },
+    /** Como a Stripe: os estornos do PaymentIntent (`payment_intent`), o mais recente primeiro. */
+    list: async (params: Record<string, unknown> = {}) => {
+      const pi = params['payment_intent'];
+      this.refundLists.push(String(pi));
+      if (this.failNextRefundList) {
+        const e = this.failNextRefundList;
+        this.failNextRefundList = null;
+        throw e;
+      }
+      const data = [...this.#refundsById.values()].filter((r) => r['payment_intent'] === pi).reverse();
+      return { object: 'list', data: data.map((r) => ({ ...r })), has_more: false };
+    },
   };
+
+  /** Cada `refunds.list` (o `payment_intent` pedido), na ordem. */
+  readonly refundLists: string[] = [];
+  /** A proxima listagem de estornos falha com este erro (uma vez). */
+  failNextRefundList: Error | null = null;
+  readonly #refundsById = new Map<string, Record<string, unknown>>();
+
+  /**
+   * O estado de um estorno muda NA STRIPE (p.ex. `failed`: o banco do comprador recusou a
+   * devolucao). Nao mexe na cobranca: so o que `refunds.list` devolve.
+   */
+  setRefundStatus(refundId: string, status: string, failureReason?: string): void {
+    const r = this.#refundsById.get(refundId)!;
+    r['status'] = status;
+    if (failureReason === undefined) delete r['failure_reason'];
+    else r['failure_reason'] = failureReason;
+  }
 
   /**
    * A cobranca do PaymentIntent foi estornada NA STRIPE (pela plataforma ou pelo painel dela):

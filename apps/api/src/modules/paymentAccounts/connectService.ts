@@ -11,6 +11,7 @@ import {
   PspRejectedError,
   PspUnauthorizedError,
   PspUnavailableError,
+  type PspFailedRefund,
   type PspPayment,
   type PspResolution,
 } from '@clubedarifa/psp';
@@ -101,7 +102,13 @@ const PAYMENT_EVENTS = new Set([
   'payment_intent.canceled',
   'charge.refunded',
 ]);
-const HANDLED = new Set(['account.updated', ...PAYMENT_EVENTS]);
+/**
+ * Estorno que mudou de estado (o que importa: `failed`, o PIX de devolucao recusado pelo banco do
+ * comprador depois de a Stripe aceitar o estorno). Os tres nomes existem no SDK e trazem um
+ * `Refund`; o corpo so identifica o PaymentIntent — o estado e RELIDO na Stripe (RN06).
+ */
+const REFUND_EVENTS = new Set(['refund.failed', 'refund.updated', 'charge.refund.updated']);
+const HANDLED = new Set(['account.updated', ...PAYMENT_EVENTS, ...REFUND_EVENTS]);
 const PAYMENT_INTENT_ID = /^pi_[A-Za-z0-9_]{1,255}$/;
 
 /** Falha que a Stripe deve REENVIAR: o evento fica gravado sem `processed_at`. */
@@ -202,7 +209,7 @@ async function onAccountUpdated(connect: ConnectRuntime, event: ConnectWebhookEv
 
 function paymentIntentOf(event: ConnectWebhookEvent): string | null {
   const o = event.object;
-  const raw = event.type === 'charge.refunded' ? o['payment_intent'] : o['id'];
+  const raw = event.type === 'charge.refunded' || REFUND_EVENTS.has(event.type) ? o['payment_intent'] : o['id'];
   const id = typeof raw === 'string' ? raw : typeof raw === 'object' && raw !== null ? (raw as { id?: unknown }).id : null;
   return typeof id === 'string' && PAYMENT_INTENT_ID.test(id) ? id : null;
 }
@@ -243,6 +250,8 @@ async function onPaymentEvent(
     throw error;
   }
 
+  if (REFUND_EVENTS.has(event.type)) return onRefundEvent(deps, rota.tenant_id, resolucao, paymentIntentId);
+
   // RN06: o aviso so dispara a CONSULTA. O gateway confere que o PaymentIntent tem como destino a
   // conta conectada do pagamento (senao, PspRejectedError).
   let remoto: PspPayment;
@@ -261,5 +270,52 @@ async function onPaymentEvent(
     reconcilePayment(client, 'STRIPE', remoto, resolucao.paymentAccountId),
   );
   log.info('stripe_connect.payment_reconciled', { tenant_id: rota.tenant_id, outcome });
+  return 'processed';
+}
+
+/**
+ * Estorno que FALHOU depois de aceito. O pagamento pode ja estar ESTORNADO (terminal para a
+ * Stripe): o status NAO muda e nada e estornado de novo — so abre a divergencia `REFUND_FAILED`
+ * para o operador. O corpo do aviso nao diz se falhou: os estornos do PaymentIntent sao RELIDOS na
+ * Stripe (o gateway confere antes a conta de destino). Nenhum estorno `failed` la: `ignored`.
+ */
+async function onRefundEvent(
+  deps: AppDeps,
+  tenantId: string,
+  resolucao: PspResolution,
+  paymentIntentId: string,
+): Promise<'processed' | 'ignored'> {
+  const gateway = resolucao.gateway;
+  if (!gateway.failedRefunds) return 'ignored';
+  let falhos: readonly PspFailedRefund[];
+  try {
+    falhos = await gateway.failedRefunds(paymentIntentId);
+  } catch (error) {
+    if (error instanceof PspUnavailableError || error instanceof PspUnauthorizedError) throw new RetryLater();
+    if (error instanceof PspRejectedError || error instanceof PaymentAccountUnavailableError) {
+      log.warn('stripe_connect.webhook_payment_rejected', { tenant_id: tenantId });
+      return 'ignored';
+    }
+    throw error;
+  }
+  const falho = falhos[0];
+  if (!falho) return 'ignored';
+
+  const outcome = await withTenant(deps.pool, { tenantId }, async (client) => {
+    const { rows } = await client.query<{ r: string }>('SELECT app.record_psp_refund_failed($1, $2, $3::uuid, $4, $5, $6) AS r', [
+      'STRIPE',
+      paymentIntentId,
+      resolucao.paymentAccountId,
+      falho.refundId,
+      falho.failureReason,
+      falho.amountCents,
+    ]);
+    return rows[0]!.r;
+  });
+  if (outcome === 'unknown_payment' || outcome === 'mismatch') {
+    log.warn('stripe_connect.refund_failed_not_recorded', { tenant_id: tenantId, outcome });
+    return 'ignored';
+  }
+  log.warn('stripe_connect.refund_failed', { tenant_id: tenantId, outcome });
   return 'processed';
 }
