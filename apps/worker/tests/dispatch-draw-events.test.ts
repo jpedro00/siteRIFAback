@@ -6,7 +6,8 @@ import type { QueueMessage } from '../src/queue.js';
 /**
  * Eventos CONHECIDOS que ainda nao tem consumidor. Os que tem (order.paid,
  * draw.activated, draw.sales_closed, draw.result_published) sao exercitados, com
- * banco, em consumers.test.ts.
+ * banco, em consumers.test.ts; payment.refund_required (estorno Stripe), em
+ * stripe-refund.test.ts.
  */
 const EVENTOS_RECONHECIDOS = [
   'draw.submitted',
@@ -17,7 +18,6 @@ const EVENTOS_RECONHECIDOS = [
   'draw.apuration_started',
   'draw.archived',
   'draw.result_corrected',
-  'payment.refund_required',
   'membership.granted',
   'membership.revoked',
 ] as const;

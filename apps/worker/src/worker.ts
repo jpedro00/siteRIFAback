@@ -31,10 +31,10 @@ export interface WorkerRuntime {
   stop(reason?: string): Promise<void>;
 }
 
-async function startConsumer(boss: PgBoss, pool: DbPool): Promise<void> {
+async function startConsumer(boss: PgBoss, pool: DbPool, connect: ConnectRuntime | null): Promise<void> {
   await boss.work<QueueMessage>(FOUNDATION_QUEUE, { batchSize: 10 }, async (jobs) => {
     for (const job of jobs) {
-      await handleMessage(pool, job.data);
+      await handleMessage(pool, job.data, { connect });
     }
   });
 }
@@ -69,7 +69,7 @@ export async function startWorker(config: WorkerConfig): Promise<WorkerRuntime> 
   const boss = await startQueue(config);
   console.log(`[fila] pronta no schema "${config.QUEUE_SCHEMA}"`);
 
-  await startConsumer(boss, pool);
+  await startConsumer(boss, pool, connect);
 
   // Jobs agendados (expirar reservas e PIX, fechar sorteios, conciliar, limpar).
   // O PSP e opcional: sem ele, os jobs de PIX avisam e nao liberam nada.
