@@ -717,4 +717,40 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
       expect((await estado(p.id)).s).toBe('APROVADO');
     });
   });
+
+  describe('0031 · obrigacoes abertas da conta (payment_account_open_obligations)', () => {
+    const obrigacoes = async (accountId: string) =>
+      (await owner.query<{ n: number }>('SELECT app.payment_account_open_obligations($1) AS n', [accountId])).rows[0]!.n;
+
+    /** Uma conta com UM pagamento no estado pedido; devolve as obrigacoes contadas. */
+    async function cenario(provider: 'STRIPE' | 'MERCADO_PAGO', status: string, manual: boolean) {
+      const tenantId = await tenant();
+      const { accountId } = await conta(tenantId, { provider });
+      await pagamento(tenantId, { provider, accountId });
+      if (status !== 'PENDENTE' || manual) {
+        await owner.query(
+          `UPDATE payments SET status = $2::payment_status, paid_at = CASE WHEN $2 IN ('APROVADO','ESTORNADO') THEN now() END,
+                  needs_manual_refund = $3, refund_reason = CASE WHEN $3 THEN 'teste' END
+            WHERE tenant_id = $1`,
+          [tenantId, status, manual],
+        );
+      }
+      return obrigacoes(accountId);
+    }
+
+    it('STRIPE ESTORNADO com needs_manual_refund ligado NAO conta mais (o estorno automatico nao desliga a flag)', async () => {
+      expect(await cenario('STRIPE', 'ESTORNADO', true)).toBe(0);
+    });
+
+    it('STRIPE PENDENTE e STRIPE APROVADO com devolucao manual em aberto continuam contando', async () => {
+      expect(await cenario('STRIPE', 'PENDENTE', false)).toBe(1);
+      expect(await cenario('STRIPE', 'APROVADO', true)).toBe(1);
+    });
+
+    it('MERCADO_PAGO inalterado: pendente e devolucao manual em aberto contam', async () => {
+      expect(await cenario('MERCADO_PAGO', 'PENDENTE', false)).toBe(1);
+      expect(await cenario('MERCADO_PAGO', 'APROVADO', true)).toBe(1);
+      expect(await cenario('MERCADO_PAGO', 'APROVADO', false)).toBe(0);
+    });
+  });
 });
