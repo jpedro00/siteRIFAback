@@ -8,9 +8,9 @@
     "src/permissions",
     "src/constants"
   ],
-  "digest": "bb9723ef953bc4dbe21d22f4e3b1886cdf9aeedfdeb74953138e15a24afd6ade",
+  "digest": "b56cf7df4cf935fcad4ddcb69c182a587ae721bc9973f59e536ab93663cb2e23",
   "files": {
-    "src/contracts/billing.ts": "c30a8e15c260a21c5b3fc9a7d57c07d06a75d4655fcf0c23418df3b1f64db667",
+    "src/contracts/billing.ts": "e01b8e6137fdd4e7ceff89a54f3a21d1b8889c82f6d987f31b85a2b3c313a462",
     "src/contracts/client.ts": "05f283a80fb4d0b3099af93071616f0b62ba294ed648c9a1f20e365abfe87ef6",
     "src/contracts/community.ts": "02bff98e77dd485975c636795a76b70b70ac738dac0a3893a8223f8718215db4",
     "src/contracts/draws.ts": "1529730b520a55e0ded7c1fe1b8103727674679bff4fa0bcc70b5dde09c7fef7",
@@ -21,7 +21,7 @@
     "src/contracts/paymentMethods.ts": "e7337f5d7b4fedd3c5ce4c70be502cb4404c96b684c3bd9a22978e2c7471add1",
     "src/contracts/platformAdmin.ts": "d0f77ff262d10ed9840d01d19419577caac1a5c26f7470df2de0cd0771263f56",
     "src/contracts/result.ts": "9c69de6fdf62ca594bf3852f7717003ae23e041b29117dee1a64edfbe5cb3d0d",
-    "src/contracts/routes.ts": "17ec4972a74c4c9a9331cbf887a7cb4566d8e1453ed10659a1f1459b2cb4f073",
+    "src/contracts/routes.ts": "59d4bfd85e10e955ac612f4d5e2cb3e9a5e871801a8d691e84418b9878521dfb",
     "src/states/billing.ts": "961ab174f52b88d9d096ba854f39a4424bee333c776509255bef1dcebd43cc1c",
     "src/states/drawStatus.ts": "b49c3d2f50e71caabe88485945447db40308f1db9bc06cf5dbc1155198e02aec",
     "src/states/index.ts": "1c745f4a3c6f21b1950d20d29e0ad618d8a807e80d317f7ff0d8c2a9a7176aaa",

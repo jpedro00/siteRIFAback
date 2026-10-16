@@ -63,8 +63,15 @@ export const planSchema = z.object({
 });
 export type Plan = z.infer<typeof planSchema>;
 
-/** Visao do Super Admin: inclui os identificadores da Stripe. */
+/**
+ * Taxa da plataforma em pontos-base (1% = 100). `null` = sem override: vale o padrao da
+ * plataforma. So o Super Admin enxerga e edita; nunca aparece na vitrine da comunidade.
+ */
+const platformFeeBps = z.number().int().min(0).max(10000).nullable();
+
+/** Visao do Super Admin: inclui os identificadores da Stripe e a taxa da plataforma. */
 export const platformPlanSchema = planSchema.extend({
+  platformFeeBps,
   stripeProductId: z.string().nullable(),
   stripePriceId: z.string().nullable(),
   createdAt: isoDate,
@@ -85,6 +92,7 @@ export const createPlanRequestSchema = z.object({
   currency: z.string().length(3).toLowerCase().default('brl'),
   ...planLimits,
   features: z.array(featureKey).max(50).default([]),
+  platformFeeBps: platformFeeBps.optional(),
 });
 export type CreatePlanRequest = z.input<typeof createPlanRequestSchema>;
 
@@ -100,6 +108,7 @@ export const updatePlanRequestSchema = z
     ...planLimits,
     features: z.array(featureKey).max(50),
     status: z.enum(PLAN_STATUSES),
+    platformFeeBps,
   })
   .partial();
 export type UpdatePlanRequest = z.infer<typeof updatePlanRequestSchema>;

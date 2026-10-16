@@ -31,13 +31,14 @@ const iso = (v: Date | string | null): string | null => (v === null ? null : new
 interface PlatformPlanRow extends PlanRow {
   stripe_product_id: string | null;
   stripe_price_id: string | null;
+  platform_fee_bps: number | null;
   created_at: Date;
   updated_at: Date;
 }
 
 const COLUMNS = `p.id, p.code, p.name, p.description, p.billing_interval, p.price_cents, p.currency,
                  p.max_active_draws, p.max_team_members, p.features, p.status,
-                 p.stripe_product_id, p.stripe_price_id, p.created_at, p.updated_at`;
+                 p.stripe_product_id, p.stripe_price_id, p.platform_fee_bps, p.created_at, p.updated_at`;
 
 function toPlatformPlan(r: PlatformPlanRow): PlatformPlan {
   return {
@@ -54,6 +55,7 @@ function toPlatformPlan(r: PlatformPlanRow): PlatformPlan {
     status: r.status,
     stripeProductId: r.stripe_product_id,
     stripePriceId: r.stripe_price_id,
+    platformFeeBps: r.platform_fee_bps,
     createdAt: new Date(r.created_at).toISOString(),
     updatedAt: new Date(r.updated_at).toISOString(),
   };
@@ -141,9 +143,9 @@ export async function createPlan(
     try {
       const { rows } = await client.query<{ id: string }>(
         `INSERT INTO plans (code, name, description, billing_interval, price_cents, currency,
-                            max_active_draws, max_team_members, features, status)
-         VALUES ($1, $2, $3, $4::plan_interval, $5, $6, $7, $8, $9::text[], 'DRAFT') RETURNING id`,
-        [b.code, b.name, b.description ?? null, b.interval, b.priceCents, b.currency, b.maxActiveDraws, b.maxTeamMembers, b.features],
+                            max_active_draws, max_team_members, features, status, platform_fee_bps)
+         VALUES ($1, $2, $3, $4::plan_interval, $5, $6, $7, $8, $9::text[], 'DRAFT', $10) RETURNING id`,
+        [b.code, b.name, b.description ?? null, b.interval, b.priceCents, b.currency, b.maxActiveDraws, b.maxTeamMembers, b.features, b.platformFeeBps ?? null],
       );
       await recordAuditEvent(client, {
         tenantId: null,
@@ -152,7 +154,7 @@ export async function createPlan(
         action: 'plan.created',
         targetType: 'plan',
         targetId: rows[0]!.id,
-        after: { code: b.code, interval: b.interval, priceCents: b.priceCents, currency: b.currency },
+        after: { code: b.code, interval: b.interval, priceCents: b.priceCents, currency: b.currency, platformFeeBps: b.platformFeeBps ?? null },
         ip: input.origin.ip,
         userAgent: input.origin.userAgent,
       });
@@ -198,6 +200,10 @@ export async function updatePlan(
   if (b.maxTeamMembers !== undefined) push('max_team_members', b.maxTeamMembers);
   if (b.features !== undefined) push('features', b.features, '::text[]');
   if (b.status !== undefined) push('status', b.status, '::plan_status');
+  // Taxa da plataforma: undefined = nao mexe; null = limpa (volta ao padrao). A taxa e congelada em cada
+  // pagamento no momento da cobranca, entao mudar aqui afeta so cobrancas FUTURAS. O gatilho
+  // plans_price_immutable nao guarda este campo, entao vale tambem para plano ja sincronizado.
+  if (b.platformFeeBps !== undefined) push('platform_fee_bps', b.platformFeeBps);
   if (sets.length === 0) throw ApiError.badRequest('Informe ao menos um campo para alterar.');
 
   return withPlatform(deps.pool, { userId: input.userId }, async (client) => {
@@ -223,8 +229,18 @@ export async function updatePlan(
       action: b.status !== undefined && b.status !== before.status ? 'plan.status_changed' : 'plan.updated',
       targetType: 'plan',
       targetId: input.planId,
-      before: { status: before.status, maxActiveDraws: before.max_active_draws, maxTeamMembers: before.max_team_members },
-      after: { status: after.status, maxActiveDraws: after.max_active_draws, maxTeamMembers: after.max_team_members },
+      before: {
+        status: before.status,
+        maxActiveDraws: before.max_active_draws,
+        maxTeamMembers: before.max_team_members,
+        platformFeeBps: before.platform_fee_bps,
+      },
+      after: {
+        status: after.status,
+        maxActiveDraws: after.max_active_draws,
+        maxTeamMembers: after.max_team_members,
+        platformFeeBps: after.platform_fee_bps,
+      },
       ip: input.origin.ip,
       userAgent: input.origin.userAgent,
     });

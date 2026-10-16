@@ -326,6 +326,113 @@ describe.skipIf(!hasTestDatabase)(`Console · planos e assinaturas ${hasTestData
   });
 
   // -------------------------------------------------------------------------
+  describe('taxa da plataforma no plano', () => {
+    const auditoria = async (planId: string, action: string) =>
+      (
+        await harness.owner.query<{ before: Record<string, unknown> | null; after: Record<string, unknown> | null }>(
+          `SELECT "before", "after" FROM audit_events WHERE target_id = $1 AND action = $2 ORDER BY occurred_at DESC, id DESC LIMIT 1`,
+          [planId, action],
+        )
+      ).rows[0];
+    const taxaNoBanco = async (planId: string) =>
+      (await harness.owner.query<{ platform_fee_bps: number | null }>('SELECT platform_fee_bps FROM plans WHERE id = $1', [planId])).rows[0]!
+        .platform_fee_bps;
+
+    it('criar COM taxa: devolve e grava; SEM taxa: null (usa o padrao da plataforma)', async () => {
+      const com = await financeiro().post('/api/platform/plans', corpo({ platformFeeBps: 800 }));
+      expect(com.status, JSON.stringify(com.body)).toBe(201);
+      expect(com.body.platformFeeBps).toBe(800);
+      expect(await taxaNoBanco(com.body.id)).toBe(800);
+      expect((await auditoria(com.body.id, 'plan.created'))?.after).toMatchObject({ platformFeeBps: 800 });
+
+      const sem = await financeiro().post('/api/platform/plans', corpo());
+      expect(sem.status).toBe(201);
+      expect(sem.body.platformFeeBps).toBeNull();
+      expect(await taxaNoBanco(sem.body.id)).toBeNull();
+
+      const zero = await financeiro().post('/api/platform/plans', corpo({ platformFeeBps: 0 }));
+      expect(zero.body.platformFeeBps).toBe(0);
+
+      const lista = await financeiro().get('/api/platform/plans');
+      expect(lista.body.plans.find((p: { id: string }) => p.id === com.body.id)?.platformFeeBps).toBe(800);
+    });
+
+    it('editar: define, troca e limpa (null); tudo auditado com antes/depois; omitir nao mexe', async () => {
+      const plano = (await financeiro().post('/api/platform/plans', corpo())).body as { id: string };
+
+      const define = await financeiro().patch(`/api/platform/plans/${plano.id}`, { platformFeeBps: 800 });
+      expect(define.status, JSON.stringify(define.body)).toBe(200);
+      expect(define.body.platformFeeBps).toBe(800);
+      expect(await auditoria(plano.id, 'plan.updated')).toEqual({
+        before: expect.objectContaining({ platformFeeBps: null }),
+        after: expect.objectContaining({ platformFeeBps: 800 }),
+      });
+
+      // omitir a taxa (editando outro campo) deixa como esta
+      const outro = await financeiro().patch(`/api/platform/plans/${plano.id}`, { name: 'Outro nome' });
+      expect(outro.body.platformFeeBps).toBe(800);
+
+      const limpa = await financeiro().patch(`/api/platform/plans/${plano.id}`, { platformFeeBps: null });
+      expect(limpa.status).toBe(200);
+      expect(limpa.body.platformFeeBps).toBeNull();
+      expect(await taxaNoBanco(plano.id)).toBeNull();
+      expect(await auditoria(plano.id, 'plan.updated')).toEqual({
+        before: expect.objectContaining({ platformFeeBps: 800 }),
+        after: expect.objectContaining({ platformFeeBps: null }),
+      });
+    });
+
+    it('plano ja sincronizado e publicado aceita mudar a taxa (o gatilho de imutabilidade so guarda preco)', async () => {
+      const plano = (await financeiro().post('/api/platform/plans', corpo())).body as { id: string };
+      expect((await financeiro().patch(`/api/platform/plans/${plano.id}`, { status: 'AVAILABLE' })).status).toBe(200);
+      const res = await financeiro().patch(`/api/platform/plans/${plano.id}`, { platformFeeBps: 300 });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: 'AVAILABLE', platformFeeBps: 300 });
+    });
+
+    it('fora de 0..10000 ou nao inteira: 400 (criar e editar)', async () => {
+      const plano = (await financeiro().post('/api/platform/plans', corpo())).body as { id: string };
+      for (const ruim of [-1, 10001, 1.5, '500']) {
+        expect((await financeiro().post('/api/platform/plans', corpo({ platformFeeBps: ruim }))).status, String(ruim)).toBe(400);
+        expect((await financeiro().patch(`/api/platform/plans/${plano.id}`, { platformFeeBps: ruim })).status, String(ruim)).toBe(400);
+      }
+      expect(await taxaNoBanco(plano.id)).toBeNull();
+      // limites validos
+      expect((await financeiro().patch(`/api/platform/plans/${plano.id}`, { platformFeeBps: 10000 })).status).toBe(200);
+      expect((await financeiro().patch(`/api/platform/plans/${plano.id}`, { platformFeeBps: 0 })).status).toBe(200);
+    });
+
+    it('sem platform:billing:manage (suporte) ou dono de comunidade: 403 e a taxa nao muda', async () => {
+      const plano = (await financeiro().post('/api/platform/plans', corpo({ platformFeeBps: 400 }))).body as { id: string };
+      expect((await como(supportCookie).patch(`/api/platform/plans/${plano.id}`, { platformFeeBps: 0 })).status).toBe(403);
+      expect((await como(ownerCookie).patch(`/api/platform/plans/${plano.id}`, { platformFeeBps: 0 })).status).toBe(403);
+      expect((await como(supportCookie).post('/api/platform/plans', corpo({ platformFeeBps: 1 }))).status).toBe(403);
+      expect(await taxaNoBanco(plano.id)).toBe(400);
+    });
+
+    it('a vitrine da comunidade NAO expoe a taxa (margem interna)', async () => {
+      const plano = (await financeiro().post('/api/platform/plans', corpo({ platformFeeBps: 800 }))).body as { id: string };
+      await financeiro().patch(`/api/platform/plans/${plano.id}`, { status: 'AVAILABLE' });
+      const res = await como(ownerCookie).get('/api/tenant/billing/plans').set('x-tenant-slug', ownerSlug);
+      expect(res.status).toBe(200);
+      expect(res.body.plans.map((p: { id: string }) => p.id)).toContain(plano.id);
+      expect(JSON.stringify(res.body)).not.toMatch(/platformFee|platform_fee|feeBps/i);
+    });
+
+    it('taxa vigente (app.tenant_platform_fee_bps): plano com 800 => 800; apos limpar => padrao 500', async () => {
+      const plano = (await financeiro().post('/api/platform/plans', corpo({ platformFeeBps: 800 }))).body as { id: string };
+      const { tenantId } = await novaComunidadeComAssinatura('active', plano.id, 'Comunidade Taxa');
+      const vigente = async () =>
+        (await harness.owner.query<{ bps: number }>('SELECT app.tenant_platform_fee_bps($1) AS bps', [tenantId])).rows[0]!.bps;
+      expect(await vigente()).toBe(800);
+      expect((await financeiro().patch(`/api/platform/plans/${plano.id}`, { platformFeeBps: 250 })).status).toBe(200);
+      expect(await vigente()).toBe(250);
+      expect((await financeiro().patch(`/api/platform/plans/${plano.id}`, { platformFeeBps: null })).status).toBe(200);
+      expect(await vigente()).toBe(500);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   describe('catalogo (leitura)', () => {
     it('lista com IDs da Stripe para o financeiro e nenhuma credencial', async () => {
       const res = await financeiro().get('/api/platform/plans');
