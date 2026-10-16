@@ -410,6 +410,8 @@ export const RECONCILIATION_KINDS = [
   'PSP_APPROVED_LOCAL_PENDING',
   'MANUAL_REFUND_OPEN',
   'PAYMENT_AUTHORIZATION_UNAVAILABLE',
+  /** Estorno que o PSP aceitou e depois FALHOU (pagamento pode ja estar ESTORNADO): conferir e devolver por fora. */
+  'REFUND_FAILED',
 ] as const;
 export type ReconciliationKind = (typeof RECONCILIATION_KINDS)[number];
 
