@@ -104,7 +104,7 @@ function exigirPagamentos(deps: AppDeps): void {
  * recente da comunidade (Stripe com cadastro incompleto = NOT_READY); nenhuma conta =
  * PaymentsNotConfiguredError.
  */
-async function escolherResolvedor(deps: AppDeps, tenantId: string): Promise<PspGatewayResolver> {
+export async function escolherResolvedor(deps: AppDeps, tenantId: string): Promise<PspGatewayResolver> {
   const mercadoPago = deps.paymentAccounts;
   const connect = deps.connect;
   if (!connect) {

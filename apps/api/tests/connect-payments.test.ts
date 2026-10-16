@@ -105,10 +105,17 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · cobranca e taxa ${hasTestDa
     return acct;
   }
 
+  /** Sessao com MFA; uma por pessoa e implantacao (o segundo fator so pode ser semeado uma vez). */
+  const sessoes = new Map<string, string>();
   async function entrar(h: Harness, account: SeededAccount): Promise<string> {
+    const chave = account.userId;
+    const pronta = sessoes.get(chave);
+    if (pronta) return pronta;
     const secret = await seedConfirmedTotp(h.owner, account.userId);
     const login = await loginAs(h, account);
-    return (await verifyMfa(h, login.cookie, await currentCode(secret))).cookie;
+    const cookie = (await verifyMfa(h, login.cookie, await currentCode(secret))).cookie;
+    sessoes.set(chave, cookie);
+    return cookie;
   }
 
   /** Conexao Mercado Pago pelo fluxo OAuth completo (rota, PKCE, callback). */
@@ -506,6 +513,89 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · cobranca e taxa ${hasTestDa
       );
       expect(rows).toHaveLength(1);
       for (const r of respostas) expect(r.body.payment.copyPaste).toBe(rows[0]!.pix_copy_paste);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('meios de pagamento (GET /api/tenant/payment-methods)', () => {
+    interface Meio {
+      kind: string;
+      providerReported: boolean;
+      enabled: boolean;
+      reason: string;
+    }
+    const meios = async (h: Harness, c: Comunidade) => {
+      const cookie = await entrar(h, c.owner);
+      const res = await request(h.app).get('/api/tenant/payment-methods').set('Cookie', cookie).set('x-tenant-slug', c.slug);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      return { body: res.body as { status: string; provider: string | null; accountId: string | null; methods: Meio[] }, cookie };
+    };
+    const porTipo = (methods: Meio[], kind: string) => methods.find((m) => m.kind === kind)!;
+
+    it('so a Stripe, conta pronta: provedor STRIPE, a conta dela, e so o PIX ligado', async () => {
+      const c = await novaComunidade(soStripe, 'pm-s-');
+      await cadastrarStripe(c, true);
+      const { body } = await meios(soStripe, c);
+      expect(body).toMatchObject({ status: 'OK', provider: 'STRIPE', accountId: await contaDe(c.tenantId, 'STRIPE') });
+      expect(porTipo(body.methods, 'PIX')).toEqual({ kind: 'PIX', providerReported: true, enabled: true, reason: 'ENABLED' });
+      for (const m of body.methods.filter((x) => x.kind !== 'PIX')) {
+        expect(m, m.kind).toMatchObject({ providerReported: false, enabled: false });
+      }
+    });
+
+    it('so a Stripe, cadastro incompleto: UNAVAILABLE com provedor STRIPE e nada ligado', async () => {
+      const c = await novaComunidade(soStripe, 'pm-snr-');
+      await cadastrarStripe(c, false);
+      const { body } = await meios(soStripe, c);
+      expect(body).toMatchObject({ status: 'UNAVAILABLE', provider: 'STRIPE', accountId: null });
+      expect(body.methods.every((m) => !m.enabled)).toBe(true);
+    });
+
+    it('so a Stripe, sem conta: NO_ACCOUNT', async () => {
+      const c = await novaComunidade(soStripe, 'pm-s0-');
+      const { body } = await meios(soStripe, c);
+      expect(body).toMatchObject({ status: 'NO_ACCOUNT', provider: null, accountId: null });
+      expect(body.methods.every((m) => !m.enabled)).toBe(true);
+    });
+
+    it('o criador desliga o PIX numa comunidade Stripe: DISABLED_BY_CREATOR', async () => {
+      const c = await novaComunidade(soStripe, 'pm-soff-');
+      await cadastrarStripe(c, true);
+      const { cookie } = await meios(soStripe, c);
+      const off = await request(soStripe.app)
+        .put('/api/tenant/payment-methods')
+        .set('Cookie', cookie)
+        .set('x-tenant-slug', c.slug)
+        .send({ method: 'PIX', enabled: false });
+      expect(off.status, JSON.stringify(off.body)).toBe(200);
+      expect(off.body.provider).toBe('STRIPE');
+      expect(porTipo(off.body.methods as Meio[], 'PIX')).toMatchObject({ providerReported: true, enabled: false, reason: 'DISABLED_BY_CREATOR' });
+    });
+
+    it('os dois conectados: vale a conta mais recente que pode receber (mesma regra da cobranca)', async () => {
+      const ms = await novaComunidade(ambos, 'pm-ms-');
+      await conectarMp(ambos, ms);
+      await cadastrarStripe(ms, true);
+      expect((await meios(ambos, ms)).body).toMatchObject({
+        status: 'OK',
+        provider: 'STRIPE',
+        accountId: await contaDe(ms.tenantId, 'STRIPE'),
+      });
+
+      const sm = await novaComunidade(ambos, 'pm-sm-');
+      await cadastrarStripe(sm, true);
+      await conectarMp(ambos, sm);
+      expect((await meios(ambos, sm)).body).toMatchObject({
+        status: 'OK',
+        provider: 'MERCADO_PAGO',
+        accountId: await contaDe(sm.tenantId, 'MERCADO_PAGO'),
+      });
+
+      // Stripe mais recente mas sem charges_enabled: o MP, que pode receber, responde.
+      const mn = await novaComunidade(ambos, 'pm-mn-');
+      await conectarMp(ambos, mn);
+      await cadastrarStripe(mn, false);
+      expect((await meios(ambos, mn)).body).toMatchObject({ status: 'OK', provider: 'MERCADO_PAGO' });
     });
   });
 

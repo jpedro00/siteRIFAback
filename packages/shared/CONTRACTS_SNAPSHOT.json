@@ -8,7 +8,7 @@
     "src/permissions",
     "src/constants"
   ],
-  "digest": "47f6caa7827457ba9521946fe0b3729fc99e387d0b4e1633f9c2ac8a58d1e126",
+  "digest": "bc6f35b4125b890bd8611c8bd725bb23186be2e8acdc02525b5fd8c7c0160c25",
   "files": {
     "src/contracts/billing.ts": "c30a8e15c260a21c5b3fc9a7d57c07d06a75d4655fcf0c23418df3b1f64db667",
     "src/contracts/client.ts": "05f283a80fb4d0b3099af93071616f0b62ba294ed648c9a1f20e365abfe87ef6",
@@ -18,7 +18,7 @@
     "src/contracts/events.ts": "b9e2729421321ae8bc4f0abf2cd250dcea4a5d9128a48e1013bf76a018c613ec",
     "src/contracts/index.ts": "47b698d8a381269aaa0effafd5d28cacc9e28c5bb36a9c1b55170ce8cd3597b8",
     "src/contracts/panel.ts": "7fa151c9182ee62021c7f8d67ddf5d78c84b4031c230cc4562e98b9e63b00e82",
-    "src/contracts/paymentMethods.ts": "3853f7557476906cbfecc5e4d0a155c4861fd64f1294f3b21b38894dd65e1016",
+    "src/contracts/paymentMethods.ts": "e7337f5d7b4fedd3c5ce4c70be502cb4404c96b684c3bd9a22978e2c7471add1",
     "src/contracts/platformAdmin.ts": "d0f77ff262d10ed9840d01d19419577caac1a5c26f7470df2de0cd0771263f56",
     "src/contracts/result.ts": "9c69de6fdf62ca594bf3852f7717003ae23e041b29117dee1a64edfbe5cb3d0d",
     "src/contracts/routes.ts": "17ec4972a74c4c9a9331cbf887a7cb4566d8e1453ed10659a1f1459b2cb4f073",

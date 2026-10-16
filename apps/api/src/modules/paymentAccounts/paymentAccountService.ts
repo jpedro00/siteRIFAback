@@ -4,6 +4,7 @@ import {
   PaymentAccountUnavailableError,
   PaymentsNotConfiguredError,
   PspUnavailableError,
+  type PspGatewayResolver,
 } from '@clubedarifa/psp';
 import {
   creatorTogglableMethods,
@@ -17,6 +18,7 @@ import {
 import type { AppDeps } from '../../deps.js';
 import { ApiError } from '../../lib/apiError.js';
 import { creatorDisabledMethods } from '../../lib/paymentPrefs.js';
+import { escolherResolvedor } from '../payments/paymentService.js';
 
 /**
  * Recebimentos da comunidade (FLUXO B). A API NUNCA devolve credencial: o que sai daqui vem de
@@ -225,20 +227,39 @@ export async function getPaymentMethods(
 ): Promise<PaymentMethodsResponse> {
   const checkedAt = new Date().toISOString();
   const desligados = await readDisabledMethods(deps, input.tenantId);
-  const runtime = deps.paymentAccounts;
-  if (!runtime || !runtime.enabled) {
+  // Mercado Pago so conta com o OAuth habilitado; o Connect, se ligado.
+  const mercadoPago = deps.paymentAccounts?.enabled === true ? deps.paymentAccounts : null;
+  if (!mercadoPago && !deps.connect) {
     return { status: 'NO_ACCOUNT', provider: null, accountId: null, methods: resolvePaymentMethods(new Set()), checkedAt };
   }
 
+  // O provedor que atende e o MESMO da cobranca: com os dois ligados, a conta conectada mais
+  // recentemente que pode receber (`app.tenant_receiving_provider`).
+  let resolver: PspGatewayResolver;
+  try {
+    resolver = await escolherResolvedor({ ...deps, paymentAccounts: mercadoPago }, input.tenantId);
+  } catch (error) {
+    if (error instanceof PaymentsNotConfiguredError) {
+      return { status: 'NO_ACCOUNT', provider: null, accountId: null, methods: resolvePaymentMethods(new Set(), desligados), checkedAt };
+    }
+    // Ambientes do Mercado Pago e do Connect divergentes: a cobranca recusa, aqui nada se oferece.
+    if (error instanceof ApiError && error.code === 'PAYMENT_PROVIDER_UNAVAILABLE') {
+      return { status: 'UNAVAILABLE', provider: null, accountId: null, methods: resolvePaymentMethods(new Set(), desligados), checkedAt };
+    }
+    throw error;
+  }
+  // Resolvedor de teste (`FAKE`) responde como o Mercado Pago, como antes.
+  const provider = resolver.provider === 'STRIPE' ? 'STRIPE' : 'MERCADO_PAGO';
+
   let resolucao;
   try {
-    resolucao = await runtime.resolver.forTenant(input.tenantId);
+    resolucao = await resolver.forTenant(input.tenantId);
   } catch (error) {
     if (error instanceof PaymentsNotConfiguredError) {
       return { status: 'NO_ACCOUNT', provider: null, accountId: null, methods: resolvePaymentMethods(new Set(), desligados), checkedAt };
     }
     if (error instanceof PaymentAccountUnavailableError) {
-      return { status: 'UNAVAILABLE', provider: 'MERCADO_PAGO', accountId: null, methods: resolvePaymentMethods(new Set(), desligados), checkedAt };
+      return { status: 'UNAVAILABLE', provider, accountId: null, methods: resolvePaymentMethods(new Set(), desligados), checkedAt };
     }
     throw error;
   }
@@ -251,7 +272,7 @@ export async function getPaymentMethods(
     }
     return {
       status: 'OK',
-      provider: 'MERCADO_PAGO',
+      provider,
       accountId: resolucao.paymentAccountId,
       methods: resolvePaymentMethods(reportados, desligados),
       checkedAt,
@@ -260,7 +281,7 @@ export async function getPaymentMethods(
     if (error instanceof PspUnavailableError || error instanceof PaymentAccountUnavailableError) {
       return {
         status: 'UNAVAILABLE',
-        provider: 'MERCADO_PAGO',
+        provider,
         accountId: resolucao.paymentAccountId,
         methods: resolvePaymentMethods(new Set(), desligados),
         checkedAt,
