@@ -64,21 +64,26 @@ BEGIN
    WHERE a.tenant_id = p_tenant AND a.environment = p_environment
      AND a.status = 'CONNECTED' AND z.status = 'ACTIVE'
      AND (a.provider <> 'STRIPE' OR z.charges_enabled IS TRUE)
-   ORDER BY a.connected_at DESC LIMIT 1;
+   ORDER BY a.connected_at DESC, a.id DESC LIMIT 1;
 END;
 $$;
 REVOKE EXECUTE ON FUNCTION app.tenant_receiving_provider(uuid, public.payment_environment) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION app.tenant_receiving_provider(uuid, public.payment_environment) TO app_user, app_worker;
 
 -- Taxa vigente: plano da assinatura viva da comunidade, senao o padrao da plataforma.
+-- So a propria comunidade (ou o worker) le a taxa: para outra devolve NULL.
+-- Assinatura `unpaid`/`paused` NAO conta como viva: de proposito cai na taxa padrao.
 CREATE FUNCTION app.tenant_platform_fee_bps(p_tenant uuid)
-RETURNS integer LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp
+RETURNS integer LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public, pg_temp
 AS $$
-  SELECT COALESCE(
+BEGIN
+  IF NOT app.caller_can_touch_tenant(p_tenant) THEN RETURN NULL; END IF;
+  RETURN COALESCE(
     (SELECT p.platform_fee_bps FROM public.tenant_subscriptions s
        JOIN public.plans p ON p.id = s.plan_id
       WHERE s.tenant_id = p_tenant AND s.status IN ('trialing', 'active', 'past_due')),
     (SELECT default_platform_fee_bps FROM public.billing_settings));
+END;
 $$;
 REVOKE EXECUTE ON FUNCTION app.tenant_platform_fee_bps(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION app.tenant_platform_fee_bps(uuid) TO app_user, app_worker;

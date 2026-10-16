@@ -160,10 +160,13 @@ async function resolverPspDaComunidade(deps: AppDeps, tenantId: string): Promise
   }
 }
 
-/** Taxa vigente da plataforma, em pontos-base: plano da assinatura viva, senao o padrao. */
-async function taxaVigenteBps(client: PoolClient, tenantId: string): Promise<number> {
-  const { rows } = await client.query<{ bps: number }>('SELECT app.tenant_platform_fee_bps($1) AS bps', [tenantId]);
-  return rows[0]!.bps;
+/**
+ * Taxa vigente da plataforma, em pontos-base: plano da assinatura viva, senao o padrao.
+ * NULL quando o banco nao reconhece o contexto como desta comunidade (a funcao tem guarda).
+ */
+async function taxaVigenteBps(client: PoolClient, tenantId: string): Promise<number | null> {
+  const { rows } = await client.query<{ bps: number | null }>('SELECT app.tenant_platform_fee_bps($1) AS bps', [tenantId]);
+  return rows[0]?.bps ?? null;
 }
 
 /**
@@ -247,6 +250,11 @@ export async function ensurePixPayment(
     // So o runtime Connect devolve gateway STRIPE, e com ele a taxa ja foi lida no preparo.
     const bps =
       taxaBps ?? (await withTenant(deps.pool, { tenantId: input.tenantId }, (c) => taxaVigenteBps(c, input.tenantId)));
+    if (bps === null) {
+      // Sem taxa legivel nao ha cobranca: melhor 503 do que um RangeError (500) no calculo.
+      log.error('PIX: taxa da plataforma ilegivel para a comunidade', { tenant_id: input.tenantId });
+      throw new ApiError('PAYMENT_PROVIDER_UNAVAILABLE');
+    }
     taxa = { bps, cents: computePlatformFeeCents(pedido.total_cents, bps) };
   }
 

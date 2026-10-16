@@ -222,8 +222,9 @@ Do ledger (`.superpowers/sdd/2026-10-15-stripe-connect-recebimento/progress.md`)
   divergência `ORDER_PAID_PAYMENT_NOT_APPROVED`.
 - `app.connect_apply_account_state` pode ser chamada por qualquer sessão `app_user` (risco
   residual; justificativa em `staging.md`).
-- `app.tenant_platform_fee_bps` não tem guarda de comunidade (`SECURITY DEFINER` lê a taxa de
-  outra comunidade); marcado no ledger para tratar antes do merge.
+- ~~`app.tenant_platform_fee_bps` sem guarda de comunidade~~ — **corrigido**: a função agora
+  devolve `NULL` para outra comunidade (só a própria ou o worker leem a taxa), e a API responde
+  `PAYMENT_PROVIDER_UNAVAILABLE` (503) se a taxa vier nula.
 - PaymentIntents órfãos (criados mas nunca gravados) expiram sozinhos pelo prazo do PIX; não há
   job de cancelamento. Pelo mesmo motivo, ao liberar uma reserva o PaymentIntent não é
   cancelado: um pagamento tardio vira `refund_required`.
@@ -273,6 +274,6 @@ antiga só é possível sem nenhuma linha `STRIPE` em `payments`. Código antigo
 | 9 | Chave **live** restrita criada; permissões da §3 conferidas | [ ] |
 | 10 | Dois endpoints live criados; dois `whsec_` em `STRIPE_CONNECT_WEBHOOK_SECRET` | [ ] |
 | 11 | Variáveis em API e worker; `NODE_ENV=production` | [ ] |
-| 12 | Pendências da §6 aceitas ou resolvidas (ao menos a guarda de `tenant_platform_fee_bps`) | [ ] |
+| 12 | Pendências da §6 aceitas ou resolvidas (a guarda de `tenant_platform_fee_bps` já foi corrigida) | [ ] |
 | 13 | Plano de rollback (§7) lido por quem opera | [ ] |
 | 14 | `CONNECT_ENABLED=true` só depois dos itens 1–13 | [ ] |

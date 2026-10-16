@@ -271,6 +271,26 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
       expect(await bps()).toBe(500); // assinatura encerrada nao conta
     });
 
+    it('tenant_platform_fee_bps: outra comunidade => NULL; a propria e o worker leem a taxa', async () => {
+      const a = await tenant();
+      const b = await tenant();
+      const customer = unique('cus_');
+      await owner.query('INSERT INTO tenant_billing (tenant_id, stripe_customer_id) VALUES ($1,$2)', [b, customer]);
+      await owner.query(
+        `INSERT INTO tenant_subscriptions (tenant_id, plan_id, stripe_customer_id, stripe_subscription_id, status, stripe_synced_at)
+         VALUES ($1,$2,$3,$4,'active', now())`,
+        [b, await plano(300), customer, unique('sub_')],
+      );
+      const deA = await comoTenant(a, (db) => db.query<{ bps: number | null }>('SELECT app.tenant_platform_fee_bps($1) AS bps', [b]));
+      expect(deA.rows[0]!.bps).toBeNull();
+      const deB = await comoTenant(b, (db) => db.query<{ bps: number | null }>('SELECT app.tenant_platform_fee_bps($1) AS bps', [b]));
+      expect(deB.rows[0]!.bps).toBe(300);
+      const propriaA = await comoTenant(a, (db) => db.query<{ bps: number | null }>('SELECT app.tenant_platform_fee_bps($1) AS bps', [a]));
+      expect(propriaA.rows[0]!.bps).toBe(500);
+      const w = await worker.query<{ bps: number | null }>('SELECT app.tenant_platform_fee_bps($1) AS bps', [b]);
+      expect(w.rows[0]!.bps).toBe(300);
+    });
+
     it('as funcoes novas nao sao publicas e app_user/app_worker as executam', async () => {
       const { rows } = await owner.query<{ f: string; pub: boolean; u: boolean; w: boolean }>(
         `SELECT p.proname AS f,

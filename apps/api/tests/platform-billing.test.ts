@@ -3,6 +3,7 @@ import request from 'supertest';
 import type Stripe from 'stripe';
 import { StripeBillingGateway } from '@clubedarifa/billing';
 import { FakeStripeClient } from '@clubedarifa/billing/testing';
+import { withTenant } from '@clubedarifa/db';
 import {
   cleanup,
   createHarness,
@@ -423,7 +424,9 @@ describe.skipIf(!hasTestDatabase)(`Console · planos e assinaturas ${hasTestData
       const plano = (await financeiro().post('/api/platform/plans', corpo({ platformFeeBps: 800 }))).body as { id: string };
       const { tenantId } = await novaComunidadeComAssinatura('active', plano.id, 'Comunidade Taxa');
       const vigente = async () =>
-        (await harness.owner.query<{ bps: number }>('SELECT app.tenant_platform_fee_bps($1) AS bps', [tenantId])).rows[0]!.bps;
+        // A funcao so responde a propria comunidade (ou ao worker): le no contexto dela.
+        (await withTenant(harness.pool, { tenantId }, (db) => db.query<{ bps: number }>('SELECT app.tenant_platform_fee_bps($1) AS bps', [tenantId])))
+          .rows[0]!.bps;
       expect(await vigente()).toBe(800);
       expect((await financeiro().patch(`/api/platform/plans/${plano.id}`, { platformFeeBps: 250 })).status).toBe(200);
       expect(await vigente()).toBe(250);
