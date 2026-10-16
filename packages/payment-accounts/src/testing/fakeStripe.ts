@@ -199,6 +199,18 @@ export class FakeStripe {
    * O estado de um estorno muda NA STRIPE (p.ex. `failed`: o banco do comprador recusou a
    * devolucao). Nao mexe na cobranca: so o que `refunds.list` devolve.
    */
+  /**
+   * Outro estorno do PaymentIntent feito NA STRIPE (p.ex. o operador, pelo Dashboard, depois de o
+   * primeiro falhar). Nao mexe na cobranca. Devolve o id.
+   */
+  addRefund(paymentIntentId: string, status: string, failureReason?: string): string {
+    const intent = this.#intentById.get(paymentIntentId)!;
+    const id = `re_${unique('r').replace(/[^A-Za-z0-9]/g, '')}`;
+    this.#refundsById.set(id, { id, object: 'refund', status, amount: intent['amount'], payment_intent: paymentIntentId });
+    if (failureReason !== undefined) this.#refundsById.get(id)!['failure_reason'] = failureReason;
+    return id;
+  }
+
   setRefundStatus(refundId: string, status: string, failureReason?: string): void {
     const r = this.#refundsById.get(refundId)!;
     r['status'] = status;

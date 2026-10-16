@@ -654,13 +654,13 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · rotas e webhook ${hasTestDa
         );
         for (const type of ['refund.updated', 'charge.refund.updated', 'refund.failed']) {
           const res = await avisar(h, { type, object: corpoRefund(e.pi, e.refundId, 'failed') });
-          expect(res.body, type).toEqual({ received: true, result: 'processed' });
+          // Mesmo estorno ja registrado: nada novo (200, sem divergencia nova).
+          expect(res.body, type).toEqual({ received: true, result: 'ignored' });
         }
 
         const abertas = await issues(e.orderId);
-        expect(abertas).toEqual([
-          { kind: 'REFUND_FAILED', detail: { refundId: e.refundId, failureReason: 'expired_or_canceled_card', amountCents: 1999 } },
-        ]);
+        const a = { refundId: e.refundId, failureReason: 'expired_or_canceled_card', amountCents: 1999 };
+        expect(abertas).toEqual([{ kind: 'REFUND_FAILED', detail: { ...a, refunds: [a] } }]);
         expect(await statusDe(e.orderId)).toEqual({ pedido: 'PAGO', pagamento: 'ESTORNADO' });
         // Nenhuma tentativa automatica de estornar de novo.
         expect(stripe.refundCalls.filter((r) => r.params['payment_intent'] === e.pi)).toHaveLength(1);
@@ -679,9 +679,49 @@ describe.skipIf(!hasTestDatabase)(`Stripe Connect · rotas e webhook ${hasTestDa
         stripe.setRefundStatus(e.refundId, 'failed');
         const res = await avisar(h, { type: 'refund.updated', object: corpoRefund(e.pi, e.refundId, 'succeeded') });
         expect(res.body).toEqual({ received: true, result: 'processed' });
-        expect(await issues(e.orderId)).toEqual([
-          { kind: 'REFUND_FAILED', detail: { refundId: e.refundId, failureReason: null, amountCents: 1999 } },
-        ]);
+        const a = { refundId: e.refundId, failureReason: null, amountCents: 1999 };
+        expect(await issues(e.orderId)).toEqual([{ kind: 'REFUND_FAILED', detail: { ...a, refunds: [a] } }]);
+      });
+
+      it('resolvida pelo operador: o estorno A (failed para sempre na Stripe) nao reabre quando o novo estorno B sai', async () => {
+        const e = await estornado('cn-rfres-');
+        stripe.setRefundStatus(e.refundId, 'failed', 'expired_or_canceled_card');
+        await avisar(h, { type: 'refund.failed', object: corpoRefund(e.pi, e.refundId, 'failed') });
+        // Procedimento do runbook: o operador faz um NOVO estorno B no Dashboard e resolve a divergencia.
+        const b = stripe.addRefund(e.pi, 'pending');
+        await h.owner.query(
+          `UPDATE payment_reconciliation_issues SET resolved_at = now(), review_status = 'RESOLVIDA_MANUALMENTE'
+            WHERE order_id = $1 AND kind = 'REFUND_FAILED'`,
+          [e.orderId],
+        );
+        stripe.setRefundStatus(b, 'succeeded');
+        for (const type of ['refund.updated', 'charge.refund.updated']) {
+          const res = await avisar(h, { type, object: corpoRefund(e.pi, b, 'succeeded') });
+          expect(res.body, type).toEqual({ received: true, result: 'ignored' });
+        }
+        expect(await issues(e.orderId)).toEqual([]);
+        const { rows } = await h.owner.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM payment_reconciliation_issues WHERE order_id = $1 AND kind = 'REFUND_FAILED'`,
+          [e.orderId],
+        );
+        expect(rows[0]!.n).toBe(1);
+      });
+
+      it('estorno B falha com a divergencia de A aberta: B fica visivel na MESMA divergencia', async () => {
+        const e = await estornado('cn-rfb-');
+        stripe.setRefundStatus(e.refundId, 'failed', 'expired_or_canceled_card');
+        await avisar(h, { type: 'refund.failed', object: corpoRefund(e.pi, e.refundId, 'failed') });
+        const b = stripe.addRefund(e.pi, 'failed', 'lost_or_stolen_card');
+        const res = await avisar(h, { type: 'refund.failed', object: corpoRefund(e.pi, b, 'failed') });
+        expect(res.body).toEqual({ received: true, result: 'processed' });
+        const a = { refundId: e.refundId, failureReason: 'expired_or_canceled_card', amountCents: 1999 };
+        const bb = { refundId: b, failureReason: 'lost_or_stolen_card', amountCents: 1999 };
+        const abertas = await issues(e.orderId);
+        expect(abertas).toHaveLength(1);
+        expect(abertas[0]!.detail).toEqual({ ...a, refunds: expect.arrayContaining([a, bb]) });
+        expect((abertas[0]!.detail['refunds'] as unknown[]).length).toBe(2);
+        // De novo, por outro tipo: nada novo.
+        expect((await avisar(h, { type: 'refund.updated', object: corpoRefund(e.pi, b, 'failed') })).body.result).toBe('ignored');
       });
 
       it('aparece na conciliacao do Console (pagamento ESTORNADO nao some da lista)', async () => {

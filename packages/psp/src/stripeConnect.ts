@@ -34,6 +34,8 @@ export interface StripeConnectOptions {
 const REQUEST_TIMEOUT_MS = 10_000;
 /** `failure_reason` da Stripe e um codigo (`expired_or_canceled_card`, `lost_or_stolen_card`...). */
 const FAILURE_REASON = /^[a-z][a-z0-9_]{0,63}$/;
+/** Mesmo formato que `app.record_psp_refund_failed` aceita: fora dele o banco recusaria (500). */
+const REFUND_ID = /^(re|pyr)_[A-Za-z0-9]{1,250}$/;
 const MIN_PIX_EXPIRES_SECONDS = 60;
 /** Teto da Stripe para o prazo do PIX (`expires_at` ate 14 dias no futuro). */
 const MAX_PIX_EXPIRES_SECONDS = 1_209_600;
@@ -286,7 +288,7 @@ export class StripeConnectGateway implements PspGateway {
       const out: PspFailedRefund[] = [];
       for (const item of Array.isArray(data) ? (data as unknown[]) : []) {
         const r = asRecord(item);
-        if (r['status'] !== 'failed' || typeof r['id'] !== 'string') continue;
+        if (r['status'] !== 'failed' || typeof r['id'] !== 'string' || !REFUND_ID.test(r['id'])) continue;
         const reason = r['failure_reason'];
         out.push({
           refundId: r['id'],

@@ -768,25 +768,45 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
     const statusDo = async (id: string) =>
       (await owner.query<{ s: string }>('SELECT status::text AS s FROM payments WHERE id = $1', [id])).rows[0]!.s;
 
+    const um = (refundId: string, failureReason: string | null) => ({ refundId, failureReason, amountCents: 1000 });
+    const auditadas = async (paymentId: string) =>
+      (
+        await owner.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM audit_events WHERE action = 'payment.refund_failed' AND target_id = $1`,
+          [paymentId],
+        )
+      ).rows[0]!.n;
+
     it('abre UMA divergencia REFUND_FAILED (sem dado pessoal) e NAO muda o status (ESTORNADO e terminal)', async () => {
       const p = await estornado();
       expect(await registrar(p)).toBe('opened');
-      expect(await registrar(p)).toBe('already_open');
-      expect(await registrar(p, { refundId: 're_fake2', reason: null })).toBe('already_open');
+      // O MESMO estorno de novo (outro evento, outro tipo): ja registrado, nada muda.
+      expect(await registrar(p)).toBe('already_recorded');
+      expect(await registrar(p, { reason: 'lost_or_stolen_card' })).toBe('already_recorded');
       const i = await abertas(p.id);
       expect(i).toHaveLength(1);
       expect(i[0]).toEqual({
         kind: 'REFUND_FAILED',
-        detail: { refundId: 're_fake1', failureReason: 'expired_or_canceled_card', amountCents: 1000 },
+        detail: { ...um('re_fake1', 'expired_or_canceled_card'), refunds: [um('re_fake1', 'expired_or_canceled_card')] },
         order_id: p.order_id,
         tenant_id: p.tenantId,
       });
       expect(await statusDo(p.id)).toBe('ESTORNADO');
-      const { rows: aud } = await owner.query<{ n: number }>(
-        `SELECT count(*)::int AS n FROM audit_events WHERE action = 'payment.refund_failed' AND target_id = $1`,
-        [p.id],
-      );
-      expect(aud[0]!.n).toBe(1);
+      expect(await auditadas(p.id)).toBe(1);
+    });
+
+    it('OUTRO estorno que falha com a divergencia aberta: entra na MESMA divergencia (visivel em refunds), uma vez', async () => {
+      const p = await estornado();
+      expect(await registrar(p)).toBe('opened');
+      expect(await registrar(p, { refundId: 're_fake2', reason: null })).toBe('appended');
+      expect(await registrar(p, { refundId: 're_fake2', reason: null })).toBe('already_recorded');
+      const i = await abertas(p.id);
+      expect(i).toHaveLength(1);
+      expect(i[0]!.detail).toEqual({
+        ...um('re_fake1', 'expired_or_canceled_card'),
+        refunds: [um('re_fake1', 'expired_or_canceled_card'), um('re_fake2', null)],
+      });
+      expect(await auditadas(p.id)).toBe(2);
     });
 
     it('a conciliacao local nao fecha a divergencia (so o operador resolve)', async () => {
@@ -796,12 +816,23 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
       expect((await abertas(p.id)).filter((i) => i.kind === 'REFUND_FAILED')).toHaveLength(1);
     });
 
-    it('resolvida pelo operador, uma nova falha reabre (uma aberta por vez)', async () => {
+    it('resolvida pelo operador: o MESMO estorno falho nao reabre; um estorno NOVO que falha abre outra', async () => {
       const p = await estornado();
       await registrar(p);
       await owner.query(`UPDATE payment_reconciliation_issues SET resolved_at = now() WHERE payment_id = $1`, [p.id]);
+      // A Stripe continua listando o estorno A como failed para sempre: nao vira divergencia nova.
+      expect(await registrar(p)).toBe('already_recorded');
+      expect(await abertas(p.id)).toHaveLength(0);
       expect(await registrar(p, { refundId: 're_fake3' })).toBe('opened');
       expect(await abertas(p.id)).toHaveLength(1);
+      expect(await registrar(p)).toBe('already_recorded');
+      expect(await auditadas(p.id)).toBe(2);
+    });
+
+    it('so STRIPE: pagamento de outro provedor nao abre nada', async () => {
+      const mp = await estornado('MERCADO_PAGO');
+      expect(await registrar(mp, { provider: 'MERCADO_PAGO' })).toBe('unknown_payment');
+      expect(await abertas(mp.id)).toHaveLength(0);
     });
 
     it('outra comunidade (contexto) ou pagamento desconhecido: unknown_payment, nada aberto', async () => {
@@ -827,7 +858,7 @@ describe.skipIf(!hasTestDatabase)(`0027/0028 · stripe connect ${hasTestDatabase
       const p = await estornado();
       await expect(registrar(p, { refundId: 'nao-e-refund' })).rejects.toMatchObject({ code: '22023' });
       expect(await registrar(p, { refundId: 'pyr_fake1', reason: 'Conta 1234-5 de Fulano' })).toBe('opened');
-      expect((await abertas(p.id))[0]!.detail).toEqual({ refundId: 'pyr_fake1', failureReason: null, amountCents: 1000 });
+      expect((await abertas(p.id))[0]!.detail).toEqual({ ...um('pyr_fake1', null), refunds: [um('pyr_fake1', null)] });
     });
 
     it('a constraint de tipos aceita REFUND_FAILED e continua recusando tipo desconhecido', async () => {

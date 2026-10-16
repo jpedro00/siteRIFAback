@@ -368,6 +368,19 @@ describe('StripeConnectGateway', () => {
       expect(out.map((r) => r.failureReason)).toEqual([null, null]);
     });
 
+    it('id de estorno fora do formato re_/pyr_ e descartado (o banco o recusaria e o webhook viraria 500)', async () => {
+      const retrieve = vi.fn().mockResolvedValue(intent());
+      const list = vi.fn().mockResolvedValue({
+        data: [
+          refund({ id: 'xx_estranho', status: 'failed' }),
+          refund({ id: 're_com-hifen', status: 'failed' }),
+          refund({ id: 'pyr_ok1', status: 'failed' }),
+        ],
+      });
+      const out = await make({ paymentIntents: { retrieve }, refunds: { list } }).failedRefunds('pi_1');
+      expect(out.map((r) => r.refundId)).toEqual(['pyr_ok1']);
+    });
+
     it('PaymentIntent de outra conta: rejeita SEM listar estornos', async () => {
       const retrieve = vi.fn().mockResolvedValue(intent({ transfer_data: { destination: 'acct_outra' } }));
       const list = vi.fn();

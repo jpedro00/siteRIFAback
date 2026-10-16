@@ -298,24 +298,30 @@ async function onRefundEvent(
     }
     throw error;
   }
-  const falho = falhos[0];
-  if (!falho) return 'ignored';
+  if (falhos.length === 0) return 'ignored';
 
-  const outcome = await withTenant(deps.pool, { tenantId }, async (client) => {
-    const { rows } = await client.query<{ r: string }>('SELECT app.record_psp_refund_failed($1, $2, $3::uuid, $4, $5, $6) AS r', [
-      'STRIPE',
-      paymentIntentId,
-      resolucao.paymentAccountId,
-      falho.refundId,
-      falho.failureReason,
-      falho.amountCents,
-    ]);
-    return rows[0]!.r;
+  // CADA estorno falho e registrado (o banco deduplica por estorno, inclusive contra divergencia
+  // ja resolvida: a Stripe continua listando o estorno falho para sempre). O mais antigo primeiro.
+  const outcomes = await withTenant(deps.pool, { tenantId }, async (client) => {
+    const out: string[] = [];
+    for (const falho of [...falhos].reverse()) {
+      const { rows } = await client.query<{ r: string }>('SELECT app.record_psp_refund_failed($1, $2, $3::uuid, $4, $5, $6) AS r', [
+        'STRIPE',
+        paymentIntentId,
+        resolucao.paymentAccountId,
+        falho.refundId,
+        falho.failureReason,
+        falho.amountCents,
+      ]);
+      out.push(rows[0]!.r);
+    }
+    return out;
   });
-  if (outcome === 'unknown_payment' || outcome === 'mismatch') {
-    log.warn('stripe_connect.refund_failed_not_recorded', { tenant_id: tenantId, outcome });
-    return 'ignored';
+  const novos = outcomes.filter((o) => o === 'opened' || o === 'appended');
+  if (outcomes.some((o) => o === 'unknown_payment' || o === 'mismatch')) {
+    log.warn('stripe_connect.refund_failed_not_recorded', { tenant_id: tenantId, outcomes });
   }
-  log.warn('stripe_connect.refund_failed', { tenant_id: tenantId, outcome });
+  if (novos.length === 0) return 'ignored';
+  log.warn('stripe_connect.refund_failed', { tenant_id: tenantId, outcomes });
   return 'processed';
 }
