@@ -21,6 +21,7 @@
   "dependencies": {
     "@clubedarifa/db": "*",
     "@clubedarifa/psp": "*",
-    "@clubedarifa/shared": "*"
+    "@clubedarifa/shared": "*",
+    "stripe": "^22.6.2"
   }
 }

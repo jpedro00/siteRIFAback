@@ -28,6 +28,14 @@ export const PAST_DUE_GRACE_DAYS_RANGE = Object.freeze({ min: 0, max: 90 } as co
 export const STRIPE_EVENT_PAYLOAD_RETENTION_DAYS = 30 as const;
 export const STRIPE_EVENT_ROW_RETENTION_DAYS = 90 as const;
 
+/**
+ * Retencao dos eventos do webhook Stripe CONNECT (migration 0030,
+ * `purge_connect_webhook_events`): o evento concluido sai depois disto (bem alem da janela de
+ * reenvio da Stripe, ~3 dias). Nao concluido nunca e apagado. So o id, o tipo e a conta ficam
+ * gravados: nao ha payload a zerar antes.
+ */
+export const STRIPE_CONNECT_EVENT_RETENTION_DAYS = 30 as const;
+
 /** Posse (lease) de um evento em processamento, em segundos. Vencido, outro processo assume. */
 export const STRIPE_EVENT_LEASE_SECONDS = 120 as const;
 

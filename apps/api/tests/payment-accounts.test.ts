@@ -276,6 +276,18 @@ describe.skipIf(!hasTestDatabase || WORKER_URL === '')(`Recebimentos por comunid
       expect(rows).toHaveLength(0);
     });
 
+    it('provedor diferente de MERCADO_PAGO (ex.: STRIPE) e recusado com 400: nao inicia o OAuth', async () => {
+      const antes = (await harness.owner.query('SELECT 1 FROM payment_account_oauth_states WHERE tenant_id = $1', [A.tenantId])).rowCount;
+      for (const provider of ['STRIPE', 'FAKE', 'PAYPAL']) {
+        const res = await como(A.cookie, A.slug).post('/api/tenant/payment-accounts/connect', { provider });
+        expect(res.status, provider).toBe(400);
+        expect(res.body.error.code).toBe('BAD_REQUEST');
+        expect(JSON.stringify(res.body)).not.toMatch(/authorizationUrl|mercadopago/i);
+      }
+      const depois = (await harness.owner.query('SELECT 1 FROM payment_account_oauth_states WHERE tenant_id = $1', [A.tenantId])).rowCount;
+      expect(depois).toBe(antes);
+    });
+
     it('campo de token no corpo e recusado/ignorado: nao existe entrada manual de Access Token', async () => {
       const res = await como(A.cookie, A.slug).post('/api/tenant/payment-accounts/connect', {
         provider: 'MERCADO_PAGO',

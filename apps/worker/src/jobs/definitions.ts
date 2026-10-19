@@ -2,13 +2,20 @@ import {
   PaymentAccountUnavailableError,
   PaymentsNotConfiguredError,
   PspRejectedError,
+  PspUnauthorizedError,
   PspUnavailableError,
+  type PspGatewayResolver,
   type PspPayment,
   type PspResolution,
 } from '@clubedarifa/psp';
 import type { DbPool } from '@clubedarifa/db';
 import { processDueStripeEvents } from '@clubedarifa/billing';
-import { STRIPE_EVENT_PAYLOAD_RETENTION_DAYS, STRIPE_EVENT_ROW_RETENTION_DAYS } from '@clubedarifa/shared';
+import { finalizePaymentDisconnections } from '@clubedarifa/payment-accounts';
+import {
+  STRIPE_CONNECT_EVENT_RETENTION_DAYS,
+  STRIPE_EVENT_PAYLOAD_RETENTION_DAYS,
+  STRIPE_EVENT_ROW_RETENTION_DAYS,
+} from '@clubedarifa/shared';
 import type { JobContext, JobDefinition } from './types.js';
 
 /**
@@ -207,21 +214,48 @@ export async function aplicarPagamentoDoPsp(
 }
 
 /**
+ * QUAL resolvedor atende um pagamento ja criado: o do PROVEDOR gravado nele. STRIPE = Connect;
+ * qualquer outro = recebimentos do Mercado Pago (o caminho de antes, inalterado). `null` = o
+ * provedor do pagamento nao esta ligado neste worker.
+ */
+function resolvedorDoProvedor(ctx: Pick<JobContext, 'paymentAccounts' | 'connect'>, provider: string): PspGatewayResolver | null {
+  if (provider === 'STRIPE') return ctx.connect?.resolver ?? null;
+  return ctx.paymentAccounts?.resolver ?? null;
+}
+
+/**
+ * Os provedores que este worker CONSEGUE consultar (o de cada resolvedor ligado). As varreduras
+ * so trazem pagamentos deles: uma fila cheia de pagamentos de um provedor desligado nao pode
+ * esconder os do provedor ligado (o LIMIT pegaria so os que nao da para consultar).
+ */
+function provedoresConsultaveis(ctx: Pick<JobContext, 'paymentAccounts' | 'connect'>): string[] {
+  const lista: string[] = [];
+  if (ctx.paymentAccounts) lista.push(ctx.paymentAccounts.resolver.provider);
+  if (ctx.connect) lista.push(ctx.connect.resolver.provider);
+  return lista;
+}
+
+/** Algum provedor de recebimento ligado neste worker? */
+const temRecebimentos = (ctx: Pick<JobContext, 'paymentAccounts' | 'connect'>): boolean =>
+  ctx.paymentAccounts != null || ctx.connect != null;
+
+/**
  * O PSP da conta ORIGINAL do pagamento (nunca o da conta atual da comunidade, nunca um global).
  * Devolve `null` quando nao ha como consultar agora — e ai NADA e liberado nem alterado.
  */
 async function resolverDoPagamento(
-  runtime: JobContext['paymentAccounts'],
+  ctx: Pick<JobContext, 'paymentAccounts' | 'connect'>,
   log: JobContext['log'],
   pagamento: { tenant_id: string; payment_account_id: string | null; provider: string },
   campos: Record<string, unknown>,
 ): Promise<PspResolution | null> {
-  if (!runtime) {
+  const resolver = resolvedorDoProvedor(ctx, pagamento.provider);
+  if (!resolver) {
     log.warn('nao ha provedor configurado para consultar; nada alterado', campos);
     return null;
   }
   try {
-    const r = await runtime.resolver.forPayment({
+    const r = await resolver.forPayment({
       tenantId: pagamento.tenant_id,
       paymentAccountId: pagamento.payment_account_id,
     });
@@ -251,7 +285,8 @@ export const expirarPix: JobDefinition = {
   name: 'expirar-pix',
   cron: '*/5 * * * *',
   intervalSeconds: 300,
-  async run({ pool, paymentAccounts, log }) {
+  async run(ctx) {
+    const { pool, log } = ctx;
     let liberados = 0;
 
     // 1) PIX vencido: CONSULTA o PSP antes de liberar. Se ele diz "pago", a venda
@@ -265,8 +300,10 @@ export const expirarPix: JobDefinition = {
          JOIN orders o ON o.id = p.order_id
         WHERE p.status = 'PENDENTE' AND o.status = 'PENDENTE'
           AND p.expires_at < now() - ${FOLGA_PIX}
+          AND p.provider = ANY($1::text[])
         ORDER BY p.expires_at
         LIMIT 100`,
+      [provedoresConsultaveis(ctx)],
     );
 
     for (const pagamento of vencidos) {
@@ -276,7 +313,7 @@ export const expirarPix: JobDefinition = {
         tenant_id: pagamento.tenant_id,
       };
 
-      const resolucao = await resolverDoPagamento(paymentAccounts, log, pagamento, campos);
+      const resolucao = await resolverDoPagamento(ctx, log, pagamento, campos);
       if (!resolucao) continue;
       const psp = resolucao.gateway;
 
@@ -287,8 +324,11 @@ export const expirarPix: JobDefinition = {
         if (
           error instanceof PspUnavailableError ||
           error instanceof PspRejectedError ||
+          error instanceof PspUnauthorizedError ||
           error instanceof PaymentAccountUnavailableError
         ) {
+          // 401 (credencial recusada) entra aqui tambem: um pagamento nao trava os outros. A
+          // mensagem e fixa, sem a chave.
           log.warn('PSP nao respondeu a consulta; nada liberado', {
             ...campos,
             error: error.message,
@@ -345,7 +385,8 @@ export const conciliacao: JobDefinition = {
   name: 'conciliacao',
   cron: '0 3 * * *',
   intervalSeconds: 86_400,
-  async run({ pool, paymentAccounts, log }) {
+  async run(ctx) {
+    const { pool, log } = ctx;
     // 1) Local: pagamentos x pedidos.
     const { rows } = await pool.query<{ n: number }>("SELECT app.worker_reconcile_local('7 days') AS n");
     let divergencias = rows[0]!.n;
@@ -353,7 +394,7 @@ export const conciliacao: JobDefinition = {
     // 2) PSP x banco: cobrancas que o PSP pode ter aprovado sem o webhook chegar. Cada uma e
     //    consultada com a conta ORIGINAL do pagamento — uma comunidade que trocou de conta nao
     //    perde a conciliacao do que ja cobrou.
-    if (!paymentAccounts) return divergencias;
+    if (!temRecebimentos(ctx)) return divergencias;
     const { rows: abertos } = await pool.query<{
       id: string;
       tenant_id: string;
@@ -364,11 +405,13 @@ export const conciliacao: JobDefinition = {
       `SELECT id, tenant_id, provider, provider_payment_id, payment_account_id FROM payments
         WHERE status IN ('PENDENTE', 'EXPIRADO', 'CANCELADO')
           AND created_at >= now() - interval '3 days'
+          AND provider = ANY($1::text[])
         ORDER BY created_at DESC LIMIT 200`,
+      [provedoresConsultaveis(ctx)],
     );
     for (const pagamento of abertos) {
       try {
-        const resolucao = await resolverDoPagamento(paymentAccounts, log, pagamento, { payment_id: pagamento.id });
+        const resolucao = await resolverDoPagamento(ctx, log, pagamento, { payment_id: pagamento.id });
         if (!resolucao) continue;
         const remoto = await resolucao.gateway.getPayment(pagamento.provider_payment_id);
         if (remoto.status !== 'APROVADO') continue;
@@ -384,6 +427,7 @@ export const conciliacao: JobDefinition = {
         if (
           error instanceof PspUnavailableError ||
           error instanceof PspRejectedError ||
+          error instanceof PspUnauthorizedError ||
           error instanceof PaymentAccountUnavailableError
         ) {
           log.warn('conciliacao: PSP nao respondeu para um pagamento', {
@@ -457,7 +501,12 @@ export const limparStripeEventos: JobDefinition = {
       'SELECT * FROM app.purge_stripe_events($1, $2)',
       [STRIPE_EVENT_PAYLOAD_RETENTION_DAYS, STRIPE_EVENT_ROW_RETENTION_DAYS],
     );
-    return rows[0]!.payloads_cleared + rows[0]!.rows_deleted;
+    // Eventos do webhook Connect (recebimentos dos criadores): mesma regra, so o concluido sai.
+    // Roda com o Connect ligado ou nao: desligado, a tabela so tem o que sobrou de quando estava.
+    const { rows: connect } = await pool.query<{ n: number }>('SELECT app.purge_connect_webhook_events($1) AS n', [
+      STRIPE_CONNECT_EVENT_RETENTION_DAYS,
+    ]);
+    return rows[0]!.payloads_cleared + rows[0]!.rows_deleted + connect[0]!.n;
   },
 };
 
@@ -487,9 +536,11 @@ export const finalizarDesconexoesPagamento: JobDefinition = {
   name: 'finalizar-desconexoes-pagamento',
   cron: '*/10 * * * *',
   intervalSeconds: 600,
-  async run({ paymentAccounts }) {
-    // Conclui as desconexoes que esperavam pagamentos pendentes (e so entao apaga o segredo).
-    return paymentAccounts ? paymentAccounts.finalizeDisconnections() : 0;
+  async run({ pool, paymentAccounts, connect }) {
+    // Conclui as desconexoes que esperavam pagamentos pendentes (e so entao apaga o segredo). A
+    // regra e do banco e vale para qualquer provedor; so com o Connect ligado, roda do mesmo jeito.
+    if (paymentAccounts) return paymentAccounts.finalizeDisconnections();
+    return connect ? finalizePaymentDisconnections(pool) : 0;
   },
 };
 

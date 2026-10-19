@@ -13,6 +13,7 @@
     "packages/shared/tests/**/*.ts",
     "packages/db/tests/**/*.ts",
     "packages/psp/tests/**/*.ts",
+    "packages/payment-accounts/tests/**/*.ts",
     "packages/logging/tests/**/*.ts",
     "apps/api/tests/**/*.ts",
     "apps/worker/tests/**/*.ts"

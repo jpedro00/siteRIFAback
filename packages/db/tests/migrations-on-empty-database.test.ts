@@ -131,7 +131,9 @@ describe.skipIf(!hasTestDatabase)(`migrations em banco vazio ${
       // `payment_provider_authorizations` (0019) e da CONTA DO VENDEDOR: uma mesma conta
       // serve varias comunidades, entao ela nao pertence a uma so (o vinculo, sim, tem tenant_id).
       // Nenhum papel de runtime le essa tabela: so funcoes SECURITY DEFINER.
-      const platformCatalogs = ['plans', 'billing_settings', 'payment_provider_authorizations'];
+      // `stripe_connect_webhook_events` (0030) e a idempotencia do webhook Connect: um evento chega
+      // antes de se saber a comunidade (e `account.updated` e da CONTA, nao da comunidade).
+      const platformCatalogs = ['plans', 'billing_settings', 'payment_provider_authorizations', 'stripe_connect_webhook_events'];
       // `job_heartbeats` descreve o PROCESSO do worker, nao uma comunidade.
       // `draw_status_transitions` e o catalogo global da maquina de estados (0017).
       const internal = [

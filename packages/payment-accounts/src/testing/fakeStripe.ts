@@ -1,0 +1,282 @@
+import Stripe from 'stripe';
+
+function unique(prefix: string): string {
+  return `${prefix}${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+}
+
+/**
+ * Stripe FALSA em memoria: so o que o runtime Connect e o `StripeConnectGateway` usam. Registra
+ * cada chamada e honra `idempotencyKey` como a Stripe. Nenhuma chave real passa por aqui.
+ */
+
+interface FakeAccount {
+  charges_enabled: boolean;
+  payouts_enabled: boolean;
+  requirements: { currently_due: string[]; past_due: string[] };
+}
+
+/** Segredo de webhook OBVIAMENTE falso, so para os testes. */
+export const FAKE_CONNECT_WEBHOOK_SECRET = 'whsec_test_fake_for_unit_tests';
+
+export class FakeStripe {
+  readonly intents: { params: Record<string, unknown>; opts: Record<string, unknown> | undefined }[] = [];
+  readonly accountsById = new Map<string, FakeAccount>();
+  /** Cada `paymentIntents.retrieve` (o RN06: o webhook so dispara a CONSULTA). */
+  readonly retrieved: string[] = [];
+  readonly #intentByKey = new Map<string, Record<string, unknown>>();
+  readonly #intentById = new Map<string, Record<string, unknown>>();
+  #n = 0;
+
+  readonly accounts = {
+    create: async (_params: Record<string, unknown>, _opts?: Record<string, unknown>) => {
+      const id = `acct_${unique('f').replace(/[^A-Za-z0-9]/g, '')}`;
+      this.accountsById.set(id, {
+        charges_enabled: false,
+        payouts_enabled: false,
+        requirements: { currently_due: ['external_account'], past_due: [] },
+      });
+      return { id, object: 'account' };
+    },
+    retrieve: async (id: string) => {
+      const a = this.accountsById.get(id);
+      if (!a) throw Object.assign(new Error('No such account'), { type: 'StripeInvalidRequestError', statusCode: 404 });
+      return { id, object: 'account', ...a };
+    },
+  };
+
+  readonly accountLinks = {
+    create: async (params: Record<string, unknown>) => ({
+      object: 'account_link',
+      url: `https://connect.stripe.test/setup/${String(params['account'])}/${++this.#n}`,
+    }),
+  };
+
+  /** A proxima criacao de PaymentIntent falha com este erro (uma vez). */
+  failNextCreate: Error | null = null;
+  /** A proxima consulta de PaymentIntent falha com este erro (uma vez). */
+  failNextRetrieve: Error | null = null;
+  /** A proxima consulta DESTE PaymentIntent falha com o erro (uma vez), sem afetar os outros. */
+  readonly failNextRetrieveOf = new Map<string, Error>();
+  /** Atraso de cada consulta de PaymentIntent (para provar entregas simultaneas). */
+  retrieveDelayMs = 0;
+  readonly #paramsByKey = new Map<string, string>();
+
+  readonly paymentIntents = {
+    create: async (params: Record<string, unknown>, opts?: Record<string, unknown>) => {
+      this.intents.push({ params, opts });
+      if (this.failNextCreate) {
+        const e = this.failNextCreate;
+        this.failNextCreate = null;
+        throw e;
+      }
+      const key = opts?.['idempotencyKey'];
+      if (typeof key === 'string' && this.#intentByKey.has(key)) {
+        // Como a Stripe: mesma chave com parametros DIFERENTES e erro de idempotencia.
+        if (this.#paramsByKey.get(key) !== JSON.stringify(params)) {
+          throw Object.assign(new Error('Keys for idempotent requests can only be used with the same parameters'), {
+            type: 'StripeIdempotencyError',
+            statusCode: 400,
+          });
+        }
+        return this.#intentByKey.get(key)!;
+      }
+      if (typeof key === 'string') this.#paramsByKey.set(key, JSON.stringify(params));
+      const intent: Record<string, unknown> = {
+        id: `pi_${unique('t').replace(/[^A-Za-z0-9]/g, '')}`,
+        object: 'payment_intent',
+        status: 'requires_action',
+        amount: params['amount'],
+        created: Math.floor(Date.now() / 1000),
+        metadata: params['metadata'],
+        transfer_data: params['transfer_data'],
+        next_action: {
+          pix_display_qr_code: {
+            data: `00020126PIXSTRIPE${++this.#n}`,
+            expires_at: Math.floor(Date.now() / 1000) + 600,
+          },
+        },
+      };
+      if (typeof key === 'string') this.#intentByKey.set(key, intent);
+      this.#intentById.set(intent['id'] as string, intent);
+      return intent;
+    },
+    retrieve: async (id: string, _opts?: Record<string, unknown>) => {
+      this.retrieved.push(id);
+      if (this.retrieveDelayMs > 0) await new Promise((r) => setTimeout(r, this.retrieveDelayMs));
+      if (this.failNextRetrieve) {
+        const e = this.failNextRetrieve;
+        this.failNextRetrieve = null;
+        throw e;
+      }
+      const alvo = this.failNextRetrieveOf.get(id);
+      if (alvo) {
+        this.failNextRetrieveOf.delete(id);
+        throw alvo;
+      }
+      const intent = this.#intentById.get(id);
+      if (!intent) {
+        throw Object.assign(new Error('No such payment_intent'), { type: 'StripeInvalidRequestError', statusCode: 404 });
+      }
+      return { ...intent };
+    },
+  };
+
+  /** Cada `refunds.create` (parametros e opcoes), na ordem. */
+  readonly refundCalls: { params: Record<string, unknown>; opts: Record<string, unknown> | undefined }[] = [];
+  /** O proximo estorno falha com este erro (uma vez). */
+  failNextRefund: Error | null = null;
+  /** Estorno aceito mas a consulta ainda nao o reflete (a cobranca so vira com `markRefunded`). */
+  refundLags = false;
+  readonly #refundByKey = new Map<string, Record<string, unknown>>();
+
+  readonly refunds = {
+    /**
+     * Como a Stripe: mesma `idempotencyKey` devolve o MESMO estorno (sem estornar de novo); intent
+     * sem cobranca paga, ou cobranca ja estornada, e erro 400 (definitivo). O estorno vira o
+     * `latest_charge` do PaymentIntent para estornado (o que a consulta seguinte ve).
+     */
+    create: async (params: Record<string, unknown>, opts?: Record<string, unknown>) => {
+      this.refundCalls.push({ params, opts });
+      if (this.failNextRefund) {
+        const e = this.failNextRefund;
+        this.failNextRefund = null;
+        throw e;
+      }
+      const key = opts?.['idempotencyKey'];
+      if (typeof key === 'string' && this.#refundByKey.has(key)) return this.#refundByKey.get(key)!;
+      const id = String(params['payment_intent']);
+      const intent = this.#intentById.get(id);
+      if (!intent) {
+        throw Object.assign(new Error('No such payment_intent'), { type: 'StripeInvalidRequestError', statusCode: 404 });
+      }
+      if (intent['status'] !== 'succeeded') {
+        throw Object.assign(new Error('This PaymentIntent does not have a successful charge to refund.'), {
+          type: 'StripeInvalidRequestError',
+          statusCode: 400,
+        });
+      }
+      const charge = intent['latest_charge'] as Record<string, unknown> | undefined;
+      if (charge?.['refunded'] === true) {
+        throw Object.assign(new Error('Charge has already been refunded.'), {
+          type: 'StripeInvalidRequestError',
+          code: 'charge_already_refunded',
+          statusCode: 400,
+        });
+      }
+      if (!this.refundLags) this.markRefunded(id);
+      const refund = {
+        id: `re_${unique('r').replace(/[^A-Za-z0-9]/g, '')}`,
+        object: 'refund',
+        status: 'succeeded',
+        amount: intent['amount'],
+        payment_intent: id,
+      };
+      if (typeof key === 'string') this.#refundByKey.set(key, refund);
+      this.#refundsById.set(refund.id, refund);
+      return refund;
+    },
+    /** Como a Stripe: os estornos do PaymentIntent (`payment_intent`), o mais recente primeiro. */
+    list: async (params: Record<string, unknown> = {}) => {
+      const pi = params['payment_intent'];
+      this.refundLists.push(String(pi));
+      if (this.failNextRefundList) {
+        const e = this.failNextRefundList;
+        this.failNextRefundList = null;
+        throw e;
+      }
+      const data = [...this.#refundsById.values()].filter((r) => r['payment_intent'] === pi).reverse();
+      return { object: 'list', data: data.map((r) => ({ ...r })), has_more: false };
+    },
+  };
+
+  /** Cada `refunds.list` (o `payment_intent` pedido), na ordem. */
+  readonly refundLists: string[] = [];
+  /** A proxima listagem de estornos falha com este erro (uma vez). */
+  failNextRefundList: Error | null = null;
+  readonly #refundsById = new Map<string, Record<string, unknown>>();
+
+  /**
+   * O estado de um estorno muda NA STRIPE (p.ex. `failed`: o banco do comprador recusou a
+   * devolucao). Nao mexe na cobranca: so o que `refunds.list` devolve.
+   */
+  /**
+   * Outro estorno do PaymentIntent feito NA STRIPE (p.ex. o operador, pelo Dashboard, depois de o
+   * primeiro falhar). Nao mexe na cobranca. Devolve o id.
+   */
+  addRefund(paymentIntentId: string, status: string, failureReason?: string): string {
+    const intent = this.#intentById.get(paymentIntentId)!;
+    const id = `re_${unique('r').replace(/[^A-Za-z0-9]/g, '')}`;
+    this.#refundsById.set(id, { id, object: 'refund', status, amount: intent['amount'], payment_intent: paymentIntentId });
+    if (failureReason !== undefined) this.#refundsById.get(id)!['failure_reason'] = failureReason;
+    return id;
+  }
+
+  setRefundStatus(refundId: string, status: string, failureReason?: string): void {
+    const r = this.#refundsById.get(refundId)!;
+    r['status'] = status;
+    if (failureReason === undefined) delete r['failure_reason'];
+    else r['failure_reason'] = failureReason;
+  }
+
+  /**
+   * A cobranca do PaymentIntent foi estornada NA STRIPE (pela plataforma ou pelo painel dela):
+   * `latest_charge` passa a dizer quanto foi devolvido. `amountRefunded` menor que o valor =
+   * estorno parcial.
+   */
+  markRefunded(id: string, amountRefunded?: number): void {
+    const intent = this.#intentById.get(id)!;
+    const amount = intent['amount'] as number;
+    const devolvido = amountRefunded ?? amount;
+    intent['latest_charge'] = {
+      id: `ch_${id.slice(3)}`,
+      object: 'charge',
+      created: (intent['created'] as number) + 60,
+      paid: true,
+      amount,
+      amount_refunded: devolvido,
+      refunded: devolvido >= amount,
+    };
+  }
+
+  /** O criador termina o cadastro na Stripe. */
+  ready(acct: string): void {
+    const a = this.accountsById.get(acct)!;
+    a.charges_enabled = true;
+    a.payouts_enabled = true;
+    a.requirements = { currently_due: [], past_due: [] };
+  }
+
+  /** O comprador paga (ou nao): muda o estado do PaymentIntent NA STRIPE. */
+  setIntentStatus(id: string, status: string): void {
+    const intent = this.#intentById.get(id)!;
+    intent['status'] = status;
+  }
+
+  /** Simula um PaymentIntent cujo destino NAO e a conta do pagamento (id trocado). */
+  setIntentDestination(id: string, destination: string): void {
+    this.#intentById.get(id)!['transfer_data'] = { destination };
+  }
+
+  asClient(): Stripe {
+    return this as unknown as Stripe;
+  }
+}
+
+/** Corpo bruto + `Stripe-Signature` validos para `secret`, como a Stripe envia. */
+export function signedConnectEvent(
+  event: { id: string; type: string; object: Record<string, unknown>; account?: string; livemode?: boolean },
+  secret = FAKE_CONNECT_WEBHOOK_SECRET,
+): { rawBody: string; signature: string } {
+  const payload = JSON.stringify({
+    id: event.id,
+    object: 'event',
+    api_version: '2026-08-26.dahlia',
+    created: Math.floor(Date.now() / 1000),
+    livemode: event.livemode ?? false,
+    type: event.type,
+    ...(event.account ? { account: event.account } : {}),
+    data: { object: event.object },
+  });
+  const signature = Stripe.webhooks.generateTestHeaderString({ payload, secret });
+  return { rawBody: payload, signature };
+}

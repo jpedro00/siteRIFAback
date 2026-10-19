@@ -1,6 +1,6 @@
 import type { DbPool } from '@clubedarifa/db';
 import type { Logger } from '@clubedarifa/logging';
-import type { PaymentAccountsRuntime } from '@clubedarifa/payment-accounts';
+import type { ConnectRuntime, PaymentAccountsRuntime } from '@clubedarifa/payment-accounts';
 import type { BillingGateway } from '@clubedarifa/billing';
 
 /**
@@ -20,6 +20,12 @@ export interface JobContext {
    * nenhum provedor ligado (staging por padrao). Nao existe credencial global.
    */
   readonly paymentAccounts: PaymentAccountsRuntime | null;
+  /**
+   * Recebimentos via Stripe Connect (`CONNECT_ENABLED`); `null`/ausente = desligado, e os
+   * pagamentos STRIPE nao sao consultados nem alterados. So resolve o gateway da conta ORIGINAL
+   * de um pagamento para consulta-lo; o worker nao faz cadastro de conta.
+   */
+  readonly connect?: ConnectRuntime | null;
   /**
    * Cobranca da PLATAFORMA (Stripe); `null`/ausente = desligada. Nao tem relacao com o
    * `paymentAccounts` acima: e o dinheiro da assinatura, nao o do participante.

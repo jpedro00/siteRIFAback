@@ -1,4 +1,5 @@
 import type { DbPool } from '@clubedarifa/db';
+import type { ConnectRuntime } from '@clubedarifa/payment-accounts';
 import type { QueueMessage } from './queue.js';
 import { provisionTenantBranding } from './consumers/provisionTenantBranding.js';
 import {
@@ -7,6 +8,7 @@ import {
   consumeResultPublished,
   consumeSalesClosed,
 } from './consumers/drawEvents.js';
+import { consumeRefundRequired } from './consumers/refundRequired.js';
 import { log as logRaiz } from './lib/log.js';
 
 /**
@@ -17,8 +19,15 @@ import { log as logRaiz } from './lib/log.js';
  *
  * Toda linha de log leva `event_id`, `event_type` e `tenant_id`: e assim que a
  * linha do worker se liga a da API que gravou o evento.
+ *
+ * `deps.connect`: Stripe Connect do worker (null/ausente = desligado). So o estorno automatico
+ * de pagamento STRIPE (`payment.refund_required`) o usa.
  */
-export async function handleMessage(pool: DbPool, message: QueueMessage): Promise<void> {
+export interface DispatchDeps {
+  readonly connect?: ConnectRuntime | null;
+}
+
+export async function handleMessage(pool: DbPool, message: QueueMessage, deps: DispatchDeps = {}): Promise<void> {
   const inicio = Date.now();
   const log = logRaiz.child({
     event_id: message.outboxEventId,
@@ -71,6 +80,11 @@ export async function handleMessage(pool: DbPool, message: QueueMessage): Promis
       await executar(() => consumeSalesClosed(pool, log, entrada));
       return;
 
+    case 'payment.refund_required':
+      // STRIPE: estorno automatico pela conta original. Mercado Pago: continua manual (no-op).
+      await executar(() => consumeRefundRequired(pool, deps.connect ?? null, log, entrada));
+      return;
+
     case 'membership.granted':
     case 'membership.revoked':
     case 'draw.submitted':
@@ -81,7 +95,6 @@ export async function handleMessage(pool: DbPool, message: QueueMessage): Promis
     case 'draw.apuration_started':
     case 'draw.archived':
     case 'draw.result_corrected':
-    case 'payment.refund_required':
       // Gravados na outbox, mas sem consumidor nesta fase. Um evento CONHECIDO sem
       // consumidor e log, nao erro: falhar faria a fila reentregar, ate a
       // dead-letter, algo que nao tem o que executar.

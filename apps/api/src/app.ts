@@ -22,7 +22,8 @@ export function createApp(deps: AppDeps): Express {
   app.disable('x-powered-by');
 
   // O webhook da Stripe assina o CORPO BRUTO: um JSON reserializado nao confere. Guardamos
-  // os bytes originais so para esse caminho, e o resto da API segue com o corpo ja lido.
+  // os bytes originais so para esses caminhos (`/api/webhooks/stripe` da cobranca e
+  // `/api/webhooks/stripe-connect` do Connect), e o resto da API segue com o corpo ja lido.
   // Envio de imagem: o corpo e base64 (ate ~2,7 MB). Parser proprio, so neste caminho.
   app.use('/api/tenant/media', express.json({ limit: '3mb' }));
   app.use(

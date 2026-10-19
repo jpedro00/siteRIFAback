@@ -7,7 +7,7 @@ import { loadConfig, type AppConfig } from '../../src/config.js';
 import { LoginThrottle } from '../../src/lib/loginThrottle.js';
 import { SecretBox } from '../../src/lib/secretBox.js';
 import type { PspGateway } from '@clubedarifa/psp';
-import type { PaymentAccountsRuntime } from '@clubedarifa/payment-accounts';
+import type { ConnectRuntime, PaymentAccountsRuntime } from '@clubedarifa/payment-accounts';
 import { staticPaymentAccountsRuntime } from '@clubedarifa/payment-accounts/testing';
 import type { BillingDeps } from '../../src/deps.js';
 import type { PasswordResetNotifier } from '../../src/lib/passwordResetNotifier.js';
@@ -111,6 +111,11 @@ export interface HarnessOptions {
    */
   readonly paymentAccounts?: PaymentAccountsRuntime | null;
   /**
+   * Recebimento via Stripe Connect. PADRAO desligado. Os testes de Connect passam o runtime
+   * real sobre uma Stripe EM MEMORIA.
+   */
+  readonly connect?: ConnectRuntime | null;
+  /**
    * Cobranca da PLATAFORMA (Stripe) injetada. PADRAO nenhuma (desligada). Os testes de
    * assinatura passam o gateway real da Stripe sobre um cliente EM MEMORIA.
    */
@@ -144,6 +149,16 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     LOGIN_ORIGIN_MAX_ACCOUNTS: String(options.originLimits?.maxAccounts ?? 1_000_000),
     ...(options.billing ? { BILLING_RETURN_URL: 'https://organizer.test' } : {}),
     ...(options.paymentAccounts ? { ORGANIZER_PANEL_URL: 'https://organizer.test' } : {}),
+    // Connect ligado na bancada: chave e segredo OBVIAMENTE falsos (o runtime injetado usa a
+    // Stripe em memoria; a configuracao so precisa existir e passar pelos guards).
+    ...(options.connect
+      ? {
+          CONNECT_ENABLED: 'true',
+          STRIPE_SECRET_KEY: 'sk_test_fake_for_unit_tests',
+          STRIPE_CONNECT_WEBHOOK_SECRET: 'whsec_test_fake_for_unit_tests',
+          ORGANIZER_PANEL_URL: 'https://organizer.test',
+        }
+      : {}),
   });
 
   const pool = createPool({ connectionString: TEST_APP_URL, applicationName: 'test-api', max: 5 });
@@ -165,6 +180,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     secretBox: new SecretBox(TEST_MFA_KEY),
     loginThrottle,
     paymentAccounts: options.paymentAccounts ?? (options.psp ? staticPaymentAccountsRuntime(options.psp) : null),
+    connect: options.connect ?? null,
     billing: options.billing ?? null,
     ...(options.passwordResetNotifier ? { passwordResetNotifier: options.passwordResetNotifier } : {}),
   });
@@ -367,6 +383,7 @@ export async function cleanup(owner: DbPool): Promise<void> {
     await client.query('DELETE FROM billing_checkout_sessions');
     await client.query('DELETE FROM tenant_billing');
     await client.query('DELETE FROM stripe_webhook_events');
+    await client.query('DELETE FROM stripe_connect_webhook_events');
     await client.query('DELETE FROM plans');
     await client.query(
       'UPDATE billing_settings SET past_due_grace_days = 3, enforcement_enabled = false, updated_by = NULL',

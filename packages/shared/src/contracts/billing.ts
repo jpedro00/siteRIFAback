@@ -63,8 +63,15 @@ export const planSchema = z.object({
 });
 export type Plan = z.infer<typeof planSchema>;
 
-/** Visao do Super Admin: inclui os identificadores da Stripe. */
+/**
+ * Taxa da plataforma em pontos-base (1% = 100). `null` = sem override: vale o padrao da
+ * plataforma. So o Super Admin enxerga e edita; nunca aparece na vitrine da comunidade.
+ */
+const platformFeeBps = z.number().int().min(0).max(10000).nullable();
+
+/** Visao do Super Admin: inclui os identificadores da Stripe e a taxa da plataforma. */
 export const platformPlanSchema = planSchema.extend({
+  platformFeeBps,
   stripeProductId: z.string().nullable(),
   stripePriceId: z.string().nullable(),
   createdAt: isoDate,
@@ -85,6 +92,7 @@ export const createPlanRequestSchema = z.object({
   currency: z.string().length(3).toLowerCase().default('brl'),
   ...planLimits,
   features: z.array(featureKey).max(50).default([]),
+  platformFeeBps: platformFeeBps.optional(),
 });
 export type CreatePlanRequest = z.input<typeof createPlanRequestSchema>;
 
@@ -100,6 +108,7 @@ export const updatePlanRequestSchema = z
     ...planLimits,
     features: z.array(featureKey).max(50),
     status: z.enum(PLAN_STATUSES),
+    platformFeeBps,
   })
   .partial();
 export type UpdatePlanRequest = z.infer<typeof updatePlanRequestSchema>;
@@ -319,6 +328,12 @@ export const paymentAccountSchema = z.object({
   canReceivePayments: z.boolean(),
   /** Pagamentos que ainda dependem da credencial (uma desconexao espera por eles). */
   openObligations: z.number().int().min(0),
+  /** Stripe Connect: a conta ja pode cobrar? `null` no Mercado Pago (ou estado ainda desconhecido). */
+  chargesEnabled: z.boolean().nullable(),
+  /** Stripe Connect: a conta ja recebe repasses? `null` no Mercado Pago (ou estado ainda desconhecido). */
+  payoutsEnabled: z.boolean().nullable(),
+  /** Stripe Connect: o que falta no cadastro (codigos da Stripe). Vazio no Mercado Pago. */
+  requirementsDue: z.array(z.string()),
 });
 export type PaymentAccount = z.infer<typeof paymentAccountSchema>;
 
@@ -329,6 +344,10 @@ export type PaymentAccount = z.infer<typeof paymentAccountSchema>;
  */
 export const paymentAccountsResponseSchema = z.object({
   enabled: z.boolean(),
+  /** O Stripe Connect esta ligado nesta implantacao? (a tela so oferece o que funciona) */
+  connectEnabled: z.boolean(),
+  /** A conexao OAuth do Mercado Pago esta ligada nesta implantacao? */
+  mercadoPagoEnabled: z.boolean(),
   accounts: z.array(paymentAccountSchema),
   /** O checkout pago esta disponivel para esta comunidade? */
   checkoutAvailable: z.boolean(),

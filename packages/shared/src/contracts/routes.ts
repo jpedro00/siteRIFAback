@@ -410,6 +410,8 @@ export const RECONCILIATION_KINDS = [
   'PSP_APPROVED_LOCAL_PENDING',
   'MANUAL_REFUND_OPEN',
   'PAYMENT_AUTHORIZATION_UNAVAILABLE',
+  /** Estorno que o PSP aceitou e depois FALHOU (pagamento pode ja estar ESTORNADO): conferir e devolver por fora. */
+  'REFUND_FAILED',
 ] as const;
 export type ReconciliationKind = (typeof RECONCILIATION_KINDS)[number];
 
@@ -809,7 +811,7 @@ export const ROUTE_CONTRACTS = {
     method: 'POST',
     path: '/api/platform/plans',
     summary:
-      'Cria um plano: o servidor cria o Product e o Price na Stripe e grava os IDs resultantes. Nasce como rascunho; repetir o pedido retoma a sincronização.',
+      'Cria um plano: o servidor cria o Product e o Price na Stripe e grava os IDs resultantes. Nasce como rascunho; repetir o pedido retoma a sincronização. Aceita a taxa da plataforma do plano em pontos-base (opcional; sem ela vale o padrão da plataforma).',
     auth: true,
     mfa: true,
     tenantScope: 'none',
@@ -818,7 +820,8 @@ export const ROUTE_CONTRACTS = {
   platformUpdatePlan: {
     method: 'PATCH',
     path: '/api/platform/plans/:id',
-    summary: 'Edita nome, descrição, limites, funcionalidades e status. Preço não muda: preço novo é plano novo.',
+    summary:
+      'Edita nome, descrição, limites, funcionalidades, status e a taxa da plataforma (pontos-base; null volta ao padrão e vale só para cobranças futuras). Preço não muda: preço novo é plano novo.',
     auth: true,
     mfa: true,
     tenantScope: 'none',
@@ -1219,6 +1222,36 @@ export const ROUTE_CONTRACTS = {
     mfa: true,
     tenantScope: 'resolved',
     tenantPermission: 'payment_account:manage',
+  },
+  // Stripe Connect (conta Express do criador). Com CONNECT_ENABLED=false as tres respondem 404.
+  connectStripeAccount: {
+    method: 'POST',
+    path: '/api/tenant/payment-accounts/connect-stripe',
+    summary:
+      'Cadastra (ou retoma) a conta Stripe Connect da comunidade e devolve um link de cadastro NOVO, hospedado pela Stripe. Nenhum id de conta entra pelo corpo.',
+    auth: true,
+    mfa: true,
+    tenantScope: 'resolved',
+    tenantPermission: 'payment_account:manage',
+  },
+  refreshStripeAccount: {
+    method: 'POST',
+    path: '/api/tenant/payment-accounts/refresh-stripe',
+    summary:
+      'Relê na Stripe o estado da conta Connect DA PROPRIA comunidade (pode receber, pode sacar, pendências) e devolve as contas atualizadas.',
+    auth: true,
+    mfa: false,
+    tenantScope: 'resolved',
+    tenantPermission: 'payment_account:manage',
+  },
+  stripeConnectWebhook: {
+    method: 'POST',
+    path: '/api/webhooks/stripe-connect',
+    summary:
+      'Webhook do Stripe Connect. Assinatura validada sobre o corpo bruto; idempotente por event.id; o estado da conta e o do pagamento são RELIDOS na Stripe antes de valer.',
+    auth: false,
+    mfa: false,
+    tenantScope: 'none',
   },
   stripeWebhook: {
     method: 'POST',

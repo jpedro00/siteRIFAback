@@ -199,7 +199,7 @@ describe.skipIf(!hasDb)(`Consumidores de eventos ${hasDb ? '' : skipReason}`, ()
 
     it('eventos conhecidos sem consumidor nao lancam', async () => {
       const draw = await seedDraw(bench.owner, tenantId);
-      for (const tipo of ['draw.submitted', 'draw.approved', 'draw.rejected', 'draw.paused', 'draw.resumed', 'payment.refund_required']) {
+      for (const tipo of ['draw.submitted', 'draw.approved', 'draw.rejected', 'draw.paused', 'draw.resumed']) {
         await expect(entregar(tipo, lifecycle(draw, 'ATIVA', 'PAUSADA')), tipo).resolves.toBeDefined();
       }
     });

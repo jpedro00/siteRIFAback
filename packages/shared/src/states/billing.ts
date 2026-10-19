@@ -145,8 +145,8 @@ export const PLAN_FEATURES: readonly string[] = Object.freeze([]);
 // Recebimentos por comunidade (FLUXO B)
 // ---------------------------------------------------------------------------
 
-/** Provedores de recebimento. Cresce por migration; hoje so o Mercado Pago. */
-export const PAYMENT_PROVIDERS = ['MERCADO_PAGO'] as const;
+/** Provedores de recebimento. Cresce por migration (0027 adicionou STRIPE). */
+export const PAYMENT_PROVIDERS = ['MERCADO_PAGO', 'STRIPE'] as const;
 export type PaymentProvider = (typeof PAYMENT_PROVIDERS)[number];
 
 export const PAYMENT_ENVIRONMENTS = ['SANDBOX', 'PRODUCTION'] as const;

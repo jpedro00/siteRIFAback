@@ -1,9 +1,10 @@
 import { pathToFileURL } from 'node:url';
 import { createPool, loadRootEnv, type DbPool } from '@clubedarifa/db';
 import type PgBoss from 'pg-boss';
-import { createPaymentAccountsRuntime } from '@clubedarifa/payment-accounts';
+import { createPaymentAccountsRuntime, type ConnectRuntime } from '@clubedarifa/payment-accounts';
 import { StripeBillingGateway } from '@clubedarifa/billing';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
+import { createWorkerConnect } from './connectSetup.js';
 import { buildPublisher, FOUNDATION_QUEUE, startQueue, type QueueMessage } from './queue.js';
 import { startRelayLoop, type RelayLoop } from './outbox/relayLoop.js';
 import { handleMessage } from './dispatch.js';
@@ -30,10 +31,10 @@ export interface WorkerRuntime {
   stop(reason?: string): Promise<void>;
 }
 
-async function startConsumer(boss: PgBoss, pool: DbPool): Promise<void> {
+async function startConsumer(boss: PgBoss, pool: DbPool, connect: ConnectRuntime | null): Promise<void> {
   await boss.work<QueueMessage>(FOUNDATION_QUEUE, { batchSize: 10 }, async (jobs) => {
     for (const job of jobs) {
-      await handleMessage(pool, job.data);
+      await handleMessage(pool, job.data, { connect });
     }
   });
 }
@@ -54,10 +55,21 @@ export async function startWorker(config: WorkerConfig): Promise<WorkerRuntime> 
     ssl: config.DATABASE_SSL,
   });
 
+  // Stripe Connect: so com CONNECT_ENABLED=true. Desligado (padrao), os jobs seguem como antes e os
+  // pagamentos STRIPE nao sao consultados nem alterados. Chave x ambiente divergentes: o worker nao
+  // sobe — montado ANTES da fila, para falhar sem deixar nada ligado.
+  let connect: ConnectRuntime | null;
+  try {
+    connect = createWorkerConnect(config, pool);
+  } catch (error) {
+    await pool.end().catch(() => undefined);
+    throw error;
+  }
+
   const boss = await startQueue(config);
   console.log(`[fila] pronta no schema "${config.QUEUE_SCHEMA}"`);
 
-  await startConsumer(boss, pool);
+  await startConsumer(boss, pool, connect);
 
   // Jobs agendados (expirar reservas e PIX, fechar sorteios, conciliar, limpar).
   // O PSP e opcional: sem ele, os jobs de PIX avisam e nao liberam nada.
@@ -84,7 +96,7 @@ export async function startWorker(config: WorkerConfig): Promise<WorkerRuntime> 
           log,
         })
       : null;
-  await registerJobs(boss, { pool, log, paymentAccounts, billing });
+  await registerJobs(boss, { pool, log, paymentAccounts, billing, connect });
 
   const relay = startRelayLoop(pool, buildPublisher(boss), {
     batchSize: config.OUTBOX_BATCH_SIZE,

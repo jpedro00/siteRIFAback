@@ -4,5 +4,14 @@ export { generateState, generateCodeVerifier, codeChallengeFor, hashState } from
 export { DbPspGatewayResolver } from './resolver.js';
 export { refreshAuthorization, refreshDueAuthorizations, type RefreshOutcome } from './refresh.js';
 export { beginConnection, completeConnection, type ConnectionFailure, type ConnectionResult } from './connection.js';
-export { createPaymentAccountsRuntime, type PaymentAccountsRuntime, type PaymentAccountsConfig } from './runtime.js';
+export {
+  createPaymentAccountsRuntime,
+  finalizePaymentDisconnections,
+  type PaymentAccountsRuntime,
+  type PaymentAccountsConfig,
+} from './runtime.js';
 export { sanitize, type Logger, type FetchLike, type PaymentAccountsCore } from './core.js';
+export { createConnectRuntime, type ConnectRuntime, type ConnectConfig } from './connect.js';
+export { createConnectRuntimeFromConfig, type ConnectSetupInput } from './connectSetup.js';
+export { ConnectPspGatewayResolver, type ConnectResolverOptions } from './connectResolver.js';
+export { verifyConnectWebhook, InvalidConnectWebhookError, type ConnectWebhookEvent } from './connectWebhook.js';

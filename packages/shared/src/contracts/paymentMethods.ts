@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PAYMENT_PROVIDERS } from '../states/billing.js';
 
 /**
  * Meios de pagamento dos participantes. M05.
@@ -81,7 +82,8 @@ export const paymentMethodsResponseSchema = z.object({
    * UNAVAILABLE   a conta existe, mas o provedor nao respondeu agora.
    */
   status: z.enum(['OK', 'NO_ACCOUNT', 'UNAVAILABLE']),
-  provider: z.literal('MERCADO_PAGO').nullable(),
+  /** O provedor da conta que atende a comunidade agora (a mesma regra da cobranca). */
+  provider: z.enum(PAYMENT_PROVIDERS).nullable(),
   accountId: z.string().uuid().nullable(),
   methods: z.array(paymentMethodAvailabilitySchema),
   checkedAt: z.string(),

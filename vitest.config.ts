@@ -94,6 +94,7 @@ export default defineConfig({
       'packages/shared/tests/**/*.test.ts',
       'packages/db/tests/**/*.test.ts',
       'packages/psp/tests/**/*.test.ts',
+      'packages/payment-accounts/tests/**/*.test.ts',
       'packages/logging/tests/**/*.test.ts',
       'apps/api/tests/**/*.test.ts',
       'apps/worker/tests/**/*.test.ts',

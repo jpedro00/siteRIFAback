@@ -38,6 +38,7 @@ function buildTestApp() {
     pool,
     secretBox: new SecretBox(config.MFA_ENCRYPTION_KEY),
     paymentAccounts: null,
+    connect: null,
     billing: null,
     loginThrottle: new LoginThrottle({
       windowMs: config.LOGIN_ORIGIN_WINDOW_MINUTES * 60_000,

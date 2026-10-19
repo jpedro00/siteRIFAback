@@ -32,7 +32,7 @@ import {
  * (`@clubedarifa/psp/testing`): nenhuma configuracao de ambiente o liga.
  */
 export class StaticPspResolver implements PspGatewayResolver {
-  readonly provider: 'MERCADO_PAGO' | 'FAKE';
+  readonly provider: PspGateway['provider'];
   constructor(private readonly psp: PspGateway) {
     this.provider = psp.provider;
   }
